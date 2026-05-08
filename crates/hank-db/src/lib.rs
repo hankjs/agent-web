@@ -1,12 +1,12 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Database {
-    pool: SqlitePool,
+    pool: MySqlPool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -36,42 +36,42 @@ pub struct Setting {
 
 impl Database {
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = SqlitePoolOptions::new()
+        let pool = MySqlPoolOptions::new()
             .max_connections(5)
             .connect(database_url)
             .await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL DEFAULT '',
-                provider TEXT NOT NULL DEFAULT 'anthropic',
-                model TEXT NOT NULL DEFAULT 'claude-sonnet-4-20250514',
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )",
+                id VARCHAR(36) PRIMARY KEY,
+                title VARCHAR(255) NOT NULL DEFAULT '',
+                provider VARCHAR(64) NOT NULL DEFAULT 'anthropic',
+                model VARCHAR(128) NOT NULL DEFAULT 'claude-sonnet-4-20250514',
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                updated_at DATETIME NOT NULL DEFAULT NOW()
+            ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
         .await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                id VARCHAR(36) PRIMARY KEY,
+                session_id VARCHAR(36) NOT NULL,
+                role VARCHAR(16) NOT NULL,
+                content MEDIUMTEXT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
-            )",
+            ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
         .await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
+                `key` VARCHAR(255) PRIMARY KEY,
                 value TEXT NOT NULL
-            )",
+            ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
         .await?;
@@ -148,7 +148,7 @@ impl Database {
             .execute(&self.pool)
             .await?;
 
-        sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
+        sqlx::query("UPDATE sessions SET updated_at = NOW() WHERE id = ?")
             .bind(session_id)
             .execute(&self.pool)
             .await?;
@@ -169,7 +169,7 @@ impl Database {
     // Settings
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let row = sqlx::query_as::<_, Setting>(
-            "SELECT key, value FROM settings WHERE key = ?"
+            "SELECT `key`, value FROM settings WHERE `key` = ?"
         )
         .bind(key)
         .fetch_optional(&self.pool)
@@ -179,7 +179,7 @@ impl Database {
 
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         sqlx::query(
-            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            "INSERT INTO settings (`key`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)"
         )
         .bind(key)
         .bind(value)

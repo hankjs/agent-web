@@ -56,8 +56,8 @@ cargo run -p hank-server
 
 ```bash
 cd client
-npm install
-npm run tauri dev
+pnpm install
+pnpm tauri dev
 ```
 
 ## 构建
@@ -73,7 +73,7 @@ cargo build --release -p hank-server
 
 ```bash
 cd client
-npm run tauri build
+pnpm tauri build
 # 产物在 src-tauri/target/release/bundle/
 ```
 

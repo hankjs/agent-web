@@ -1,16 +1,14 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicegui/nicegui/main/nicegui/static/tauri-conf-schema.json",
   "productName": "Hank Agent",
   "version": "0.1.0",
   "identifier": "com.hank.agent",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
   },
   "app": {
-    "title": "Hank Agent",
     "windows": [
       {
         "title": "Hank Agent",
