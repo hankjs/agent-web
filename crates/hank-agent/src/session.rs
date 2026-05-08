@@ -8,7 +8,7 @@ use hank_web_tools::{Tool, ToolOutput};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
-use tracing::error;
+use tracing::{debug, error};
 
 pub struct AgentSession {
     provider: Arc<dyn LlmProvider>,
@@ -63,6 +63,8 @@ impl AgentSession {
                 max_tokens: 4096,
             };
 
+            debug!("Agent loop iteration: model={}, messages={}, tools={}", req.model, req.messages.len(), req.tools.len());
+
             let mut stream = self.provider.stream(req).await?;
 
             let mut assistant_content: Vec<ContentBlock> = Vec::new();
@@ -79,30 +81,33 @@ impl AgentSession {
                         let _ = event_tx.send(AgentEvent::TextDelta { text }).await;
                     }
                     Ok(StreamEvent::ToolUseStart { id, name }) => {
+                        debug!("ToolUseStart: id={id}, name={name}");
                         // Flush any accumulated text
                         if !current_text.is_empty() {
                             assistant_content.push(ContentBlock::Text {
                                 text: std::mem::take(&mut current_text),
                             });
                         }
-                        current_tool_id = id.clone();
-                        current_tool_name = name.clone();
+                        current_tool_id = id;
+                        current_tool_name = name;
                         current_tool_input.clear();
-                        let _ = event_tx
-                            .send(AgentEvent::ToolStart { id, name })
-                            .await;
                     }
                     Ok(StreamEvent::ToolUseInputDelta(json)) => {
                         current_tool_input.push_str(&json);
                     }
                     Ok(StreamEvent::ToolUseEnd) => {
+                        debug!("ToolUseEnd: current_tool_id={current_tool_id}, current_tool_name={current_tool_name}");
+                        if current_tool_id.is_empty() {
+                            continue;
+                        }
                         let input: serde_json::Value =
                             serde_json::from_str(&current_tool_input).unwrap_or_default();
                         assistant_content.push(ContentBlock::ToolUse {
-                            id: current_tool_id.clone(),
-                            name: current_tool_name.clone(),
+                            id: std::mem::take(&mut current_tool_id),
+                            name: std::mem::take(&mut current_tool_name),
                             input,
                         });
+                        current_tool_input.clear();
                     }
                     Ok(StreamEvent::MessageEnd { stop_reason: sr }) => {
                         stop_reason = sr;
@@ -143,7 +148,17 @@ impl AgentSession {
 
                 for block in &assistant_content {
                     if let ContentBlock::ToolUse { id, name, input } = block {
+                        let input_str = serde_json::to_string(input).unwrap_or_default();
+                        debug!("Executing tool: name={name}, id={id}, input={input}");
+                        let _ = event_tx
+                            .send(AgentEvent::ToolStart {
+                                id: id.clone(),
+                                name: name.clone(),
+                                input: input_str,
+                            })
+                            .await;
                         let output = self.execute_tool(name, input.clone()).await;
+                        debug!("Tool result: id={id}, is_error={}, content_len={}", output.is_error, output.content.len());
                         let _ = event_tx
                             .send(AgentEvent::ToolResult {
                                 id: id.clone(),

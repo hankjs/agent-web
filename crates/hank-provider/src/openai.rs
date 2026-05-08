@@ -254,6 +254,10 @@ fn parse_chunk(chunk: &serde_json::Value, current_tool_id: &mut String) -> Optio
             if let Some(function) = tc.get("function") {
                 // New tool call start
                 if let Some(name) = function.get("name").and_then(|n| n.as_str()) {
+                    // Close previous tool call if one was in progress
+                    if !current_tool_id.is_empty() {
+                        events.push(StreamEvent::ToolUseEnd);
+                    }
                     let id = tc
                         .get("id")
                         .and_then(|i| i.as_str())
@@ -279,7 +283,11 @@ fn parse_chunk(chunk: &serde_json::Value, current_tool_id: &mut String) -> Optio
     if let Some(reason) = finish_reason {
         match reason {
             "tool_calls" => {
-                events.push(StreamEvent::ToolUseEnd);
+                // Close the last tool call
+                if !current_tool_id.is_empty() {
+                    events.push(StreamEvent::ToolUseEnd);
+                    current_tool_id.clear();
+                }
                 events.push(StreamEvent::MessageEnd {
                     stop_reason: StopReason::ToolUse,
                 });

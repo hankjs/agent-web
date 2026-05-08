@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     TextDelta { text: String },
-    ToolStart { id: String, name: String },
+    ToolStart { id: String, name: String, input: String },
     ToolResult { id: String, content: String, is_error: bool },
     TurnComplete,
     Error { message: String },

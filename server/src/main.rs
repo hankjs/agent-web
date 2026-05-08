@@ -1,7 +1,7 @@
 mod auth;
+mod chat;
 mod config;
 mod routes;
-mod ws;
 
 use anyhow::Result;
 use axum::{routing::{get, post, put, delete}, Router};
@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
         .route("/api/sessions/{id}/messages", get(routes::get_messages))
         .route("/api/settings", put(routes::update_settings))
         .route("/api/providers", get(routes::list_providers))
-        .route("/ws", get(ws::ws_handler))
+        .route("/api/sessions/{id}/chat", post(chat::chat_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

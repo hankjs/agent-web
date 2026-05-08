@@ -44,6 +44,7 @@ impl LlmProvider for AnthropicProvider {
         let url = format!("{}/v1/messages", self.base_url);
         let body = build_request_body(&req);
         debug!("Sending request to Anthropic API: {url}");
+        debug!("Request body: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
 
         let response = self
             .client
@@ -75,12 +76,27 @@ impl LlmProvider for AnthropicProvider {
 }
 
 fn build_request_body(req: &CompletionRequest) -> serde_json::Value {
+    use crate::ContentBlock;
+
     let mut messages: Vec<serde_json::Value> = Vec::new();
     for msg in &req.messages {
         let content: Vec<serde_json::Value> = msg
             .content
             .iter()
-            .map(|block| serde_json::to_value(block).unwrap())
+            .map(|block| match block {
+                ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                    let mut result = serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": [{"type": "text", "text": content}],
+                    });
+                    if *is_error {
+                        result["is_error"] = serde_json::json!(true);
+                    }
+                    result
+                }
+                _ => serde_json::to_value(block).unwrap(),
+            })
             .collect();
         messages.push(serde_json::json!({
             "role": msg.role,
@@ -133,7 +149,10 @@ async fn process_sse_stream(
             let event_str = buffer[..pos].to_string();
             buffer = buffer[pos + 2..].to_string();
 
+            debug!("SSE raw event: {event_str}");
+
             if let Some(event) = parse_sse_event(&event_str) {
+                debug!("Parsed StreamEvent: {event:?}");
                 if tx.send(Ok(event)).await.is_err() {
                     return Ok(());
                 }
