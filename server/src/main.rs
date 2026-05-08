@@ -91,6 +91,7 @@ async fn main() -> Result<()> {
         .route("/api/settings", put(routes::update_settings))
         .route("/api/providers", get(routes::list_providers))
         .route("/api/sessions/{id}/chat", post(chat::chat_handler))
+        .route("/api/fs/list", get(routes::list_directory))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

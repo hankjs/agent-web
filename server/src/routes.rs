@@ -1,6 +1,6 @@
 use crate::{auth, AppState};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -37,6 +37,7 @@ pub async fn login(
 pub struct CreateSessionRequest {
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub work_dir: Option<String>,
 }
 
 pub async fn create_session(
@@ -46,7 +47,7 @@ pub async fn create_session(
     let provider = body.provider.unwrap_or_else(|| "anthropic".to_string());
     let model = body.model.unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
 
-    match state.db.create_session(&provider, &model).await {
+    match state.db.create_session(&provider, &model, body.work_dir.as_deref()).await {
         Ok(session) => (StatusCode::CREATED, Json(serde_json::json!(session))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -150,4 +151,51 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
         "providers": providers,
         "default_provider": state.config.server.default_provider,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct ListDirQuery {
+    pub path: Option<String>,
+}
+
+pub async fn list_directory(Query(query): Query<ListDirQuery>) -> impl IntoResponse {
+    let dir_path = match &query.path {
+        Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+        _ => dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
+    };
+
+    let entries = match std::fs::read_dir(&dir_path) {
+        Ok(rd) => rd,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut dirs: Vec<serde_json::Value> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
+            dirs.push(serde_json::json!({ "name": name, "is_dir": true }));
+        }
+    }
+    dirs.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+    });
+
+    let parent = dir_path.parent().map(|p| p.to_string_lossy().to_string());
+
+    Json(serde_json::json!({
+        "path": dir_path.to_string_lossy(),
+        "parent": parent,
+        "entries": dirs,
+    }))
+    .into_response()
 }

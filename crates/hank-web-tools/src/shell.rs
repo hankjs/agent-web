@@ -20,11 +20,13 @@ const BLOCKED_COMMANDS: &[&str] = &[
     "poweroff",
 ];
 
-pub struct ShellTool;
+pub struct ShellTool {
+    work_dir: Option<String>,
+}
 
 impl ShellTool {
-    pub fn new() -> Self {
-        Self
+    pub fn new(work_dir: Option<String>) -> Self {
+        Self { work_dir }
     }
 
     fn is_blocked(command: &str) -> bool {
@@ -97,7 +99,14 @@ impl Tool for ShellTool {
 
         let result = tokio::time::timeout(
             Duration::from_secs(timeout_secs),
-            Command::new("sh").arg("-c").arg(&command).output(),
+            {
+                let mut cmd = Command::new("sh");
+                cmd.arg("-c").arg(&command);
+                if let Some(ref dir) = self.work_dir {
+                    cmd.current_dir(dir);
+                }
+                cmd.output()
+            },
         )
         .await;
 

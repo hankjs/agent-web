@@ -1,12 +1,20 @@
 <script setup lang="ts">
+import { useSession } from "./composables/useSession";
+import SessionList from "./components/SessionList.vue";
 import Chat from "./components/Chat.vue";
+
+const { view, currentSession, goBack } = useSession();
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-gray-900 text-gray-100">
-    <header class="px-4 py-3 border-b border-gray-700 flex items-center gap-3">
-      <h1 class="text-lg font-semibold">Hank Agent</h1>
-    </header>
-    <Chat class="flex-1 overflow-hidden" />
+  <div class="h-screen flex flex-col" style="background: var(--color-surface-0); color: var(--color-text-primary)">
+    <SessionList v-if="view === 'list'" class="flex-1 overflow-hidden" />
+    <Chat
+      v-else
+      class="flex-1 overflow-hidden"
+      :session-id="currentSession!.id"
+      :work-dir="currentSession!.work_dir ?? undefined"
+      @back="goBack"
+    />
   </div>
 </template>

@@ -65,7 +65,11 @@ pub async fn chat_handler(
         (None, None) => "claude-sonnet-4-20250514".to_string(),
     };
 
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ShellTool::new())];
+    // Look up session for work_dir
+    let session_record = state.db.get_session(&session_id).await.ok().flatten();
+    let work_dir = session_record.as_ref().and_then(|s| s.work_dir.clone());
+
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ShellTool::new(work_dir))];
 
     let mut session = AgentSession::new(
         provider,
@@ -101,9 +105,10 @@ pub async fn chat_handler(
     let db = state.db.clone();
     let sid = session_id.clone();
     let content = body.content;
+    let is_first_message = history_len == 0;
 
     tokio::spawn(async move {
-        if let Err(e) = session.run(content, event_tx.clone()).await {
+        if let Err(e) = session.run(content.clone(), event_tx.clone()).await {
             error!("Agent error: {e}");
             let _ = event_tx
                 .send(AgentEvent::Error {
@@ -113,13 +118,21 @@ pub async fn chat_handler(
         }
 
         // Save new messages to DB
-        for msg in session.messages().iter().skip(history_len) {
+        let base_time = chrono::Utc::now();
+        for (i, msg) in session.messages().iter().skip(history_len).enumerate() {
             let role = match msg.role {
                 hank_provider::Role::User => "user",
                 hank_provider::Role::Assistant => "assistant",
             };
-            let content = serde_json::to_value(&msg.content).unwrap_or_default();
-            let _ = db.save_message(&sid, role, &content).await;
+            let content_val = serde_json::to_value(&msg.content).unwrap_or_default();
+            let ts = base_time + chrono::Duration::microseconds(i as i64);
+            let _ = db.save_message(&sid, role, &content_val, ts).await;
+        }
+
+        // Auto-set title from first user message
+        if is_first_message {
+            let title: String = content.chars().take(50).collect();
+            let _ = db.update_session_title(&sid, &title).await;
         }
     });
 
