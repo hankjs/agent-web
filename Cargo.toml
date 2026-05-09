@@ -28,3 +28,4 @@ axum-extra = { version = "0.10", features = ["typed-header"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 jsonwebtoken = "9"
 tokio-stream = "0.1"
+tokio-util = "0.7"

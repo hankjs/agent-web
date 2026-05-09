@@ -17,6 +17,8 @@ use hank_db::Database;
 use hank_provider::LlmProvider;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
@@ -26,6 +28,7 @@ pub struct AppState {
     pub jwt_secret: String,
     pub config: Config,
     pub providers: HashMap<String, Arc<dyn LlmProvider>>,
+    pub active_tasks: RwLock<HashMap<String, CancellationToken>>,
 }
 
 impl AppState {
@@ -94,6 +97,7 @@ async fn main() -> Result<()> {
         jwt_secret: config.server.jwt_secret.clone(),
         providers,
         config: config.clone(),
+        active_tasks: RwLock::new(HashMap::new()),
     });
 
     // Public routes (no auth required)
@@ -111,6 +115,7 @@ async fn main() -> Result<()> {
         .route("/api/settings", put(routes::update_settings))
         .route("/api/providers", get(routes::list_providers))
         .route("/api/sessions/{id}/chat", post(chat::chat_handler))
+        .route("/api/sessions/{id}/stop", post(chat::stop_handler))
         .route("/api/fs/list", get(routes::list_directory))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 

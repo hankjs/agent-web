@@ -8,6 +8,7 @@ use hank_web_tools::{Tool, ToolOutput};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 const MAX_ITERATIONS: usize = 25;
@@ -59,6 +60,7 @@ impl AgentSession {
         &mut self,
         user_message: String,
         event_tx: mpsc::Sender<AgentEvent>,
+        cancel: CancellationToken,
     ) -> Result<()> {
         self.messages.push(Message {
             role: Role::User,
@@ -66,6 +68,12 @@ impl AgentSession {
         });
 
         for iteration in 0..MAX_ITERATIONS {
+            // Check cancellation before each iteration
+            if cancel.is_cancelled() {
+                let _ = event_tx.send(AgentEvent::TurnComplete).await;
+                break;
+            }
+
             let req = CompletionRequest {
                 model: self.model.clone(),
                 system: Some(self.system_prompt.clone()),
@@ -160,6 +168,12 @@ impl AgentSession {
 
                 for block in &assistant_content {
                     if let ContentBlock::ToolUse { id, name, input } = block {
+                        // Check cancellation before each tool
+                        if cancel.is_cancelled() {
+                            let _ = event_tx.send(AgentEvent::TurnComplete).await;
+                            return Ok(());
+                        }
+
                         let input_str = serde_json::to_string(input).unwrap_or_default();
                         debug!("Executing tool: name={name}, id={id}");
                         let _ = event_tx

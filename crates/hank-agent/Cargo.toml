@@ -17,3 +17,4 @@ futures = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }

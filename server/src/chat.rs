@@ -15,6 +15,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 use crate::config::DEFAULT_MODEL;
@@ -99,14 +100,29 @@ pub async fn chat_handler(
     let content = body.content;
     let is_first_message = history_len == 0;
 
+    // Create cancellation token and store it
+    let cancel_token = CancellationToken::new();
+    {
+        let mut tasks = state.active_tasks.write().await;
+        tasks.insert(session_id.clone(), cancel_token.clone());
+    }
+    let state_for_cleanup = state.clone();
+    let sid_for_cleanup = session_id.clone();
+
     tokio::spawn(async move {
-        if let Err(e) = session.run(content.clone(), event_tx.clone()).await {
+        if let Err(e) = session.run(content.clone(), event_tx.clone(), cancel_token).await {
             error!("Agent error: {e}");
             let _ = event_tx
                 .send(AgentEvent::Error {
                     message: e.to_string(),
                 })
                 .await;
+        }
+
+        // Remove token from active tasks
+        {
+            let mut tasks = state_for_cleanup.active_tasks.write().await;
+            tasks.remove(&sid_for_cleanup);
         }
 
         // Batch save new messages to DB
@@ -146,4 +162,17 @@ fn make_sse_stream(
         let json = serde_json::to_string(&event).unwrap_or_default();
         Ok(Event::default().data(json))
     })
+}
+
+pub async fn stop_handler(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let tasks = state.active_tasks.read().await;
+    if let Some(token) = tasks.get(&session_id) {
+        token.cancel();
+        StatusCode::OK
+    } else {
+        StatusCode::OK
+    }
 }

@@ -36,6 +36,8 @@ const input = ref("");
 const isConnected = ref(false);
 const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
+const textareaRef = ref<HTMLTextAreaElement | null>(null);
+let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
 const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
 
@@ -171,12 +173,42 @@ function handleServerEvent(event: any) {
   });
 }
 
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault();
+    send();
+  }
+  // Ctrl+J inserts newline (Shift+Enter is default textarea behavior)
+  if (e.key === "j" && e.ctrlKey) {
+    e.preventDefault();
+    const ta = textareaRef.value;
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    input.value = input.value.substring(0, start) + "\n" + input.value.substring(end);
+    nextTick(() => {
+      ta.selectionStart = ta.selectionEnd = start + 1;
+      autoResize();
+    });
+  }
+}
+
+function autoResize() {
+  const ta = textareaRef.value;
+  if (!ta) return;
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
+}
+
 async function send() {
   if (!input.value.trim() || !isConnected.value || isStreaming.value) return;
 
   const content = input.value.trim();
   blocks.value.push({ kind: "user", content });
   input.value = "";
+  nextTick(() => {
+    if (textareaRef.value) textareaRef.value.style.height = "auto";
+  });
   isStreaming.value = true;
 
   try {
@@ -196,6 +228,7 @@ async function send() {
     }
 
     const reader = res.body!.getReader();
+    activeReader = reader;
     const decoder = new TextDecoder();
     let buffer = "";
 
@@ -224,9 +257,25 @@ async function send() {
       }
     }
   } catch (e: any) {
+    if (e.name === "AbortError") return;
     blocks.value.push({ kind: "text", content: `Connection lost: ${e.message || e}` });
     isStreaming.value = false;
+  } finally {
+    activeReader = null;
   }
+}
+
+async function stop() {
+  // Cancel client-side reader
+  if (activeReader) {
+    try { await activeReader.cancel(); } catch { /* ignore */ }
+    activeReader = null;
+  }
+  // Tell server to cancel
+  try {
+    await authFetch(`/api/sessions/${props.sessionId}/stop`, { method: "POST" });
+  } catch { /* best effort */ }
+  isStreaming.value = false;
 }
 
 onMounted(async () => {
@@ -274,14 +323,33 @@ onMounted(async () => {
 
     <div class="input-area" :class="isEmpty ? 'input-centered' : 'input-docked'">
       <div class="max-w-[720px] mx-auto w-full px-6">
-        <input
-          v-model="input"
-          @keydown.enter="send"
-          :disabled="!isConnected || isStreaming"
-          :placeholder="!isConnected ? 'Offline' : ''"
-          class="input-field"
-          aria-label="Message input"
-        />
+        <div class="input-wrapper">
+          <textarea
+            ref="textareaRef"
+            v-model="input"
+            @keydown="handleKeydown"
+            @input="autoResize"
+            :disabled="!isConnected"
+            :placeholder="!isConnected ? 'Offline' : ''"
+            class="input-field"
+            rows="1"
+            aria-label="Message input"
+          ></textarea>
+          <button
+            class="send-btn"
+            :class="{ 'stop-mode': isStreaming }"
+            @click="isStreaming ? stop() : send()"
+            :disabled="!isConnected || (!isStreaming && !input.trim())"
+            :aria-label="isStreaming ? 'Stop generation' : 'Send message'"
+          >
+            <svg v-if="!isStreaming" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M8 14V3M8 3L3 8M8 3L13 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <rect x="1" y="1" width="12" height="12" rx="2" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -379,20 +447,44 @@ onMounted(async () => {
 .input-area { padding: 24px 0 32px; }
 .input-centered { display: flex; align-items: center; justify-content: center; }
 .input-docked { border-top: 1px solid var(--color-border-subtle); }
+.input-wrapper { position: relative; display: flex; align-items: flex-end; }
 .input-field {
   width: 100%;
   background: var(--color-surface-1);
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: 14px 18px;
+  padding: 14px 48px 14px 18px;
   font-size: 15px;
   color: var(--color-text-primary);
   outline: none;
   transition: border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+  resize: none;
+  overflow-y: auto;
+  line-height: 1.5;
+  font-family: inherit;
 }
 .input-field:focus { border-color: var(--color-accent-dim); box-shadow: 0 0 0 3px oklch(0.72 0.14 55 / 0.08); }
 .input-field:disabled { opacity: 0.4; cursor: not-allowed; }
 .input-field::placeholder { color: var(--color-text-muted); }
+.send-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--color-text-primary);
+  color: var(--color-surface-0, #1a1a1a);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+}
+.send-btn:hover:not(:disabled) { opacity: 0.85; }
+.send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.send-btn.stop-mode { background: var(--color-error, #ef4444); color: #fff; }
 .streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 </style>
