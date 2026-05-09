@@ -11,6 +11,7 @@ const router = createRouter({
     { path: '/', component: () => import('./views/Dashboard.vue') },
     { path: '/sessions', component: () => import('./views/Sessions.vue') },
     { path: '/sessions/:id', component: () => import('./views/SessionDetail.vue') },
+    { path: '/sessions/:id/timeline', component: () => import('./views/SessionTimeline.vue') },
     { path: '/prompts', component: () => import('./views/PromptLab.vue') },
     { path: '/users', component: () => import('./views/Users.vue') },
     { path: '/providers', component: () => import('./views/Providers.vue') },

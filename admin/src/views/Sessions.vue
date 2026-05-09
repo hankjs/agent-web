@@ -29,27 +29,28 @@ watch([page, search], load)
       />
     </div>
 
-    <div class="text-[12px] text-text-tertiary grid grid-cols-[1fr_80px_100px_140px_100px] gap-2 px-2 pb-2 border-b border-border-subtle font-medium">
+    <div class="text-[12px] text-text-tertiary grid grid-cols-[1fr_80px_100px_140px_100px_60px] gap-2 px-2 pb-2 border-b border-border-subtle font-medium">
       <span>Title</span>
       <span>User</span>
       <span>Provider</span>
       <span>Model</span>
       <span class="text-right">Updated</span>
+      <span></span>
     </div>
 
     <div class="divide-y divide-border-subtle">
-      <RouterLink
+      <div
         v-for="s in sessions"
         :key="s.id"
-        :to="`/sessions/${s.id}`"
-        class="grid grid-cols-[1fr_80px_100px_140px_100px] gap-2 items-center px-2 py-2.5 -mx-2 rounded-md hover:bg-hover transition-colors duration-100 cursor-pointer"
+        class="grid grid-cols-[1fr_80px_100px_140px_100px_60px] gap-2 items-center px-2 py-2.5 -mx-2 rounded-md hover:bg-hover transition-colors duration-100"
       >
-        <span class="text-[13px] text-text-primary truncate">{{ s.title || s.id.slice(0, 8) }}</span>
+        <RouterLink :to="`/sessions/${s.id}`" class="text-[13px] text-text-primary truncate hover:text-accent transition-colors">{{ s.title || s.id.slice(0, 8) }}</RouterLink>
         <span class="text-[12px] text-text-tertiary truncate">{{ s.username || '-' }}</span>
         <span class="text-[12px] text-text-tertiary">{{ s.provider }}</span>
         <span class="text-[12px] text-text-tertiary truncate">{{ s.model }}</span>
         <span class="text-[12px] text-text-tertiary text-right">{{ new Date(s.updated_at).toLocaleDateString() }}</span>
-      </RouterLink>
+        <RouterLink :to="`/sessions/${s.id}/timeline`" class="text-[11px] text-accent hover:text-accent-hover transition-colors text-right" @click.stop>Timeline</RouterLink>
+      </div>
     </div>
 
     <div v-if="!sessions.length" class="py-12 text-center text-[13px] text-text-tertiary">No sessions found</div>

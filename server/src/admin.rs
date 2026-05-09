@@ -124,6 +124,16 @@ pub async fn session_replay(
     Json(ReplayResponse { messages, metrics, tool_executions }).into_response()
 }
 
+pub async fn session_events(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.get_session_events(&session_id).await {
+        Ok(events) => Json(events).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 pub async fn metrics_overview(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {

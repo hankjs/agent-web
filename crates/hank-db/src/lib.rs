@@ -144,6 +144,16 @@ pub struct ProviderRecord {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AgentEventRecord {
+    pub id: String,
+    pub session_id: String,
+    pub event_type: String,
+    pub payload: String,
+    pub seq: u64,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsOverview {
     pub total_input_tokens: u64,
@@ -248,6 +258,21 @@ impl Database {
                 created_at DATETIME NOT NULL DEFAULT NOW(),
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
                 INDEX idx_tool_executions_session (session_id)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS agent_events (
+                id VARCHAR(36) PRIMARY KEY,
+                session_id VARCHAR(36) NOT NULL,
+                event_type VARCHAR(32) NOT NULL,
+                payload MEDIUMTEXT NOT NULL,
+                seq BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                created_at DATETIME(6) NOT NULL DEFAULT NOW(6),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                INDEX idx_agent_events_session_seq (session_id, seq)
             ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
@@ -713,6 +738,40 @@ impl Database {
         let rows = db_retry!(
             sqlx::query_as::<_, ToolExecution>(
                 "SELECT id, session_id, message_id, tool_name, duration_ms, is_error, created_at FROM tool_executions WHERE session_id = ? ORDER BY created_at ASC"
+            )
+            .bind(session_id)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(rows)
+    }
+
+    // Agent Events
+    pub async fn save_agent_event(
+        &self,
+        session_id: &str,
+        event_type: &str,
+        payload: &str,
+        seq: u64,
+    ) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO agent_events (id, session_id, event_type, payload, seq) VALUES (?, ?, ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(session_id)
+            .bind(event_type)
+            .bind(payload)
+            .bind(seq)
+            .execute(&self.pool)
+        )?;
+        Ok(id)
+    }
+
+    pub async fn get_session_events(&self, session_id: &str) -> Result<Vec<AgentEventRecord>> {
+        let rows = db_retry!(
+            sqlx::query_as::<_, AgentEventRecord>(
+                "SELECT id, session_id, event_type, payload, seq, created_at FROM agent_events WHERE session_id = ? ORDER BY seq ASC"
             )
             .bind(session_id)
             .fetch_all(&self.pool)

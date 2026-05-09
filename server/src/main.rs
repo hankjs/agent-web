@@ -104,6 +104,7 @@ async fn main() -> Result<()> {
     let admin_api = Router::new()
         .route("/api/admin/sessions", get(admin::list_sessions))
         .route("/api/admin/sessions/{id}/replay", get(admin::session_replay))
+        .route("/api/admin/sessions/{id}/events", get(admin::session_events))
         .route("/api/admin/metrics/overview", get(admin::metrics_overview))
         .route("/api/admin/metrics/by-session/{id}", get(admin::metrics_by_session))
         .route("/api/admin/prompt-templates", post(admin::create_prompt_template))

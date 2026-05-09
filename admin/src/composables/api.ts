@@ -117,6 +117,15 @@ export interface Provider {
   created_at: string
 }
 
+export interface AgentEventRecord {
+  id: string
+  session_id: string
+  event_type: string
+  payload: string
+  seq: number
+  created_at: string
+}
+
 export const api = {
   login(username: string, password: string) {
     return fetch('/api/auth/login', {
@@ -136,6 +145,10 @@ export const api = {
     return request<{ messages: DbMessage[]; metrics: AgentMetric[]; tool_executions: ToolExecution[] }>(
       `/api/admin/sessions/${id}/replay`
     )
+  },
+
+  sessionEvents(id: string) {
+    return request<AgentEventRecord[]>(`/api/admin/sessions/${id}/events`)
   },
 
   metricsOverview() {

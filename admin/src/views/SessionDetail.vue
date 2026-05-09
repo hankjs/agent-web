@@ -126,7 +126,10 @@ const avgLatency = () => {
 <template>
   <div>
     <RouterLink to="/sessions" class="text-[12px] text-text-tertiary hover:text-text-secondary transition-colors">← Sessions</RouterLink>
-    <h1 class="text-lg font-semibold text-text-primary mt-2 mb-6">{{ sessionId.slice(0, 8) }}</h1>
+    <div class="flex items-center gap-3 mt-2 mb-6">
+      <h1 class="text-lg font-semibold text-text-primary">{{ sessionId.slice(0, 8) }}</h1>
+      <RouterLink :to="`/sessions/${sessionId}/timeline`" class="text-[12px] text-accent hover:text-accent-hover transition-colors">Timeline →</RouterLink>
+    </div>
 
     <div v-if="metrics.length" class="flex gap-8 mb-8 text-[12px]">
       <div><span class="text-text-tertiary">Tokens</span> <span class="ml-1.5 tabular-nums">{{ totalTokens().toLocaleString() }}</span></div>

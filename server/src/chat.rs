@@ -179,7 +179,17 @@ pub async fn chat_handler(
     let db_fwd = state.db.clone();
     let sid_fwd2 = session_id.clone();
     tokio::spawn(async move {
+        let mut seq: u64 = 0;
         while let Some(event) = event_rx.recv().await {
+            seq += 1;
+
+            // Persist event to agent_events table
+            let event_type = extract_event_type(&event);
+            if let Ok(payload) = serde_json::to_string(&event) {
+                let _ = db_fwd.save_agent_event(&sid_fwd2, event_type, &payload, seq).await;
+            }
+
+            // Keep existing metric/tool persistence for backward compatibility
             match &event {
                 AgentEvent::Metrics { input_tokens, output_tokens, latency_ms, model, provider } => {
                     let _ = db_fwd.save_agent_metric(
@@ -470,5 +480,22 @@ pub async fn stop_handler(
         StatusCode::OK
     } else {
         StatusCode::OK
+    }
+}
+
+fn extract_event_type(event: &AgentEvent) -> &'static str {
+    match event {
+        AgentEvent::TextDelta { .. } => "text_delta",
+        AgentEvent::ToolStart { .. } => "tool_start",
+        AgentEvent::ToolResult { .. } => "tool_result",
+        AgentEvent::TurnComplete => "turn_complete",
+        AgentEvent::Error { .. } => "error",
+        AgentEvent::Thinking { .. } => "thinking",
+        AgentEvent::WorkerSpawned { .. } => "worker_spawned",
+        AgentEvent::WorkerCompleted { .. } => "worker_completed",
+        AgentEvent::Verification { .. } => "verification",
+        AgentEvent::Metrics { .. } => "metrics",
+        AgentEvent::ToolMetrics { .. } => "tool_metrics",
+        AgentEvent::ProviderFallback { .. } => "provider_fallback",
     }
 }
