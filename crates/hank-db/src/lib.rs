@@ -38,7 +38,7 @@ pub struct Setting {
 impl Database {
     pub async fn new(database_url: &str) -> Result<Self> {
         let pool = MySqlPoolOptions::new()
-            .max_connections(5)
+            .max_connections(10)
             .connect(database_url)
             .await?;
 
@@ -47,7 +47,8 @@ impl Database {
                 id VARCHAR(36) PRIMARY KEY,
                 title VARCHAR(255) NOT NULL DEFAULT '',
                 provider VARCHAR(64) NOT NULL DEFAULT 'anthropic',
-                model VARCHAR(128) NOT NULL DEFAULT 'claude-sonnet-4-20250514',
+                model VARCHAR(128) NOT NULL DEFAULT '',
+                work_dir TEXT DEFAULT NULL,
                 created_at DATETIME NOT NULL DEFAULT NOW(),
                 updated_at DATETIME NOT NULL DEFAULT NOW()
             ) DEFAULT CHARSET=utf8mb4",
@@ -63,7 +64,8 @@ impl Database {
                 content MEDIUMTEXT NOT NULL,
                 created_at DATETIME(6) NOT NULL DEFAULT NOW(6),
                 seq BIGINT NOT NULL DEFAULT 0,
-                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                INDEX idx_messages_session_seq (session_id, seq, created_at)
             ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
@@ -184,11 +186,14 @@ impl Database {
             .execute(&self.pool)
             .await?;
 
+        Ok(())
+    }
+
+    pub async fn touch_session(&self, id: &str) -> Result<()> {
         sqlx::query("UPDATE sessions SET updated_at = NOW() WHERE id = ?")
-            .bind(session_id)
+            .bind(id)
             .execute(&self.pool)
             .await?;
-
         Ok(())
     }
 

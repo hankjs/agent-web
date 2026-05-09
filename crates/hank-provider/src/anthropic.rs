@@ -43,8 +43,7 @@ impl LlmProvider for AnthropicProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
         let url = format!("{}/v1/messages", self.base_url);
         let body = build_request_body(&req);
-        debug!("Sending request to Anthropic API: {url}");
-        debug!("Request body: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+        debug!("Sending request to Anthropic API: {url}, model={}", req.model);
 
         let response = self
             .client
@@ -147,9 +146,7 @@ async fn process_sse_stream(
 
         while let Some(pos) = buffer.find("\n\n") {
             let event_str = buffer[..pos].to_string();
-            buffer = buffer[pos + 2..].to_string();
-
-            debug!("SSE raw event: {event_str}");
+            buffer.drain(..pos + 2);
 
             if let Some(event) = parse_sse_event(&event_str) {
                 debug!("Parsed StreamEvent: {event:?}");
@@ -208,7 +205,11 @@ fn parse_sse_event(raw: &str) -> Option<StreamEvent> {
                 _ => None,
             }
         }
-        "content_block_stop" => Some(StreamEvent::ToolUseEnd),
+        "content_block_stop" => {
+            // Only emit ToolUseEnd — the session layer uses in_tool_block tracking
+            // to filter spurious events from text block stops
+            Some(StreamEvent::ToolUseEnd)
+        }
         "message_delta" => {
             let delta = parsed.get("delta")?;
             let stop_reason = delta.get("stop_reason")?.as_str()?;

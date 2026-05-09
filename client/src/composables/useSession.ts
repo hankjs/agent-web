@@ -1,6 +1,5 @@
 import { ref, readonly } from "vue";
-
-const API_BASE = "http://localhost:3000";
+import { API_BASE } from "../config";
 
 export interface Session {
   id: string;
@@ -32,24 +31,24 @@ async function login() {
   }
 }
 
-async function fetchSessions() {
+export async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
   await login();
-  const res = await fetch(`${API_BASE}/api/sessions`, {
-    headers: { Authorization: `Bearer ${token.value}` },
-  });
+  const headers = new Headers(options.headers);
+  headers.set("Authorization", `Bearer ${token.value}`);
+  return fetch(`${API_BASE}${path}`, { ...options, headers });
+}
+
+async function fetchSessions() {
+  const res = await authFetch("/api/sessions");
   if (res.ok) {
     sessions.value = await res.json();
   }
 }
 
 async function createSession(workDir?: string): Promise<Session | null> {
-  await login();
-  const res = await fetch(`${API_BASE}/api/sessions`, {
+  const res = await authFetch("/api/sessions", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token.value}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ work_dir: workDir || null }),
   });
   if (!res.ok) return null;
@@ -59,7 +58,6 @@ async function createSession(workDir?: string): Promise<Session | null> {
   view.value = "chat";
   return session;
 }
-// USEESSION_PART2
 
 function selectSession(session: Session) {
   currentSession.value = session;
@@ -67,11 +65,7 @@ function selectSession(session: Session) {
 }
 
 async function deleteSession(id: string) {
-  await login();
-  const res = await fetch(`${API_BASE}/api/sessions/${id}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${token.value}` },
-  });
+  const res = await authFetch(`/api/sessions/${id}`, { method: "DELETE" });
   if (res.ok) {
     sessions.value = sessions.value.filter((s) => s.id !== id);
     if (currentSession.value?.id === id) {

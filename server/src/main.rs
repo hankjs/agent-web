@@ -4,8 +4,15 @@ mod config;
 mod routes;
 
 use anyhow::Result;
-use axum::{routing::{get, post, put, delete}, Router};
-use config::Config;
+use axum::{
+    extract::State,
+    http::{HeaderMap, Request, StatusCode},
+    middleware::{self, Next},
+    response::Response,
+    routing::{delete, get, post, put},
+    Router,
+};
+use config::{Config, ProviderType};
 use hank_db::Database;
 use hank_provider::LlmProvider;
 use std::collections::HashMap;
@@ -25,10 +32,6 @@ impl AppState {
     pub fn get_provider(&self, name: &str) -> Option<Arc<dyn LlmProvider>> {
         self.providers.get(name).cloned()
     }
-
-    pub fn default_provider(&self) -> Option<Arc<dyn LlmProvider>> {
-        self.get_provider(&self.config.server.default_provider)
-    }
 }
 
 fn build_providers(config: &Config) -> HashMap<String, Arc<dyn LlmProvider>> {
@@ -38,25 +41,38 @@ fn build_providers(config: &Config) -> HashMap<String, Arc<dyn LlmProvider>> {
     let mut map: HashMap<String, Arc<dyn LlmProvider>> = HashMap::new();
 
     for p in &config.providers {
-        let provider: Arc<dyn LlmProvider> = match p.provider_type.as_str() {
-            "anthropic" => Arc::new(
+        let provider: Arc<dyn LlmProvider> = match p.provider_type {
+            ProviderType::Anthropic => Arc::new(
                 AnthropicProvider::new(p.api_key.clone()).with_base_url(p.base_url.clone()),
             ),
-            "openai" => Arc::new(
+            ProviderType::Openai => Arc::new(
                 OpenAiProvider::new(p.api_key.clone())
                     .with_base_url(p.base_url.clone())
                     .with_name(p.name.clone()),
             ),
-            other => {
-                tracing::warn!("Unknown provider type '{other}', skipping: {}", p.name);
-                continue;
-            }
         };
-        tracing::info!("Loaded provider: {} ({})", p.name, p.provider_type);
+        tracing::info!("Loaded provider: {} ({:?})", p.name, p.provider_type);
         map.insert(p.name.clone(), provider);
     }
 
     map
+}
+
+async fn auth_middleware(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    match token {
+        Some(t) if auth::verify_token(t, &state.jwt_secret).is_ok() => Ok(next.run(request).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
 }
 
 #[tokio::main]
@@ -80,9 +96,13 @@ async fn main() -> Result<()> {
         config: config.clone(),
     });
 
-    let app = Router::new()
+    // Public routes (no auth required)
+    let public = Router::new()
         .route("/api/health", get(routes::health))
-        .route("/api/auth/login", post(routes::login))
+        .route("/api/auth/login", post(routes::login));
+
+    // Protected routes (auth required)
+    let protected = Router::new()
         .route("/api/sessions", post(routes::create_session))
         .route("/api/sessions", get(routes::list_sessions))
         .route("/api/sessions/{id}", get(routes::get_session))
@@ -92,6 +112,10 @@ async fn main() -> Result<()> {
         .route("/api/providers", get(routes::list_providers))
         .route("/api/sessions/{id}/chat", post(chat::chat_handler))
         .route("/api/fs/list", get(routes::list_directory))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+
+    let app = public
+        .merge(protected)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

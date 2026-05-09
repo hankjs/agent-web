@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, nextTick, onMounted, computed } from "vue";
 import { marked } from "marked";
-import { useSession } from "../composables/useSession";
+import DOMPurify from "dompurify";
+import { useSession, authFetch } from "../composables/useSession";
+import { API_BASE } from "../config";
 
 const props = defineProps<{
   sessionId: string;
@@ -34,9 +36,6 @@ const input = ref("");
 const isConnected = ref(false);
 const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
-const token = ref("");
-
-const API_BASE = "http://localhost:3000";
 
 const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
 
@@ -66,31 +65,26 @@ function toolSummary(tc: ToolCall): string {
 }
 
 function renderMarkdown(text: string): string {
-  return marked.parse(text, { async: false }) as string;
+  const raw = marked.parse(text, { async: false }) as string;
+  return DOMPurify.sanitize(raw);
 }
-// CHAT_PART2_PLACEHOLDER
 
 async function connect() {
   await login();
-  token.value = sessionToken.value;
-  isConnected.value = !!token.value;
+  isConnected.value = !!sessionToken.value;
 }
 
 async function loadHistory() {
   try {
-    const res = await fetch(`${API_BASE}/api/sessions/${props.sessionId}/messages`, {
-      headers: { Authorization: `Bearer ${token.value}` },
-    });
+    const res = await authFetch(`/api/sessions/${props.sessionId}/messages`);
     if (!res.ok) return;
     const messages = await res.json();
     for (const msg of messages) {
       try {
         const content = JSON.parse(msg.content);
         if (msg.role === "user") {
-          // User messages: could be text or tool_result
           for (const block of content) {
             if (block.type === "tool_result") {
-              // Find matching tool block and fill in result
               for (let i = blocks.value.length - 1; i >= 0; i--) {
                 const b = blocks.value[i];
                 if (b.kind === "tool" && b.tool.id === block.tool_use_id) {
@@ -105,7 +99,6 @@ async function loadHistory() {
             }
           }
         } else {
-          // Assistant messages: text or tool_use
           for (const block of content) {
             if (block.type === "text" && block.text) {
               blocks.value.push({ kind: "text", content: block.text });
@@ -187,14 +180,11 @@ async function send() {
   isStreaming.value = true;
 
   try {
-    const res = await fetch(
-      `${API_BASE}/api/sessions/${props.sessionId}/chat`,
+    const res = await authFetch(
+      `/api/sessions/${props.sessionId}/chat`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token.value}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content }),
       }
     );
@@ -221,7 +211,7 @@ async function send() {
         if (line.startsWith("data: ")) {
           const json = line.slice(6);
           if (json) {
-            try { handleServerEvent(JSON.parse(json)); } catch {}
+            try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
           }
         }
       }
@@ -230,7 +220,7 @@ async function send() {
     if (buffer.startsWith("data: ")) {
       const json = buffer.slice(6);
       if (json) {
-        try { handleServerEvent(JSON.parse(json)); } catch {}
+        try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
       }
     }
   } catch (e: any) {
@@ -247,18 +237,12 @@ onMounted(async () => {
 
 <template>
   <div class="flex flex-col h-full">
-    <!-- Context bar -->
     <div class="context-bar">
       <button class="back-btn" @click="emit('back')" aria-label="Back to sessions">&larr;</button>
       <span v-if="displayDir" class="context-dir">{{ displayDir }}</span>
     </div>
 
-    <!-- Stream area -->
-    <div
-      v-if="!isEmpty"
-      ref="messagesEl"
-      class="flex-1 overflow-y-auto"
-    >
+    <div v-if="!isEmpty" ref="messagesEl" class="flex-1 overflow-y-auto">
       <div class="max-w-[720px] mx-auto px-6 py-8 space-y-6">
         <template v-for="(block, i) in blocks" :key="i">
           <div v-if="block.kind === 'user'" class="user-block">
@@ -286,10 +270,8 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- Empty state spacer -->
     <div v-else class="flex-1"></div>
 
-    <!-- Input -->
     <div class="input-area" :class="isEmpty ? 'input-centered' : 'input-docked'">
       <div class="max-w-[720px] mx-auto w-full px-6">
         <input
@@ -304,7 +286,7 @@ onMounted(async () => {
     </div>
   </div>
 </template>
-<!-- CHAT_STYLE_PLACEHOLDER -->
+
 <style scoped>
 .context-bar {
   display: flex;
@@ -314,7 +296,6 @@ onMounted(async () => {
   border-bottom: 1px solid var(--color-border-subtle);
   min-height: 40px;
 }
-
 .back-btn {
   background: none;
   border: none;
@@ -325,65 +306,35 @@ onMounted(async () => {
   border-radius: 4px;
   transition: color 0.12s;
 }
-
-.back-btn:hover {
-  color: var(--color-text-primary);
-}
-
+.back-btn:hover { color: var(--color-text-primary); }
 .context-dir {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--color-text-muted);
 }
-
 .user-block {
   padding-top: 8px;
   padding-bottom: 4px;
   border-top: 1px solid var(--color-border);
 }
-
-.agent-block {
-  padding: 4px 0;
-}
-
+.agent-block { padding: 4px 0; }
 .markdown-body {
   font-size: 14px;
   line-height: 1.7;
   color: var(--color-text-secondary);
 }
-
-.markdown-body :deep(h1),
-.markdown-body :deep(h2),
-.markdown-body :deep(h3),
-.markdown-body :deep(h4) {
+.markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3), .markdown-body :deep(h4) {
   color: var(--color-text-primary);
   font-weight: 600;
   margin: 1em 0 0.5em;
 }
-
 .markdown-body :deep(h1) { font-size: 1.4em; }
 .markdown-body :deep(h2) { font-size: 1.2em; }
 .markdown-body :deep(h3) { font-size: 1.05em; }
-
-.markdown-body :deep(p) {
-  margin: 0.5em 0;
-}
-
-.markdown-body :deep(ul),
-.markdown-body :deep(ol) {
-  padding-left: 1.5em;
-  margin: 0.5em 0;
-}
-
-.markdown-body :deep(li) {
-  margin: 0.25em 0;
-}
-
-.markdown-body :deep(strong) {
-  color: var(--color-text-primary);
-  font-weight: 600;
-}
-
+.markdown-body :deep(p) { margin: 0.5em 0; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { padding-left: 1.5em; margin: 0.5em 0; }
+.markdown-body :deep(li) { margin: 0.25em 0; }
+.markdown-body :deep(strong) { color: var(--color-text-primary); font-weight: 600; }
 .markdown-body :deep(code) {
   font-family: var(--font-mono);
   font-size: 0.9em;
@@ -391,7 +342,6 @@ onMounted(async () => {
   padding: 0.15em 0.4em;
   border-radius: 3px;
 }
-
 .markdown-body :deep(pre) {
   background: var(--color-surface-2, rgba(255, 255, 255, 0.06));
   padding: 12px 16px;
@@ -399,33 +349,11 @@ onMounted(async () => {
   overflow-x: auto;
   margin: 0.75em 0;
 }
-
-.markdown-body :deep(pre code) {
-  background: none;
-  padding: 0;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.markdown-body :deep(hr) {
-  border: none;
-  border-top: 1px solid var(--color-border);
-  margin: 1.5em 0;
-}
-
-.markdown-body :deep(a) {
-  color: var(--color-accent, #3b82f6);
-  text-decoration: none;
-}
-
-.markdown-body :deep(a:hover) {
-  text-decoration: underline;
-}
-
-.tool-block {
-  margin: 4px 0;
-}
-
+.markdown-body :deep(pre code) { background: none; padding: 0; font-size: 12px; line-height: 1.5; }
+.markdown-body :deep(hr) { border: none; border-top: 1px solid var(--color-border); margin: 1.5em 0; }
+.markdown-body :deep(a) { color: var(--color-accent, #3b82f6); text-decoration: none; }
+.markdown-body :deep(a:hover) { text-decoration: underline; }
+.tool-block { margin: 4px 0; }
 .tool-header {
   display: flex;
   align-items: center;
@@ -438,72 +366,19 @@ onMounted(async () => {
   background: none;
   transition: opacity 0.15s ease-out;
 }
-
 .tool-header:hover { opacity: 0.8; }
-
-.tool-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-success);
-  flex-shrink: 0;
-}
-
-.tool-indicator.active {
-  background: var(--color-accent);
-  animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
+.tool-indicator { width: 6px; height: 6px; border-radius: 50%; background: var(--color-success); flex-shrink: 0; }
+.tool-indicator.active { background: var(--color-accent); animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 .tool-error .tool-indicator { background: var(--color-error); }
-
-.tool-name {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--color-text-muted);
-  flex-shrink: 0;
-}
-
-.tool-summary {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--color-text-muted);
-  opacity: 0.6;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool-body {
-  padding: 8px 0 8px 14px;
-  border-left: 1px solid var(--color-border-subtle);
-  margin-left: 2px;
-}
-
-.tool-preview {
-  padding: 4px 0 4px 14px;
-  border-left: 1px solid var(--color-border-subtle);
-  margin-left: 2px;
-  cursor: pointer;
-}
-
-.tool-content {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--color-text-muted);
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 200px;
-  overflow-y: auto;
-  margin: 4px 0;
-}
-
+.tool-name { font-family: var(--font-mono); font-size: 12px; color: var(--color-text-muted); flex-shrink: 0; }
+.tool-summary { font-family: var(--font-mono); font-size: 12px; color: var(--color-text-muted); opacity: 0.6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-body { padding: 8px 0 8px 14px; border-left: 1px solid var(--color-border-subtle); margin-left: 2px; }
+.tool-preview { padding: 4px 0 4px 14px; border-left: 1px solid var(--color-border-subtle); margin-left: 2px; cursor: pointer; }
+.tool-content { font-family: var(--font-mono); font-size: 11px; line-height: 1.6; color: var(--color-text-muted); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; margin: 4px 0; }
 .tool-content-error { color: var(--color-error); }
-
 .input-area { padding: 24px 0 32px; }
 .input-centered { display: flex; align-items: center; justify-content: center; }
 .input-docked { border-top: 1px solid var(--color-border-subtle); }
-
 .input-field {
   width: 100%;
   background: var(--color-surface-1);
@@ -515,26 +390,9 @@ onMounted(async () => {
   outline: none;
   transition: border-color 0.2s ease-out, box-shadow 0.2s ease-out;
 }
-
-.input-field:focus {
-  border-color: var(--color-accent-dim);
-  box-shadow: 0 0 0 3px oklch(0.72 0.14 55 / 0.08);
-}
-
+.input-field:focus { border-color: var(--color-accent-dim); box-shadow: 0 0 0 3px oklch(0.72 0.14 55 / 0.08); }
 .input-field:disabled { opacity: 0.4; cursor: not-allowed; }
 .input-field::placeholder { color: var(--color-text-muted); }
-
-.streaming-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-accent);
-  animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
+.streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 </style>
-

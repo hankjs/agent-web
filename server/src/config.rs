@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
+pub const DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
@@ -17,28 +19,34 @@ pub struct ServerConfig {
     pub database_url: String,
     #[serde(default = "default_provider")]
     pub default_provider: String,
+    #[serde(default)]
+    pub allowed_dirs: Vec<String>,
 }
 
 fn default_provider() -> String {
     "anthropic".to_string()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderType {
+    Anthropic,
+    Openai,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
     pub name: String,
     #[serde(rename = "type")]
-    pub provider_type: String,
+    pub provider_type: ProviderType,
     pub api_key: String,
     pub base_url: String,
-    /// 该 provider 的默认模型别名
     pub default_model: String,
-    /// key = 别名 (如 "sonnet"), value = 实际 model ID (如 "claude-sonnet-4-20250514")
     #[serde(default)]
     pub models: HashMap<String, String>,
 }
 
 impl ProviderConfig {
-    /// 根据别名或原始 model ID 解析出实际的 model ID
     pub fn resolve_model(&self, name_or_id: &str) -> String {
         self.models
             .get(name_or_id)
@@ -46,7 +54,6 @@ impl ProviderConfig {
             .unwrap_or_else(|| name_or_id.to_string())
     }
 
-    /// 解析该 provider 的默认模型为实际 model ID
     pub fn resolve_default_model(&self) -> String {
         self.resolve_model(&self.default_model)
     }
@@ -54,7 +61,6 @@ impl ProviderConfig {
 
 impl Config {
     pub fn load() -> Result<Self> {
-        // Try config.toml in current dir, then fallback paths
         let candidates = ["config.toml", "config.local.toml"];
         for path in &candidates {
             if Path::new(path).exists() {
@@ -66,7 +72,6 @@ impl Config {
             }
         }
 
-        // Fallback: try CONFIG_PATH env var
         if let Ok(path) = std::env::var("CONFIG_PATH") {
             let content =
                 std::fs::read_to_string(&path).with_context(|| format!("Failed to read {path}"))?;
@@ -80,9 +85,5 @@ impl Config {
 
     pub fn find_provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.iter().find(|p| p.name == name)
-    }
-
-    pub fn default_provider(&self) -> Option<&ProviderConfig> {
-        self.find_provider(&self.server.default_provider)
     }
 }

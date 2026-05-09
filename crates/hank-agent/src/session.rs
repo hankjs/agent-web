@@ -8,7 +8,9 @@ use hank_web_tools::{Tool, ToolOutput};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
+
+const MAX_ITERATIONS: usize = 25;
 
 pub struct AgentSession {
     provider: Arc<dyn LlmProvider>,
@@ -16,6 +18,7 @@ pub struct AgentSession {
     messages: Vec<Message>,
     system_prompt: String,
     model: String,
+    tool_definitions: Vec<ToolDefinition>,
 }
 
 impl AgentSession {
@@ -25,12 +28,21 @@ impl AgentSession {
         model: String,
         system_prompt: String,
     ) -> Self {
+        let tool_definitions = tools
+            .iter()
+            .map(|t| ToolDefinition {
+                name: t.name().to_string(),
+                description: t.description().to_string(),
+                input_schema: t.input_schema(),
+            })
+            .collect();
         Self {
             provider,
             tools,
             messages: Vec::new(),
             system_prompt,
             model,
+            tool_definitions,
         }
     }
 
@@ -48,22 +60,21 @@ impl AgentSession {
         user_message: String,
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Result<()> {
-        // Add user message
         self.messages.push(Message {
             role: Role::User,
             content: vec![ContentBlock::Text { text: user_message }],
         });
 
-        loop {
+        for iteration in 0..MAX_ITERATIONS {
             let req = CompletionRequest {
                 model: self.model.clone(),
                 system: Some(self.system_prompt.clone()),
                 messages: self.messages.clone(),
-                tools: self.tool_definitions(),
+                tools: self.tool_definitions.clone(),
                 max_tokens: 4096,
             };
 
-            debug!("Agent loop iteration: model={}, messages={}, tools={}", req.model, req.messages.len(), req.tools.len());
+            debug!("Agent loop iteration {iteration}: model={}, messages={}", req.model, req.messages.len());
 
             let mut stream = self.provider.stream(req).await?;
 
@@ -73,6 +84,7 @@ impl AgentSession {
             let mut current_tool_name = String::new();
             let mut current_tool_input = String::new();
             let mut stop_reason = StopReason::EndTurn;
+            let mut in_tool_block = false;
 
             while let Some(event) = stream.next().await {
                 match event {
@@ -82,7 +94,6 @@ impl AgentSession {
                     }
                     Ok(StreamEvent::ToolUseStart { id, name }) => {
                         debug!("ToolUseStart: id={id}, name={name}");
-                        // Flush any accumulated text
                         if !current_text.is_empty() {
                             assistant_content.push(ContentBlock::Text {
                                 text: std::mem::take(&mut current_text),
@@ -91,15 +102,17 @@ impl AgentSession {
                         current_tool_id = id;
                         current_tool_name = name;
                         current_tool_input.clear();
+                        in_tool_block = true;
                     }
                     Ok(StreamEvent::ToolUseInputDelta(json)) => {
                         current_tool_input.push_str(&json);
                     }
                     Ok(StreamEvent::ToolUseEnd) => {
-                        debug!("ToolUseEnd: current_tool_id={current_tool_id}, current_tool_name={current_tool_name}");
-                        if current_tool_id.is_empty() {
+                        if !in_tool_block {
                             continue;
                         }
+                        in_tool_block = false;
+                        debug!("ToolUseEnd: id={current_tool_id}, name={current_tool_name}");
                         let input: serde_json::Value =
                             serde_json::from_str(&current_tool_input).unwrap_or_default();
                         assistant_content.push(ContentBlock::ToolUse {
@@ -136,7 +149,6 @@ impl AgentSession {
                 });
             }
 
-            // Save assistant message
             self.messages.push(Message {
                 role: Role::Assistant,
                 content: assistant_content.clone(),
@@ -149,7 +161,7 @@ impl AgentSession {
                 for block in &assistant_content {
                     if let ContentBlock::ToolUse { id, name, input } = block {
                         let input_str = serde_json::to_string(input).unwrap_or_default();
-                        debug!("Executing tool: name={name}, id={id}, input={input}");
+                        debug!("Executing tool: name={name}, id={id}");
                         let _ = event_tx
                             .send(AgentEvent::ToolStart {
                                 id: id.clone(),
@@ -158,7 +170,7 @@ impl AgentSession {
                             })
                             .await;
                         let output = self.execute_tool(name, input.clone()).await;
-                        debug!("Tool result: id={id}, is_error={}, content_len={}", output.is_error, output.content.len());
+                        debug!("Tool result: id={id}, is_error={}", output.is_error);
                         let _ = event_tx
                             .send(AgentEvent::ToolResult {
                                 id: id.clone(),
@@ -183,20 +195,14 @@ impl AgentSession {
                 let _ = event_tx.send(AgentEvent::TurnComplete).await;
                 break;
             }
+
+            if iteration == MAX_ITERATIONS - 1 {
+                warn!("Agent loop reached max iterations ({MAX_ITERATIONS})");
+                let _ = event_tx.send(AgentEvent::TurnComplete).await;
+            }
         }
 
         Ok(())
-    }
-
-    fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools
-            .iter()
-            .map(|t| ToolDefinition {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                input_schema: t.input_schema(),
-            })
-            .collect()
     }
 
     async fn execute_tool(&self, name: &str, input: serde_json::Value) -> ToolOutput {

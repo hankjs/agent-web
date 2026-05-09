@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
-
-const API_BASE = "http://localhost:3000";
+import { ref } from "vue";
+import { authFetch } from "../composables/useSession";
 
 const model = defineModel<string>({ default: "" });
 
@@ -16,10 +15,8 @@ async function fetchDir(path?: string) {
   loading.value = true;
   error.value = "";
   try {
-    const url = path
-      ? `${API_BASE}/api/fs/list?path=${encodeURIComponent(path)}`
-      : `${API_BASE}/api/fs/list`;
-    const res = await fetch(url);
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    const res = await authFetch(`/api/fs/list${query}`);
     const data = await res.json();
     if (!res.ok) {
       error.value = data.error || "Failed to list directory";

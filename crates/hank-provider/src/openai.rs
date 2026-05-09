@@ -206,7 +206,7 @@ async fn process_sse_stream(
 
         while let Some(pos) = buffer.find("\n\n") {
             let event_str = buffer[..pos].to_string();
-            buffer = buffer[pos + 2..].to_string();
+            buffer.drain(..pos + 2);
 
             for line in event_str.lines() {
                 if let Some(data) = line.strip_prefix("data: ") {

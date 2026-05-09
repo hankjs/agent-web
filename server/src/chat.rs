@@ -1,7 +1,7 @@
-use crate::{auth, AppState};
+use crate::AppState;
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::error;
 
+use crate::config::DEFAULT_MODEL;
+
 #[derive(Deserialize)]
 pub struct ChatRequest {
     pub content: String,
@@ -27,18 +29,8 @@ pub struct ChatRequest {
 pub async fn chat_handler(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-    headers: HeaderMap,
     axum::Json(body): axum::Json<ChatRequest>,
 ) -> impl IntoResponse {
-    // Authenticate via Bearer token
-    let token = match extract_bearer(&headers) {
-        Some(t) => t,
-        None => return StatusCode::UNAUTHORIZED.into_response(),
-    };
-    if auth::verify_token(token, &state.jwt_secret).is_err() {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-
     // Resolve provider
     let provider_key = body
         .provider
@@ -56,13 +48,13 @@ pub async fn chat_handler(
         }
     };
 
-    // Resolve model
+    // Resolve model from config
     let provider_config = state.config.find_provider(provider_key);
     let model = match (body.model, provider_config) {
         (Some(m), Some(pc)) => pc.resolve_model(&m),
         (Some(m), None) => m,
         (None, Some(pc)) => pc.resolve_default_model(),
-        (None, None) => "claude-sonnet-4-20250514".to_string(),
+        (None, None) => DEFAULT_MODEL.to_string(),
     };
 
     // Look up session for work_dir
@@ -117,16 +109,21 @@ pub async fn chat_handler(
                 .await;
         }
 
-        // Save new messages to DB
-        let base_time = chrono::Utc::now();
-        for (i, msg) in session.messages().iter().skip(history_len).enumerate() {
-            let role = match msg.role {
-                hank_provider::Role::User => "user",
-                hank_provider::Role::Assistant => "assistant",
-            };
-            let content_val = serde_json::to_value(&msg.content).unwrap_or_default();
-            let ts = base_time + chrono::Duration::microseconds(i as i64);
-            let _ = db.save_message(&sid, role, &content_val, ts).await;
+        // Batch save new messages to DB
+        let new_messages: Vec<_> = session.messages().iter().skip(history_len).collect();
+        if !new_messages.is_empty() {
+            let base_time = chrono::Utc::now();
+            for (i, msg) in new_messages.iter().enumerate() {
+                let role = match msg.role {
+                    hank_provider::Role::User => "user",
+                    hank_provider::Role::Assistant => "assistant",
+                };
+                let content_val = serde_json::to_value(&msg.content).unwrap_or_default();
+                let ts = base_time + chrono::Duration::microseconds(i as i64);
+                let _ = db.save_message(&sid, role, &content_val, ts).await;
+            }
+            // Single updated_at bump after all messages saved
+            let _ = db.touch_session(&sid).await;
         }
 
         // Auto-set title from first user message
@@ -137,7 +134,9 @@ pub async fn chat_handler(
     });
 
     let stream = make_sse_stream(event_rx);
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 fn make_sse_stream(
@@ -147,12 +146,4 @@ fn make_sse_stream(
         let json = serde_json::to_string(&event).unwrap_or_default();
         Ok(Event::default().data(json))
     })
-}
-
-fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("authorization")?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
 }
