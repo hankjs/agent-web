@@ -1,25 +1,30 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, computed } from "vue";
+import { ref, nextTick, onMounted, computed, watch } from "vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { useSession, authFetch } from "../composables/useSession";
 import { API_BASE } from "../config";
+import { useMessageTree } from "../composables/useMessageTree";
 import FolderPicker from "./FolderPicker.vue";
 
 const props = defineProps<{
   sessionId: string;
   workDir?: string;
   title?: string;
+  showOutlineToggle?: boolean;
 }>();
 
 const emit = defineEmits<{
   back: [];
+  toggleOutline: [];
 }>();
 
 const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir } = useSession();
+const { fetchTree, switchBranch, setActiveLeafId, activeLeafId, getSiblings, findLeafFromNode, hasBranching, treeNodes, scrollTargetId, clearScrollTarget } = useMessageTree();
 
 const isEditingTitle = ref(false);
 const editTitle = ref("");
+const titleInputRef = ref<HTMLInputElement | null>(null);
 const isEditingWorkDir = ref(false);
 const editWorkDir = ref("");
 
@@ -34,13 +39,13 @@ interface ToolCall {
 }
 
 type Block =
-  | { kind: "user"; content: string }
+  | { kind: "user"; content: string; messageId?: string; parentId?: string | null }
   | { kind: "text"; content: string }
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall };
 
 type RenderItem =
-  | { kind: "user"; content: string }
+  | { kind: "user"; content: string; messageId?: string; parentId?: string | null }
   | { kind: "text"; content: string }
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall }
@@ -53,6 +58,10 @@ const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+// Editing state
+const editingMessageId = ref<string | null>(null);
+const editingContent = ref("");
 
 const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
 
@@ -137,11 +146,13 @@ async function connect() {
   isConnected.value = !!sessionToken.value;
 }
 
-async function loadHistory() {
+async function loadHistory(leafId?: string) {
   try {
-    const res = await authFetch(`/api/sessions/${props.sessionId}/messages`);
+    const query = leafId ? `?leaf_id=${leafId}` : "";
+    const res = await authFetch(`/api/sessions/${props.sessionId}/messages${query}`);
     if (!res.ok) return;
     const messages = await res.json();
+    blocks.value = [];
     for (const msg of messages) {
       try {
         const content = JSON.parse(msg.content);
@@ -158,7 +169,7 @@ async function loadHistory() {
                 }
               }
             } else if (block.text) {
-              blocks.value.push({ kind: "user", content: block.text });
+              blocks.value.push({ kind: "user", content: block.text, messageId: msg.id, parentId: msg.parent_id });
             }
           }
         } else {
@@ -182,6 +193,10 @@ async function loadHistory() {
           }
         }
       } catch { /* skip malformed */ }
+    }
+    // Set active leaf from last message
+    if (messages.length > 0) {
+      setActiveLeafId(messages[messages.length - 1].id);
     }
   } catch { /* offline */ }
 }
@@ -224,6 +239,8 @@ function handleServerEvent(event: any) {
     }
     case "turn_complete":
       isStreaming.value = false;
+      // Refresh tree after completion
+      fetchTree(props.sessionId);
       break;
     case "error":
       blocks.value.push({ kind: "error", content: event.message });
@@ -266,6 +283,7 @@ function autoResize() {
 function startEditTitle() {
   editTitle.value = props.title || "";
   isEditingTitle.value = true;
+  nextTick(() => titleInputRef.value?.focus());
 }
 
 function cancelEditTitle() {
@@ -297,7 +315,53 @@ async function confirmEditWorkDir() {
   }
 }
 
-async function send() {
+// Message editing
+function startEditMessage(item: RenderItem) {
+  if (item.kind !== "user" || !item.messageId) return;
+  editingMessageId.value = item.messageId;
+  editingContent.value = item.content;
+}
+
+function cancelEditMessage() {
+  editingMessageId.value = null;
+  editingContent.value = "";
+}
+
+async function submitEditMessage() {
+  if (!editingContent.value.trim() || !editingMessageId.value) return;
+  const item = renderItems.value.find(
+    (i) => i.kind === "user" && i.messageId === editingMessageId.value
+  );
+  if (!item || item.kind !== "user") return;
+
+  const content = editingContent.value.trim();
+  const parentId = item.parentId || undefined;
+
+  editingMessageId.value = null;
+  editingContent.value = "";
+
+  await sendWithParent(content, parentId);
+}
+
+// Branch navigation
+function getBranchSiblings(messageId: string) {
+  return getSiblings(messageId);
+}
+
+function getBranchIndex(messageId: string): { current: number; total: number } {
+  const siblings = getSiblings(messageId).filter((s) => s.role === "user");
+  const idx = siblings.findIndex((s) => s.id === messageId);
+  return { current: idx, total: siblings.length };
+}
+
+async function switchToBranch(siblingId: string) {
+  const leafId = findLeafFromNode(siblingId);
+  await switchBranch(props.sessionId, leafId);
+  await loadHistory(leafId);
+  await fetchTree(props.sessionId);
+}
+
+async function send(parentIdOverride?: string) {
   if (!input.value.trim() || !isConnected.value || isStreaming.value) return;
 
   const content = input.value.trim();
@@ -309,13 +373,107 @@ async function send() {
   });
   isStreaming.value = true;
 
+  const body: any = { content };
+  if (parentIdOverride) {
+    body.parent_id = parentIdOverride;
+  }
+
   try {
     const res = await authFetch(
       `/api/sessions/${props.sessionId}/chat`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify(body),
+      }
+    );
+
+    if (!res.ok) {
+      blocks.value.push({ kind: "error", content: `Request failed: ${res.status}` });
+      isStreaming.value = false;
+      return;
+    }
+
+    const reader = res.body!.getReader();
+    activeReader = reader;
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const json = line.slice(6);
+          if (json) {
+            try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
+          }
+        }
+      }
+    }
+
+    if (buffer.startsWith("data: ")) {
+      const json = buffer.slice(6);
+      if (json) {
+        try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
+      }
+    }
+  } catch (e: any) {
+    if (e.name === "AbortError") return;
+    blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
+    isStreaming.value = false;
+  } finally {
+    activeReader = null;
+  }
+}
+
+async function sendWithParent(content: string, parentId?: string) {
+  if (!content.trim() || !isConnected.value || isStreaming.value) return;
+
+  // Truncate blocks to show only up to the branch point
+  if (parentId) {
+    // Find the block with this parentId's message and truncate after it
+    const parentIdx = blocks.value.findIndex(
+      (b) => b.kind === "user" && b.messageId === parentId
+    );
+    // Keep blocks up to (but not including) the sibling message
+    // Actually we want to keep everything up to the parent message's response
+    // Find the user block that has parentId as its parentId
+    let cutIdx = -1;
+    for (let i = 0; i < blocks.value.length; i++) {
+      const b = blocks.value[i];
+      if (b.kind === "user" && b.parentId === parentId) {
+        cutIdx = i;
+        break;
+      }
+    }
+    if (cutIdx >= 0) {
+      blocks.value.splice(cutIdx);
+    }
+  }
+
+  blocks.value.push({ kind: "user", content });
+  isStreaming.value = true;
+
+  nextTick(() => {
+    messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
+  });
+
+  const body: any = { content };
+  if (parentId) body.parent_id = parentId;
+
+  try {
+    const res = await authFetch(
+      `/api/sessions/${props.sessionId}/chat`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       }
     );
 
@@ -485,10 +643,42 @@ async function resend() {
 onMounted(async () => {
   await connect();
   await loadHistory();
+  await fetchTree(props.sessionId);
   nextTick(() => {
     messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
   });
 });
+
+// Watch for external branch switches (from outline panel)
+let internalLeafChange = false;
+watch(activeLeafId, async (newLeaf, oldLeaf) => {
+  if (internalLeafChange) {
+    internalLeafChange = false;
+    return;
+  }
+  if (newLeaf && newLeaf !== oldLeaf && !isStreaming.value) {
+    await loadHistory(newLeaf);
+    nextTick(() => {
+      scrollToMessageId(scrollTargetId.value);
+    });
+  }
+});
+
+// Watch for scroll requests from outline panel
+watch(scrollTargetId, (id) => {
+  if (id) {
+    nextTick(() => scrollToMessageId(id));
+  }
+});
+
+function scrollToMessageId(id: string | null) {
+  if (!id) return;
+  clearScrollTarget();
+  const el = messagesEl.value?.querySelector(`[data-message-id="${id}"]`);
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
 </script>
 
 <template>
@@ -497,11 +687,11 @@ onMounted(async () => {
       <button class="back-btn" @click="emit('back')" aria-label="Back to sessions">&larr;</button>
       <template v-if="isEditingTitle">
         <input
+          ref="titleInputRef"
           v-model="editTitle"
           class="title-input"
           @keydown.enter="confirmEditTitle"
           @keydown.escape="cancelEditTitle"
-          autofocus
         />
         <button class="title-action-btn confirm" @click="confirmEditTitle" aria-label="Confirm title">&#10003;</button>
         <button class="title-action-btn cancel" @click="cancelEditTitle" aria-label="Cancel edit">&#10005;</button>
@@ -515,13 +705,68 @@ onMounted(async () => {
         </div>
       </template>
       <span v-else-if="displayDir && !isEditingTitle" class="context-dir" @click="startEditWorkDir">{{ displayDir }}</span>
+      <button
+        v-if="showOutlineToggle"
+        class="outline-toggle-btn"
+        @click="emit('toggleOutline')"
+        aria-label="Toggle outline"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+          <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+        </svg>
+      </button>
     </div>
 
     <div v-if="!isEmpty" ref="messagesEl" class="flex-1 overflow-y-auto">
       <div class="max-w-[720px] mx-auto px-6 py-8 space-y-6">
         <template v-for="(item, idx) in renderItems" :key="idx">
-          <div v-if="item.kind === 'user'" class="user-block">
-            <pre class="whitespace-pre-wrap text-[15px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ item.content }}</pre>
+          <div v-if="item.kind === 'user'" class="user-block" :data-message-id="item.messageId">
+            <!-- Branch navigation -->
+            <div v-if="item.messageId && getBranchIndex(item.messageId).total > 1" class="branch-nav">
+              <button
+                class="branch-arrow"
+                :disabled="getBranchIndex(item.messageId).current === 0"
+                @click="switchToBranch(getBranchSiblings(item.messageId!).filter(s => s.role === 'user')[getBranchIndex(item.messageId!).current - 1].id)"
+                aria-label="Previous branch"
+              >&lsaquo;</button>
+              <span class="branch-indicator">{{ getBranchIndex(item.messageId).current + 1 }}/{{ getBranchIndex(item.messageId).total }}</span>
+              <button
+                class="branch-arrow"
+                :disabled="getBranchIndex(item.messageId).current === getBranchIndex(item.messageId).total - 1"
+                @click="switchToBranch(getBranchSiblings(item.messageId!).filter(s => s.role === 'user')[getBranchIndex(item.messageId!).current + 1].id)"
+                aria-label="Next branch"
+              >&rsaquo;</button>
+            </div>
+            <!-- Edit mode -->
+            <div v-if="editingMessageId === item.messageId" class="edit-inline">
+              <textarea
+                v-model="editingContent"
+                class="edit-textarea"
+                @keydown.enter.exact.prevent="submitEditMessage"
+                @keydown.escape="cancelEditMessage"
+                rows="3"
+              ></textarea>
+              <div class="edit-actions">
+                <button class="edit-submit" @click="submitEditMessage">Submit</button>
+                <button class="edit-cancel" @click="cancelEditMessage">Cancel</button>
+              </div>
+            </div>
+            <!-- Normal display -->
+            <div v-else class="user-content-row">
+              <pre class="whitespace-pre-wrap text-[15px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ item.content }}</pre>
+              <button
+                v-if="!isStreaming"
+                class="edit-btn"
+                @click="startEditMessage(item)"
+                aria-label="Edit message"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </button>
+            </div>
           </div>
           <div v-else-if="item.kind === 'text'" class="agent-block">
             <div class="markdown-body" v-html="renderMarkdown(item.content)"></div>
@@ -842,4 +1087,92 @@ onMounted(async () => {
 .streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 .scroll-spacer { min-height: 60vh; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.user-content-row { display: flex; align-items: flex-start; gap: 8px; position: relative; }
+.user-content-row pre { flex: 1; min-width: 0; }
+.edit-btn {
+  opacity: 0;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: opacity 0.15s, color 0.15s;
+  margin-top: 2px;
+}
+.user-block:hover .edit-btn { opacity: 1; }
+.edit-btn:hover { color: var(--color-text-primary); }
+.edit-inline { margin-top: 4px; }
+.edit-textarea {
+  width: 100%;
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--color-text-primary);
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+  line-height: 1.5;
+}
+.edit-textarea:focus { border-color: var(--color-accent-dim); }
+.edit-actions { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
+.edit-submit {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  border: none;
+  border-radius: 4px;
+  background: var(--color-text-primary);
+  color: var(--color-surface-0, #1a1a1a);
+  cursor: pointer;
+}
+.edit-submit:hover { opacity: 0.85; }
+.edit-cancel {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.edit-cancel:hover { color: var(--color-text-primary); }
+.branch-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.branch-arrow {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.branch-arrow:hover:not(:disabled) { color: var(--color-text-primary); background: var(--color-surface-1); }
+.branch-arrow:disabled { opacity: 0.3; cursor: not-allowed; }
+.branch-indicator {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.outline-toggle-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: color 0.12s, background 0.12s;
+}
+.outline-toggle-btn:hover { color: var(--color-text-primary); background: var(--color-surface-1); }
 </style>

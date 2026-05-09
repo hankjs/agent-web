@@ -25,6 +25,7 @@ pub struct ChatRequest {
     pub content: String,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub parent_id: Option<String>,
 }
 
 pub async fn chat_handler(
@@ -58,9 +59,15 @@ pub async fn chat_handler(
         (None, None) => DEFAULT_MODEL.to_string(),
     };
 
-    // Look up session for work_dir
+    // Look up session for work_dir and active_leaf_id
     let session_record = state.db.get_session(&session_id).await.ok().flatten();
     let work_dir = session_record.as_ref().and_then(|s| s.work_dir.clone());
+
+    // Determine the parent for the new user message
+    let parent_id_for_new_msg = body
+        .parent_id
+        .clone()
+        .or_else(|| session_record.as_ref().and_then(|s| s.active_leaf_id.clone()));
 
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ShellTool::new(work_dir.clone())),
@@ -76,8 +83,13 @@ pub async fn chat_handler(
         "You are a helpful AI assistant with access to shell commands. Execute tasks the user requests.".to_string(),
     );
 
-    // Load existing messages from DB
-    let history_len = if let Ok(db_messages) = state.db.get_messages(&session_id).await {
+    // Load branch history from DB (root to parent)
+    let history_len = {
+        let db_messages = if let Some(ref leaf) = parent_id_for_new_msg {
+            state.db.get_branch_messages(&session_id, leaf).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let messages: Vec<hank_provider::Message> = db_messages
             .iter()
             .filter_map(|m| {
@@ -94,8 +106,6 @@ pub async fn chat_handler(
         let len = messages.len();
         session.set_messages(messages);
         len
-    } else {
-        0
     };
 
     // Set up SSE stream via mpsc channel
@@ -104,6 +114,7 @@ pub async fn chat_handler(
     let sid = session_id.clone();
     let content = body.content;
     let is_first_message = history_len == 0;
+    let parent_for_chain = parent_id_for_new_msg;
 
     // Create cancellation token and store it
     let cancel_token = CancellationToken::new();
@@ -128,7 +139,7 @@ pub async fn chat_handler(
             // Persist error as an assistant message so it's visible on reload
             let error_content = serde_json::json!([{"type": "error", "text": format!("{e:#}")}]);
             let ts = chrono::Utc::now();
-            let _ = db.save_message(&sid, "assistant", &error_content, ts).await;
+            let _ = db.save_message(&sid, "assistant", &error_content, ts, parent_for_chain.as_deref()).await;
             let _ = db.touch_session(&sid).await;
         }
 
@@ -138,10 +149,11 @@ pub async fn chat_handler(
             tasks.remove(&sid_for_cleanup);
         }
 
-        // Batch save new messages to DB
+        // Batch save new messages to DB with parent_id chaining
         let new_messages: Vec<_> = session.messages().iter().skip(history_len).collect();
         if !new_messages.is_empty() {
             let base_time = chrono::Utc::now();
+            let mut prev_id = parent_for_chain;
             for (i, msg) in new_messages.iter().enumerate() {
                 let role = match msg.role {
                     hank_provider::Role::User => "user",
@@ -149,7 +161,14 @@ pub async fn chat_handler(
                 };
                 let content_val = serde_json::to_value(&msg.content).unwrap_or_default();
                 let ts = base_time + chrono::Duration::microseconds(i as i64);
-                let _ = db.save_message(&sid, role, &content_val, ts).await;
+                match db.save_message(&sid, role, &content_val, ts, prev_id.as_deref()).await {
+                    Ok(new_id) => prev_id = Some(new_id),
+                    Err(_) => break,
+                }
+            }
+            // Update active_leaf_id to the last saved message
+            if let Some(ref leaf) = prev_id {
+                let _ = db.update_active_leaf(&sid, leaf).await;
             }
             // Single updated_at bump after all messages saved
             let _ = db.touch_session(&sid).await;

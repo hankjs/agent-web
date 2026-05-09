@@ -54,6 +54,7 @@ pub struct Session {
     pub provider: String,
     pub model: String,
     pub work_dir: Option<String>,
+    pub active_leaf_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -64,6 +65,16 @@ pub struct DbMessage {
     pub session_id: String,
     pub role: String,
     pub content: String, // JSON
+    pub parent_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeNode {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub role: String,
+    pub preview: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -143,6 +154,54 @@ impl Database {
             .execute(&pool)
             .await;
 
+        // Migration: add parent_id to messages
+        let _ = sqlx::query("ALTER TABLE messages ADD COLUMN parent_id VARCHAR(36) DEFAULT NULL")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("CREATE INDEX idx_messages_parent ON messages (parent_id)")
+            .execute(&pool)
+            .await;
+
+        // Migration: add active_leaf_id to sessions
+        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN active_leaf_id VARCHAR(36) DEFAULT NULL")
+            .execute(&pool)
+            .await;
+
+        // Data migration: link existing messages by seq order and set active_leaf_id
+        // Only run if there are messages without parent_id that should have one
+        let unlinked: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT session_id FROM messages WHERE parent_id IS NULL"
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+
+        for (sid,) in &unlinked {
+            let msgs: Vec<(String,)> = sqlx::query_as(
+                "SELECT id FROM messages WHERE session_id = ? ORDER BY seq ASC, created_at ASC"
+            )
+            .bind(sid)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+
+            for i in 1..msgs.len() {
+                let _ = sqlx::query("UPDATE messages SET parent_id = ? WHERE id = ?")
+                    .bind(&msgs[i - 1].0)
+                    .bind(&msgs[i].0)
+                    .execute(&pool)
+                    .await;
+            }
+
+            if let Some(last) = msgs.last() {
+                let _ = sqlx::query("UPDATE sessions SET active_leaf_id = ? WHERE id = ? AND active_leaf_id IS NULL")
+                    .bind(&last.0)
+                    .bind(sid)
+                    .execute(&pool)
+                    .await;
+            }
+        }
+
         Ok(Self { pool })
     }
 
@@ -169,6 +228,7 @@ impl Database {
             provider: provider.to_string(),
             model: model.to_string(),
             work_dir: work_dir.map(|s| s.to_string()),
+            active_leaf_id: None,
             created_at: now,
             updated_at: now,
         })
@@ -177,7 +237,7 @@ impl Database {
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         let sessions = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, title, provider, model, work_dir, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+                "SELECT id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
             )
             .fetch_all(&self.pool)
         )?;
@@ -187,7 +247,7 @@ impl Database {
     pub async fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let session = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, title, provider, model, work_dir, created_at, updated_at FROM sessions WHERE id = ?"
+                "SELECT id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions WHERE id = ?"
             )
             .bind(id)
             .fetch_optional(&self.pool)
@@ -231,21 +291,23 @@ impl Database {
         role: &str,
         content: &serde_json::Value,
         created_at: DateTime<Utc>,
-    ) -> Result<()> {
+        parent_id: Option<&str>,
+    ) -> Result<String> {
         let id = Uuid::new_v4().to_string();
         let content_str = serde_json::to_string(content)?;
         let seq = created_at.timestamp_micros();
         db_retry!(
-            sqlx::query("INSERT INTO messages (id, session_id, role, content, created_at, seq) VALUES (?, ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO messages (id, session_id, role, content, created_at, seq, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
                 .bind(&id)
                 .bind(session_id)
                 .bind(role)
                 .bind(&content_str)
                 .bind(created_at)
                 .bind(seq)
+                .bind(parent_id)
                 .execute(&self.pool)
         )?;
-        Ok(())
+        Ok(id)
     }
 
     pub async fn touch_session(&self, id: &str) -> Result<()> {
@@ -260,12 +322,79 @@ impl Database {
     pub async fn get_messages(&self, session_id: &str) -> Result<Vec<DbMessage>> {
         let messages = db_retry!(
             sqlx::query_as::<_, DbMessage>(
-                "SELECT id, session_id, role, content, created_at FROM messages WHERE session_id = ? ORDER BY seq ASC, created_at ASC"
+                "SELECT id, session_id, role, content, parent_id, created_at FROM messages WHERE session_id = ? ORDER BY seq ASC, created_at ASC"
             )
             .bind(session_id)
             .fetch_all(&self.pool)
         )?;
         Ok(messages)
+    }
+
+    /// Walk from leaf_id up to root via parent_id, return messages in root-first order.
+    pub async fn get_branch_messages(&self, session_id: &str, leaf_id: &str) -> Result<Vec<DbMessage>> {
+        // Load all messages for the session into a map
+        let all = self.get_messages(session_id).await?;
+        let map: std::collections::HashMap<&str, &DbMessage> =
+            all.iter().map(|m| (m.id.as_str(), m)).collect();
+
+        let mut chain = Vec::new();
+        let mut current_id = Some(leaf_id);
+        while let Some(cid) = current_id {
+            if let Some(msg) = map.get(cid) {
+                chain.push((*msg).clone());
+                current_id = msg.parent_id.as_deref();
+            } else {
+                break;
+            }
+        }
+        chain.reverse();
+        Ok(chain)
+    }
+
+    /// Return a flat list of tree nodes for the outline panel.
+    pub async fn get_message_tree(&self, session_id: &str) -> Result<Vec<TreeNode>> {
+        #[derive(sqlx::FromRow)]
+        struct RawNode {
+            id: String,
+            parent_id: Option<String>,
+            role: String,
+            content: String,
+            created_at: DateTime<Utc>,
+        }
+
+        let rows = db_retry!(
+            sqlx::query_as::<_, RawNode>(
+                "SELECT id, parent_id, role, content, created_at FROM messages WHERE session_id = ? ORDER BY seq ASC, created_at ASC"
+            )
+            .bind(session_id)
+            .fetch_all(&self.pool)
+        )?;
+
+        let nodes = rows
+            .into_iter()
+            .map(|r| {
+                // Extract preview: first 30 chars of text content
+                let preview = extract_preview(&r.content, 30);
+                TreeNode {
+                    id: r.id,
+                    parent_id: r.parent_id,
+                    role: r.role,
+                    preview,
+                    created_at: r.created_at,
+                }
+            })
+            .collect();
+        Ok(nodes)
+    }
+
+    pub async fn update_active_leaf(&self, session_id: &str, leaf_id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("UPDATE sessions SET active_leaf_id = ?, updated_at = NOW() WHERE id = ?")
+                .bind(leaf_id)
+                .bind(session_id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
     }
 
     pub async fn truncate_messages(&self, session_id: &str, keep_count: u32) -> Result<u64> {
@@ -423,4 +552,22 @@ impl Database {
         tokio::io::copy_bidirectional(&mut client, &mut proxy).await?;
         Ok(())
     }
+}
+
+/// Extract a text preview from JSON content (first text block, up to max_chars).
+fn extract_preview(content_json: &str, max_chars: usize) -> String {
+    if let Ok(blocks) = serde_json::from_str::<Vec<serde_json::Value>>(content_json) {
+        for block in &blocks {
+            // Only extract from direct text blocks: { "type": "text", "text": "..." }
+            // Skip tool_result blocks — they are not user-authored content
+            if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                continue;
+            }
+            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                let preview: String = text.chars().take(max_chars).collect();
+                return preview;
+            }
+        }
+    }
+    String::new()
 }

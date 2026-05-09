@@ -7,6 +7,7 @@ export interface Session {
   provider: string;
   model: string;
   work_dir: string | null;
+  active_leaf_id: string | null;
   created_at: string;
   updated_at: string;
 }

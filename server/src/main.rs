@@ -114,6 +114,8 @@ async fn main() -> Result<()> {
         .route("/api/sessions/{id}", put(routes::update_session))
         .route("/api/sessions/{id}/messages", get(routes::get_messages))
         .route("/api/sessions/{id}/messages/truncate", post(routes::truncate_messages))
+        .route("/api/sessions/{id}/tree", get(routes::get_message_tree))
+        .route("/api/sessions/{id}/active-leaf", put(routes::update_active_leaf))
         .route("/api/settings", put(routes::update_settings))
         .route("/api/providers", get(routes::list_providers))
         .route("/api/sessions/{id}/chat", post(chat::chat_handler))

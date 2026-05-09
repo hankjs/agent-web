@@ -131,9 +131,59 @@ pub async fn update_session(
 pub async fn get_messages(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(query): Query<GetMessagesQuery>,
 ) -> impl IntoResponse {
-    match state.db.get_messages(&id).await {
-        Ok(messages) => Json(serde_json::json!(messages)).into_response(),
+    // If leaf_id provided, return branch messages; otherwise use active_leaf or all
+    if let Some(leaf_id) = &query.leaf_id {
+        match state.db.get_branch_messages(&id, leaf_id).await {
+            Ok(messages) => Json(serde_json::json!(messages)).into_response(),
+            Err(e) => internal_error(e),
+        }
+    } else {
+        // Try to use active_leaf_id from session
+        let session = state.db.get_session(&id).await.ok().flatten();
+        if let Some(leaf) = session.and_then(|s| s.active_leaf_id) {
+            match state.db.get_branch_messages(&id, &leaf).await {
+                Ok(messages) => Json(serde_json::json!(messages)).into_response(),
+                Err(e) => internal_error(e),
+            }
+        } else {
+            // Fallback: return all messages (legacy behavior for sessions without tree)
+            match state.db.get_messages(&id).await {
+                Ok(messages) => Json(serde_json::json!(messages)).into_response(),
+                Err(e) => internal_error(e),
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct GetMessagesQuery {
+    pub leaf_id: Option<String>,
+}
+
+pub async fn get_message_tree(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.get_message_tree(&id).await {
+        Ok(tree) => Json(serde_json::json!(tree)).into_response(),
+        Err(e) => internal_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateActiveLeafRequest {
+    pub leaf_id: String,
+}
+
+pub async fn update_active_leaf(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateActiveLeafRequest>,
+) -> impl IntoResponse {
+    match state.db.update_active_leaf(&id, &body.leaf_id).await {
+        Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),
         Err(e) => internal_error(e),
     }
 }
