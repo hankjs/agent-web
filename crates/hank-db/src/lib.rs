@@ -2,9 +2,45 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
+
+/// Retry a database operation up to `max` times on connection errors.
+macro_rules! db_retry {
+    ($op:expr) => {{
+        let mut attempts = 0u32;
+        const MAX_RETRIES: u32 = 2;
+        loop {
+            match $op.await {
+                Ok(v) => break Ok(v),
+                Err(e) if attempts < MAX_RETRIES && is_connection_error(&e) => {
+                    attempts += 1;
+                    tracing::warn!("DB connection error (attempt {}), retrying: {}", attempts, e);
+                    tokio::time::sleep(Duration::from_millis(200 * attempts as u64)).await;
+                }
+                Err(e) => break Err(anyhow::Error::from(e)),
+            }
+        }
+    }};
+}
+
+fn is_connection_error(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Io(_) => true,
+        sqlx::Error::PoolClosed => true,
+        sqlx::Error::PoolTimedOut => true,
+        sqlx::Error::Protocol(_) => false,
+        _ => {
+            let msg = e.to_string().to_lowercase();
+            msg.contains("broken pipe")
+                || msg.contains("connection reset")
+                || msg.contains("gone away")
+                || msg.contains("lost connection")
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Database {
@@ -43,6 +79,10 @@ impl Database {
 
         let pool = MySqlPoolOptions::new()
             .max_connections(10)
+            .acquire_timeout(Duration::from_secs(10))
+            .idle_timeout(Duration::from_secs(300))
+            .max_lifetime(Duration::from_secs(1800))
+            .test_before_acquire(true)
             .connect(&connect_url)
             .await?;
 
@@ -110,17 +150,18 @@ impl Database {
     pub async fn create_session(&self, provider: &str, model: &str, work_dir: Option<&str>) -> Result<Session> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
-        sqlx::query(
-            "INSERT INTO sessions (id, title, provider, model, work_dir, created_at, updated_at) VALUES (?, '', ?, ?, ?, ?, ?)"
-        )
-        .bind(&id)
-        .bind(provider)
-        .bind(model)
-        .bind(work_dir)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO sessions (id, title, provider, model, work_dir, created_at, updated_at) VALUES (?, '', ?, ?, ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(provider)
+            .bind(model)
+            .bind(work_dir)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
 
         Ok(Session {
             id,
@@ -134,47 +175,52 @@ impl Database {
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
-        let sessions = sqlx::query_as::<_, Session>(
-            "SELECT id, title, provider, model, work_dir, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let sessions = db_retry!(
+            sqlx::query_as::<_, Session>(
+                "SELECT id, title, provider, model, work_dir, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+            )
+            .fetch_all(&self.pool)
+        )?;
         Ok(sessions)
     }
 
     pub async fn get_session(&self, id: &str) -> Result<Option<Session>> {
-        let session = sqlx::query_as::<_, Session>(
-            "SELECT id, title, provider, model, work_dir, created_at, updated_at FROM sessions WHERE id = ?"
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let session = db_retry!(
+            sqlx::query_as::<_, Session>(
+                "SELECT id, title, provider, model, work_dir, created_at, updated_at FROM sessions WHERE id = ?"
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+        )?;
         Ok(session)
     }
 
     pub async fn delete_session(&self, id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM sessions WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        db_retry!(
+            sqlx::query("DELETE FROM sessions WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
         Ok(())
     }
 
     pub async fn update_session_title(&self, id: &str, title: &str) -> Result<()> {
-        sqlx::query("UPDATE sessions SET title = ?, updated_at = NOW() WHERE id = ?")
-            .bind(title)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        db_retry!(
+            sqlx::query("UPDATE sessions SET title = ?, updated_at = NOW() WHERE id = ?")
+                .bind(title)
+                .bind(id)
+                .execute(&self.pool)
+        )?;
         Ok(())
     }
 
     pub async fn update_session_work_dir(&self, id: &str, work_dir: Option<&str>) -> Result<()> {
-        sqlx::query("UPDATE sessions SET work_dir = ?, updated_at = NOW() WHERE id = ?")
-            .bind(work_dir)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        db_retry!(
+            sqlx::query("UPDATE sessions SET work_dir = ?, updated_at = NOW() WHERE id = ?")
+                .bind(work_dir)
+                .bind(id)
+                .execute(&self.pool)
+        )?;
         Ok(())
     }
 
@@ -189,56 +235,94 @@ impl Database {
         let id = Uuid::new_v4().to_string();
         let content_str = serde_json::to_string(content)?;
         let seq = created_at.timestamp_micros();
-        sqlx::query("INSERT INTO messages (id, session_id, role, content, created_at, seq) VALUES (?, ?, ?, ?, ?, ?)")
-            .bind(&id)
-            .bind(session_id)
-            .bind(role)
-            .bind(&content_str)
-            .bind(created_at)
-            .bind(seq)
-            .execute(&self.pool)
-            .await?;
-
+        db_retry!(
+            sqlx::query("INSERT INTO messages (id, session_id, role, content, created_at, seq) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(&id)
+                .bind(session_id)
+                .bind(role)
+                .bind(&content_str)
+                .bind(created_at)
+                .bind(seq)
+                .execute(&self.pool)
+        )?;
         Ok(())
     }
 
     pub async fn touch_session(&self, id: &str) -> Result<()> {
-        sqlx::query("UPDATE sessions SET updated_at = NOW() WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        db_retry!(
+            sqlx::query("UPDATE sessions SET updated_at = NOW() WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
         Ok(())
     }
 
     pub async fn get_messages(&self, session_id: &str) -> Result<Vec<DbMessage>> {
-        let messages = sqlx::query_as::<_, DbMessage>(
-            "SELECT id, session_id, role, content, created_at FROM messages WHERE session_id = ? ORDER BY seq ASC, created_at ASC"
+        let messages = db_retry!(
+            sqlx::query_as::<_, DbMessage>(
+                "SELECT id, session_id, role, content, created_at FROM messages WHERE session_id = ? ORDER BY seq ASC, created_at ASC"
+            )
+            .bind(session_id)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(messages)
+    }
+
+    pub async fn truncate_messages(&self, session_id: &str, keep_count: u32) -> Result<u64> {
+        // Get IDs of messages to keep (first N by ordering)
+        let kept_ids: Vec<(String,)> = sqlx::query_as(
+            "SELECT id FROM messages WHERE session_id = ? ORDER BY seq ASC, created_at ASC LIMIT ?"
         )
         .bind(session_id)
+        .bind(keep_count)
         .fetch_all(&self.pool)
         .await?;
-        Ok(messages)
+
+        if kept_ids.is_empty() {
+            // Delete all messages for this session
+            let result = sqlx::query("DELETE FROM messages WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&self.pool)
+                .await?;
+            return Ok(result.rows_affected());
+        }
+
+        let ids: Vec<&str> = kept_ids.iter().map(|r| r.0.as_str()).collect();
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "DELETE FROM messages WHERE session_id = ? AND id NOT IN ({})",
+            placeholders
+        );
+
+        let mut q = sqlx::query(&query).bind(session_id);
+        for id in &ids {
+            q = q.bind(id);
+        }
+        let result = q.execute(&self.pool).await?;
+        Ok(result.rows_affected())
     }
 
     // Settings
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        let row = sqlx::query_as::<_, Setting>(
-            "SELECT `key`, value FROM settings WHERE `key` = ?"
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = db_retry!(
+            sqlx::query_as::<_, Setting>(
+                "SELECT `key`, value FROM settings WHERE `key` = ?"
+            )
+            .bind(key)
+            .fetch_optional(&self.pool)
+        )?;
         Ok(row.map(|s| s.value))
     }
 
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO settings (`key`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)"
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&self.pool)
-        .await?;
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO settings (`key`, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)"
+            )
+            .bind(key)
+            .bind(value)
+            .execute(&self.pool)
+        )?;
         Ok(())
     }
 

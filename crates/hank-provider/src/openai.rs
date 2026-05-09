@@ -1,12 +1,12 @@
 use crate::{CompletionRequest, LlmProvider, StopReason, StreamEvent};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::debug;
+use tracing::{debug, error};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 
@@ -60,11 +60,15 @@ impl LlmProvider for OpenAiProvider {
             .json(&body)
             .send()
             .await
-            .with_context(|| format!("Failed to connect to {url}"))?;
+            .map_err(|e| {
+                error!(provider = %self.name, url = %url, error = %e, "Connection failed");
+                anyhow::anyhow!("Failed to connect to {url}: {e}")
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
+            error!(provider = %self.name, status = %status, url = %url, "API error");
             bail!("OpenAI API error {status}: {text}");
         }
 

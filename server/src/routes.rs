@@ -139,6 +139,22 @@ pub async fn get_messages(
 }
 
 #[derive(Deserialize)]
+pub struct TruncateMessagesRequest {
+    pub keep_count: u32,
+}
+
+pub async fn truncate_messages(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<TruncateMessagesRequest>,
+) -> impl IntoResponse {
+    match state.db.truncate_messages(&id, body.keep_count).await {
+        Ok(deleted) => Json(serde_json::json!({"deleted": deleted})).into_response(),
+        Err(e) => internal_error(e),
+    }
+}
+
+#[derive(Deserialize)]
 pub struct UpdateSettingsRequest {
     pub settings: std::collections::HashMap<String, String>,
 }

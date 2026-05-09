@@ -1,4 +1,7 @@
+pub mod read_file;
+pub mod search;
 pub mod shell;
+pub mod write_file;
 
 use anyhow::Result;
 use async_trait::async_trait;

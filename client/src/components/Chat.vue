@@ -36,7 +36,15 @@ interface ToolCall {
 type Block =
   | { kind: "user"; content: string }
   | { kind: "text"; content: string }
+  | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall };
+
+type RenderItem =
+  | { kind: "user"; content: string }
+  | { kind: "text"; content: string }
+  | { kind: "error"; content: string }
+  | { kind: "tool"; tool: ToolCall }
+  | { kind: "tool-group"; tools: ToolCall[] };
 
 const blocks = ref<Block[]>([]);
 const input = ref("");
@@ -47,6 +55,54 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null);
 let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
 const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
+
+const groupExpanded = ref<Record<number, boolean>>({});
+
+const renderItems = computed<RenderItem[]>(() => {
+  const items: RenderItem[] = [];
+  let i = 0;
+  while (i < blocks.value.length) {
+    const block = blocks.value[i];
+    if (block.kind === "tool") {
+      const tools: ToolCall[] = [block.tool];
+      let j = i + 1;
+      while (j < blocks.value.length && blocks.value[j].kind === "tool") {
+        tools.push((blocks.value[j] as { kind: "tool"; tool: ToolCall }).tool);
+        j++;
+      }
+      if (tools.length >= 2) {
+        items.push({ kind: "tool-group", tools });
+      } else {
+        items.push(block);
+      }
+      i = j;
+    } else {
+      items.push(block);
+      i++;
+    }
+  }
+  return items;
+});
+
+function isGroupExpanded(idx: number, tools: ToolCall[]): boolean {
+  if (groupExpanded.value[idx] !== undefined) return groupExpanded.value[idx];
+  return tools.some((t) => t.isRunning);
+}
+
+function toggleGroup(idx: number, tools: ToolCall[]) {
+  const current = isGroupExpanded(idx, tools);
+  groupExpanded.value[idx] = !current;
+}
+
+function groupSummary(tools: ToolCall[]): string {
+  const counts: Record<string, number> = {};
+  for (const t of tools) {
+    counts[t.name] = (counts[t.name] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .map(([name, count]) => `${name} x${count}`)
+    .join(", ");
+}
 
 const displayDir = computed(() => {
   return props.workDir || "";
@@ -109,6 +165,8 @@ async function loadHistory() {
           for (const block of content) {
             if (block.type === "text" && block.text) {
               blocks.value.push({ kind: "text", content: block.text });
+            } else if (block.type === "error" && block.text) {
+              blocks.value.push({ kind: "error", content: block.text });
             } else if (block.type === "tool_use") {
               blocks.value.push({
                 kind: "tool",
@@ -168,7 +226,7 @@ function handleServerEvent(event: any) {
       isStreaming.value = false;
       break;
     case "error":
-      blocks.value.push({ kind: "text", content: `Error: ${event.message}` });
+      blocks.value.push({ kind: "error", content: event.message });
       isStreaming.value = false;
       break;
   }
@@ -262,7 +320,7 @@ async function send() {
     );
 
     if (!res.ok) {
-      blocks.value.push({ kind: "text", content: `Request failed: ${res.status}` });
+      blocks.value.push({ kind: "error", content: `Request failed: ${res.status}` });
       isStreaming.value = false;
       return;
     }
@@ -298,7 +356,7 @@ async function send() {
     }
   } catch (e: any) {
     if (e.name === "AbortError") return;
-    blocks.value.push({ kind: "text", content: `Connection lost: ${e.message || e}` });
+    blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
     isStreaming.value = false;
   } finally {
     activeReader = null;
@@ -318,9 +376,118 @@ async function stop() {
   isStreaming.value = false;
 }
 
+async function resend() {
+  // Find the last user block before the error
+  let lastUserIdx = -1;
+  for (let i = blocks.value.length - 1; i >= 0; i--) {
+    if (blocks.value[i].kind === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx < 0) return;
+
+  const userBlock = blocks.value[lastUserIdx] as { kind: "user"; content: string };
+  const content = userBlock.content;
+
+  // Count how many user blocks exist before this one (to compute keep_count for DB)
+  // Each user message in DB corresponds to blocks before lastUserIdx
+  // We need to count messages in DB to keep: all messages before the failed one
+  const messagesBeforeError = blocks.value.slice(0, lastUserIdx);
+  // Count user blocks = user messages in DB, count text/tool sequences = assistant messages
+  let keepCount = 0;
+  let i = 0;
+  while (i < messagesBeforeError.length) {
+    const b = messagesBeforeError[i];
+    if (b.kind === "user") {
+      keepCount++;
+      i++;
+    } else {
+      // assistant turn: text + tools until next user
+      keepCount++;
+      i++;
+      while (i < messagesBeforeError.length && messagesBeforeError[i].kind !== "user") {
+        i++;
+      }
+    }
+  }
+
+  // Truncate DB messages
+  try {
+    await authFetch(`/api/sessions/${props.sessionId}/messages/truncate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep_count: keepCount }),
+    });
+  } catch { /* best effort */ }
+
+  // Remove the failed user message and everything after it from UI
+  blocks.value.splice(lastUserIdx);
+
+  // Re-send
+  blocks.value.push({ kind: "user", content });
+  isStreaming.value = true;
+
+  try {
+    const res = await authFetch(
+      `/api/sessions/${props.sessionId}/chat`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      }
+    );
+
+    if (!res.ok) {
+      blocks.value.push({ kind: "error", content: `Request failed: ${res.status}` });
+      isStreaming.value = false;
+      return;
+    }
+
+    const reader = res.body!.getReader();
+    activeReader = reader;
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const json = line.slice(6);
+          if (json) {
+            try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
+          }
+        }
+      }
+    }
+
+    if (buffer.startsWith("data: ")) {
+      const json = buffer.slice(6);
+      if (json) {
+        try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
+      }
+    }
+  } catch (e: any) {
+    if (e.name === "AbortError") return;
+    blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
+    isStreaming.value = false;
+  } finally {
+    activeReader = null;
+  }
+}
+
 onMounted(async () => {
   await connect();
   await loadHistory();
+  nextTick(() => {
+    messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
+  });
 });
 </script>
 
@@ -352,25 +519,53 @@ onMounted(async () => {
 
     <div v-if="!isEmpty" ref="messagesEl" class="flex-1 overflow-y-auto">
       <div class="max-w-[720px] mx-auto px-6 py-8 space-y-6">
-        <template v-for="(block, i) in blocks" :key="i">
-          <div v-if="block.kind === 'user'" class="user-block">
-            <pre class="whitespace-pre-wrap text-[15px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ block.content }}</pre>
+        <template v-for="(item, idx) in renderItems" :key="idx">
+          <div v-if="item.kind === 'user'" class="user-block">
+            <pre class="whitespace-pre-wrap text-[15px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ item.content }}</pre>
           </div>
-          <div v-else-if="block.kind === 'text'" class="agent-block">
-            <div class="markdown-body" v-html="renderMarkdown(block.content)"></div>
+          <div v-else-if="item.kind === 'text'" class="agent-block">
+            <div class="markdown-body" v-html="renderMarkdown(item.content)"></div>
           </div>
-          <div v-else-if="block.kind === 'tool'" class="tool-block">
-            <button @click="toggleToolCall(block.tool)" class="tool-header" :class="{ 'tool-running': block.tool.isRunning, 'tool-error': block.tool.isError && !block.tool.isRunning }">
-              <span class="tool-indicator" :class="{ active: block.tool.isRunning }"></span>
-              <span class="tool-name">{{ block.tool.name }}</span>
-              <span class="tool-summary">{{ toolSummary(block.tool) }}</span>
+          <div v-else-if="item.kind === 'error'" class="error-block">
+            <span class="error-message">{{ item.content }}</span>
+            <button class="retry-btn" @click="resend" :disabled="isStreaming">Retry</button>
+          </div>
+          <div v-else-if="item.kind === 'tool'" class="tool-block">
+            <button @click="toggleToolCall(item.tool)" class="tool-header" :class="{ 'tool-running': item.tool.isRunning, 'tool-error': item.tool.isError && !item.tool.isRunning }">
+              <span class="tool-indicator" :class="{ active: item.tool.isRunning }"></span>
+              <span class="tool-name">{{ item.tool.name }}</span>
+              <span class="tool-summary">{{ toolSummary(item.tool) }}</span>
             </button>
-            <div v-if="!block.tool.expanded && block.tool.result" class="tool-preview" @click="toggleToolCall(block.tool)">
-              <pre class="tool-content" :class="{ 'tool-content-error': block.tool.isError }">{{ previewLines(block.tool.result) }}</pre>
+            <div v-if="!item.tool.expanded && item.tool.result" class="tool-preview" @click="toggleToolCall(item.tool)">
+              <pre class="tool-content" :class="{ 'tool-content-error': item.tool.isError }">{{ previewLines(item.tool.result) }}</pre>
             </div>
-            <div v-if="block.tool.expanded && (block.tool.input || block.tool.result)" class="tool-body">
-              <pre v-if="block.tool.input" class="tool-content">{{ block.tool.input }}</pre>
-              <pre v-if="block.tool.result" class="tool-content" :class="{ 'tool-content-error': block.tool.isError }">{{ block.tool.result }}</pre>
+            <div v-if="item.tool.expanded && (item.tool.input || item.tool.result)" class="tool-body">
+              <pre v-if="item.tool.input" class="tool-content">{{ item.tool.input }}</pre>
+              <pre v-if="item.tool.result" class="tool-content" :class="{ 'tool-content-error': item.tool.isError }">{{ item.tool.result }}</pre>
+            </div>
+          </div>
+          <div v-else-if="item.kind === 'tool-group'" class="tool-group-block">
+            <button @click="toggleGroup(idx, item.tools)" class="tool-group-header">
+              <span class="tool-indicator" :class="{ active: item.tools.some(t => t.isRunning) }"></span>
+              <span class="tool-group-summary">{{ groupSummary(item.tools) }}</span>
+              <span class="tool-group-meta">({{ item.tools.length }} tool uses)</span>
+              <span class="tool-group-chevron" :class="{ open: isGroupExpanded(idx, item.tools) }">&#9656;</span>
+            </button>
+            <div v-if="isGroupExpanded(idx, item.tools)" class="tool-group-body">
+              <div v-for="(tc, ti) in item.tools" :key="ti" class="tool-block">
+                <button @click="toggleToolCall(tc)" class="tool-header" :class="{ 'tool-running': tc.isRunning, 'tool-error': tc.isError && !tc.isRunning }">
+                  <span class="tool-indicator" :class="{ active: tc.isRunning }"></span>
+                  <span class="tool-name">{{ tc.name }}</span>
+                  <span class="tool-summary">{{ toolSummary(tc) }}</span>
+                </button>
+                <div v-if="!tc.expanded && tc.result" class="tool-preview" @click="toggleToolCall(tc)">
+                  <pre class="tool-content" :class="{ 'tool-content-error': tc.isError }">{{ previewLines(tc.result) }}</pre>
+                </div>
+                <div v-if="tc.expanded && (tc.input || tc.result)" class="tool-body">
+                  <pre v-if="tc.input" class="tool-content">{{ tc.input }}</pre>
+                  <pre v-if="tc.result" class="tool-content" :class="{ 'tool-content-error': tc.isError }">{{ tc.result }}</pre>
+                </div>
+              </div>
             </div>
           </div>
         </template>
@@ -555,6 +750,54 @@ onMounted(async () => {
 .tool-preview { padding: 4px 0 4px 14px; border-left: 1px solid var(--color-border-subtle); margin-left: 2px; cursor: pointer; }
 .tool-content { font-family: var(--font-mono); font-size: 11px; line-height: 1.6; color: var(--color-text-muted); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; margin: 4px 0; }
 .tool-content-error { color: var(--color-error); }
+.tool-group-block { margin: 4px 0; }
+.tool-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 0;
+  text-align: left;
+  cursor: pointer;
+  border: none;
+  background: none;
+  transition: opacity 0.15s ease-out;
+}
+.tool-group-header:hover { opacity: 0.8; }
+.tool-group-summary { font-family: var(--font-mono); font-size: 12px; color: var(--color-text-muted); }
+.tool-group-meta { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-muted); opacity: 0.5; }
+.tool-group-chevron { font-size: 10px; color: var(--color-text-muted); opacity: 0.6; transition: transform 0.15s ease-out; display: inline-block; }
+.tool-group-chevron.open { transform: rotate(90deg); }
+.tool-group-body { padding: 4px 0 4px 14px; border-left: 1px solid var(--color-border-subtle); margin-left: 2px; }
+.error-block {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--color-error, #ef4444) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-error, #ef4444) 25%, transparent);
+  border-radius: 6px;
+  margin: 4px 0;
+}
+.error-message {
+  font-size: 13px;
+  color: var(--color-error, #ef4444);
+  flex: 1;
+}
+.retry-btn {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface-1);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.retry-btn:hover:not(:disabled) { background: var(--color-surface-2, rgba(255,255,255,0.06)); border-color: var(--color-text-muted); }
+.retry-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .input-area { padding: 24px 0 32px; }
 .input-centered { display: flex; align-items: center; justify-content: center; }
 .input-docked { border-top: 1px solid var(--color-border-subtle); }

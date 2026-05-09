@@ -9,7 +9,7 @@ use axum::{
 };
 use futures::{stream::Stream, StreamExt};
 use hank_agent::{AgentEvent, AgentSession};
-use hank_web_tools::{shell::ShellTool, Tool};
+use hank_web_tools::{read_file::ReadFileTool, search::SearchTool, shell::ShellTool, write_file::WriteFileTool, Tool};
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -62,7 +62,12 @@ pub async fn chat_handler(
     let session_record = state.db.get_session(&session_id).await.ok().flatten();
     let work_dir = session_record.as_ref().and_then(|s| s.work_dir.clone());
 
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ShellTool::new(work_dir))];
+    let tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(ShellTool::new(work_dir.clone())),
+        Arc::new(ReadFileTool::new(work_dir.clone())),
+        Arc::new(WriteFileTool::new(work_dir.clone())),
+        Arc::new(SearchTool::new(work_dir)),
+    ];
 
     let mut session = AgentSession::new(
         provider,
@@ -109,14 +114,22 @@ pub async fn chat_handler(
     let state_for_cleanup = state.clone();
     let sid_for_cleanup = session_id.clone();
 
+    let provider_name = provider_key.to_string();
+
     tokio::spawn(async move {
         if let Err(e) = session.run(content.clone(), event_tx.clone(), cancel_token).await {
-            error!("Agent error: {e:#}");
+            error!(session_id = %sid, provider = %provider_name, "Agent error: {e:#}");
             let _ = event_tx
                 .send(AgentEvent::Error {
                     message: format!("{e:#}"),
                 })
                 .await;
+
+            // Persist error as an assistant message so it's visible on reload
+            let error_content = serde_json::json!([{"type": "error", "text": format!("{e:#}")}]);
+            let ts = chrono::Utc::now();
+            let _ = db.save_message(&sid, "assistant", &error_content, ts).await;
+            let _ = db.touch_session(&sid).await;
         }
 
         // Remove token from active tasks
