@@ -3,8 +3,6 @@ use hank_provider::LlmProvider;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::ProviderConfig;
-
 /// Build an LlmProvider instance from a ProviderRecord.
 pub fn build_provider_from_record(record: &ProviderRecord) -> Arc<dyn LlmProvider> {
     use hank_provider::anthropic::AnthropicProvider;
@@ -49,6 +47,21 @@ pub fn resolve_default_model(record: &ProviderRecord) -> String {
     resolve_model(record, &record.default_model)
 }
 
+/// Get the default provider name (highest priority enabled provider).
+pub async fn default_provider_name(db: &Database) -> Option<String> {
+    let all = db.list_providers_ordered().await.unwrap_or_default();
+    all.into_iter().find(|r| r.enabled).map(|r| r.name)
+}
+
+/// Resolve the highest-priority enabled provider.
+pub async fn resolve_default(db: &Database) -> Option<(ProviderRecord, Arc<dyn LlmProvider>)> {
+    let all = db.list_providers_ordered().await.unwrap_or_default();
+    all.into_iter().find(|r| r.enabled).map(|r| {
+        let provider = build_provider_from_record(&r);
+        (r, provider)
+    })
+}
+
 /// Returns an ordered list of providers for fallback: preferred first, then remaining by priority.
 /// Only returns enabled providers.
 pub async fn resolve_with_fallback(
@@ -72,31 +85,4 @@ pub async fn resolve_with_fallback(
     }
 
     result
-}
-
-/// Seed providers from config into DB if the providers table is empty.
-pub async fn seed_from_config(db: &Database, providers: &[ProviderConfig]) {
-    let count = db.provider_count().await.unwrap_or(0);
-    if count > 0 {
-        return;
-    }
-
-    for (i, p) in providers.iter().enumerate() {
-        let provider_type = match p.provider_type {
-            crate::config::ProviderType::Anthropic => "anthropic",
-            crate::config::ProviderType::Openai => "openai",
-        };
-        let models_json = serde_json::to_string(&p.models).unwrap_or_else(|_| "{}".to_string());
-        let _ = db.create_provider(
-            &p.name,
-            provider_type,
-            &p.api_key,
-            &p.base_url,
-            &p.default_model,
-            &models_json,
-            i as i32,
-            true,
-        ).await;
-        tracing::info!("Seeded provider from config: {}", p.name);
-    }
 }

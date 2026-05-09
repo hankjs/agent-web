@@ -1,52 +1,8 @@
 # Hank Agent 配置文件
-# 复制为 config.toml 并填入你的 API keys
+# 复制为 config.toml 并填入你的配置
 
 [server]
 host = "0.0.0.0"
 port = 3000
 jwt_secret = "change-me-to-a-random-string"
 database_url = "mysql://user:password@host:3306/dbname"
-
-# 默认使用的 provider 名称
-default_provider = "anthropic"
-
-# 可配置多个 provider，每个有独立的 base_url、api_key 和默认模型
-# type 支持: anthropic, openai (openai 兼容格式，也适用于 deepseek/groq 等)
-# models: key = 别名, value = 实际 model ID
-# default_model: 该 provider 不指定模型时使用的别名
-
-[[providers]]
-name = "anthropic"
-type = "anthropic"
-api_key = "sk-ant-xxx"
-base_url = "https://api.anthropic.com"
-default_model = "sonnet"
-
-[providers.models]
-sonnet = "claude-sonnet-4-20250514"
-opus = "claude-opus-4-20250514"
-haiku = "claude-haiku-4-5-20251001"
-
-[[providers]]
-name = "openai"
-type = "openai"
-api_key = "sk-xxx"
-base_url = "https://api.openai.com"
-default_model = "gpt4o"
-
-[providers.models]
-gpt4o = "gpt-4o"
-gpt4o-mini = "gpt-4o-mini"
-o3 = "o3"
-
-# 示例：使用 OpenAI 兼容 API 的第三方服务
-# [[providers]]
-# name = "deepseek"
-# type = "openai"
-# api_key = "sk-xxx"
-# base_url = "https://api.deepseek.com"
-# default_model = "chat"
-#
-# [providers.models]
-# chat = "deepseek-chat"
-# reasoner = "deepseek-reasoner"

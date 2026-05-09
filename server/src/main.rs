@@ -67,8 +67,6 @@ async fn main() -> Result<()> {
     let config = Config::load()?;
     let db = Database::new(&config.server.database_url).await?;
 
-    // Seed providers from config.toml into DB if table is empty
-    provider_registry::seed_from_config(&db, &config.providers).await;
 
     let state = Arc::new(AppState {
         db,

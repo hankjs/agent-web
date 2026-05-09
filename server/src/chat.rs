@@ -73,13 +73,20 @@ pub async fn chat_handler(
     Path(session_id): Path<String>,
     axum::Json(body): axum::Json<ChatRequest>,
 ) -> impl IntoResponse {
-    let provider_key = body
-        .provider
-        .as_deref()
-        .unwrap_or(&state.config.server.default_provider);
-
     // Resolve providers with fallback from DB
-    let fallback_list = provider_registry::resolve_with_fallback(&state.db, provider_key).await;
+    let fallback_list = match body.provider.as_deref() {
+        Some(name) => provider_registry::resolve_with_fallback(&state.db, name).await,
+        None => {
+            let all = state.db.list_providers_ordered().await.unwrap_or_default();
+            all.into_iter()
+                .filter(|r| r.enabled)
+                .map(|r| {
+                    let p = provider_registry::build_provider_from_record(&r);
+                    (r, p)
+                })
+                .collect()
+        }
+    };
     if fallback_list.is_empty() {
         return (
             StatusCode::BAD_REQUEST,

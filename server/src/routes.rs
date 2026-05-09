@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::auth::{self, Claims};
 use crate::config::DEFAULT_MODEL;
+use crate::provider_registry;
 
 fn internal_error(e: impl ToString) -> axum::response::Response {
     (
@@ -73,16 +74,22 @@ pub async fn create_session(
     Extension(claims): Extension<Claims>,
     Json(body): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    let provider = body
-        .provider
-        .unwrap_or_else(|| state.config.server.default_provider.clone());
-    let model = body.model.unwrap_or_else(|| {
-        state
-            .config
-            .find_provider(&provider)
-            .map(|pc| pc.resolve_default_model())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string())
-    });
+    let provider = match body.provider {
+        Some(p) => p,
+        None => match provider_registry::default_provider_name(&state.db).await {
+            Some(name) => name,
+            None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "No provider configured"}))).into_response(),
+        },
+    };
+    let model = match &body.model {
+        Some(m) => m.clone(),
+        None => {
+            match state.db.get_provider_by_name(&provider).await {
+                Ok(Some(record)) => provider_registry::resolve_default_model(&record),
+                _ => DEFAULT_MODEL.to_string(),
+            }
+        }
+    };
 
     match state
         .db
@@ -262,9 +269,11 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
         })
         .collect();
 
+    let default_provider = providers.iter().find(|p| p.enabled).map(|p| p.name.clone()).unwrap_or_default();
+
     Json(serde_json::json!({
         "providers": provider_list,
-        "default_provider": state.config.server.default_provider,
+        "default_provider": default_provider,
     }))
 }
 

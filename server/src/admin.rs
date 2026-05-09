@@ -213,8 +213,7 @@ pub async fn replay_with_prompt(
     };
 
     // Get default provider from DB
-    let provider_key = &state.config.server.default_provider;
-    let (record, provider) = match provider_registry::resolve_provider(&state.db, provider_key).await {
+    let (record, provider) = match provider_registry::resolve_default(&state.db).await {
         Some(p) => p,
         None => return (StatusCode::INTERNAL_SERVER_ERROR, "No provider available").into_response(),
     };
@@ -438,8 +437,7 @@ pub async fn chat_generate(
     use futures::StreamExt;
     use hank_provider::{CompletionRequest, ContentBlock, Message, Role, StreamEvent};
 
-    let provider_key = &state.config.server.default_provider;
-    let (record, provider) = match provider_registry::resolve_provider(&state.db, provider_key).await {
+    let (record, provider) = match provider_registry::resolve_default(&state.db).await {
         Some(p) => p,
         None => return (StatusCode::INTERNAL_SERVER_ERROR, "No provider available").into_response(),
     };
