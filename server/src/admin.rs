@@ -1,4 +1,5 @@
 use crate::AppState;
+use crate::provider_registry;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -50,6 +51,13 @@ pub struct ReplayRequest {
 
 // --- Handlers ---
 
+#[derive(Serialize)]
+struct SessionWithUser {
+    #[serde(flatten)]
+    session: hank_db::Session,
+    username: Option<String>,
+}
+
 pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PaginationQuery>,
@@ -62,10 +70,22 @@ pub async fn list_sessions(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
+    // Load users for username lookup
+    let users = state.db.list_users().await.unwrap_or_default();
+    let user_map: std::collections::HashMap<&str, &str> = users
+        .iter()
+        .map(|u| (u.id.as_str(), u.username.as_str()))
+        .collect();
+
     let filtered: Vec<_> = if let Some(ref search) = query.search {
         let s = search.to_lowercase();
         all_sessions.into_iter().filter(|sess| {
-            sess.title.to_lowercase().contains(&s) || sess.id.contains(&s)
+            sess.title.to_lowercase().contains(&s)
+                || sess.id.contains(&s)
+                || sess.user_id.as_deref()
+                    .and_then(|uid| user_map.get(uid))
+                    .map(|name| name.to_lowercase().contains(&s))
+                    .unwrap_or(false)
         }).collect()
     } else {
         all_sessions
@@ -73,7 +93,12 @@ pub async fn list_sessions(
 
     let total = filtered.len() as u64;
     let start = ((page - 1) * per_page) as usize;
-    let data: Vec<_> = filtered.into_iter().skip(start).take(per_page as usize).collect();
+    let data: Vec<SessionWithUser> = filtered.into_iter().skip(start).take(per_page as usize).map(|sess| {
+        let username = sess.user_id.as_deref()
+            .and_then(|uid| user_map.get(uid))
+            .map(|s| s.to_string());
+        SessionWithUser { session: sess, username }
+    }).collect();
 
     Json(PaginatedResponse { data, total, page, per_page }).into_response()
 }
@@ -143,6 +168,16 @@ pub async fn list_prompt_templates(
     }
 }
 
+pub async fn delete_prompt_template(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.delete_prompt_template(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 pub async fn replay_with_prompt(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ReplayRequest>,
@@ -177,16 +212,14 @@ pub async fn replay_with_prompt(
         "You are a helpful AI assistant.".to_string()
     };
 
-    // Get default provider
+    // Get default provider from DB
     let provider_key = &state.config.server.default_provider;
-    let provider = match state.get_provider(provider_key) {
+    let (record, provider) = match provider_registry::resolve_provider(&state.db, provider_key).await {
         Some(p) => p,
         None => return (StatusCode::INTERNAL_SERVER_ERROR, "No provider available").into_response(),
     };
 
-    let model = state.config.find_provider(provider_key)
-        .map(|pc| pc.resolve_default_model())
-        .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+    let model = provider_registry::resolve_default_model(&record);
 
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ShellTool::new(None)),
@@ -218,4 +251,239 @@ pub async fn replay_with_prompt(
     };
 
     Sse::new(stream).into_response()
+}
+
+// --- User Management ---
+
+pub async fn list_users(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.db.list_users().await {
+        Ok(users) => Json(users).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CreateUserRequest {
+    pub username: String,
+    pub password: String,
+    pub can_login_admin: Option<bool>,
+    pub can_login_client: Option<bool>,
+}
+
+pub async fn create_user(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateUserRequest>,
+) -> impl IntoResponse {
+    let can_admin = body.can_login_admin.unwrap_or(false);
+    let can_client = body.can_login_client.unwrap_or(true);
+    match state.db.create_user(&body.username, &body.password, can_admin, can_client).await {
+        Ok(user) => (StatusCode::CREATED, Json(serde_json::json!({"id": user.id, "username": user.username}))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateUserRequest {
+    pub can_login_admin: Option<bool>,
+    pub can_login_client: Option<bool>,
+    pub password: Option<String>,
+}
+
+pub async fn update_user(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateUserRequest>,
+) -> impl IntoResponse {
+    if let (Some(can_admin), Some(can_client)) = (body.can_login_admin, body.can_login_client) {
+        if let Err(e) = state.db.update_user_permissions(&id, can_admin, can_client).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    } else if let Some(can_admin) = body.can_login_admin {
+        // Fetch current to preserve other field
+        if let Err(e) = state.db.update_user_permissions(&id, can_admin, true).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    } else if let Some(can_client) = body.can_login_client {
+        if let Err(e) = state.db.update_user_permissions(&id, true, can_client).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+
+    if let Some(ref password) = body.password {
+        if let Err(e) = state.db.update_user_password(&id, password).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+
+    Json(serde_json::json!({"status": "ok"})).into_response()
+}
+
+pub async fn delete_user(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.delete_user(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// --- Provider Management ---
+
+pub async fn list_providers(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.db.list_providers_ordered().await {
+        Ok(providers) => Json(providers).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CreateProviderRequest {
+    pub name: String,
+    pub provider_type: String,
+    pub api_key: String,
+    pub base_url: Option<String>,
+    pub default_model: Option<String>,
+    pub models: Option<serde_json::Value>,
+    pub priority: Option<i32>,
+    pub enabled: Option<bool>,
+}
+
+pub async fn create_provider(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateProviderRequest>,
+) -> impl IntoResponse {
+    let models_json = body.models
+        .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string()))
+        .unwrap_or_else(|| "{}".to_string());
+
+    match state.db.create_provider(
+        &body.name,
+        &body.provider_type,
+        &body.api_key,
+        body.base_url.as_deref().unwrap_or(""),
+        body.default_model.as_deref().unwrap_or(""),
+        &models_json,
+        body.priority.unwrap_or(0),
+        body.enabled.unwrap_or(true),
+    ).await {
+        Ok(record) => (StatusCode::CREATED, Json(serde_json::json!(record))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateProviderRequest {
+    pub name: String,
+    pub provider_type: String,
+    pub api_key: String,
+    pub base_url: Option<String>,
+    pub default_model: Option<String>,
+    pub models: Option<serde_json::Value>,
+    pub priority: Option<i32>,
+    pub enabled: Option<bool>,
+}
+
+pub async fn update_provider(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateProviderRequest>,
+) -> impl IntoResponse {
+    let models_json = body.models
+        .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string()))
+        .unwrap_or_else(|| "{}".to_string());
+
+    match state.db.update_provider(
+        &id,
+        &body.name,
+        &body.provider_type,
+        &body.api_key,
+        body.base_url.as_deref().unwrap_or(""),
+        body.default_model.as_deref().unwrap_or(""),
+        &models_json,
+        body.priority.unwrap_or(0),
+        body.enabled.unwrap_or(true),
+    ).await {
+        Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+pub async fn delete_provider(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.delete_provider(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// --- AI Generate ---
+
+#[derive(Deserialize)]
+pub struct ChatGenerateRequest {
+    pub prompt: String,
+    pub context: Option<String>,
+}
+
+pub async fn chat_generate(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ChatGenerateRequest>,
+) -> impl IntoResponse {
+    use futures::StreamExt;
+    use hank_provider::{CompletionRequest, ContentBlock, Message, Role, StreamEvent};
+
+    let provider_key = &state.config.server.default_provider;
+    let (record, provider) = match provider_registry::resolve_provider(&state.db, provider_key).await {
+        Some(p) => p,
+        None => return (StatusCode::INTERNAL_SERVER_ERROR, "No provider available").into_response(),
+    };
+
+    let model = provider_registry::resolve_default_model(&record);
+
+    let mut user_text = body.prompt.clone();
+    if let Some(ctx) = &body.context {
+        user_text = format!("{}\n\n---\nContext:\n{}", user_text, ctx);
+    }
+
+    let req = CompletionRequest {
+        model,
+        system: Some("根据用户提示生成文本，直接输出结果，不要添加额外解释。".to_string()),
+        messages: vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: user_text }],
+        }],
+        tools: vec![],
+        max_tokens: 4096,
+    };
+
+    let event_stream = match provider.stream(req).await {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let sse_stream = event_stream.map(|result| {
+        match result {
+            Ok(StreamEvent::TextDelta(text)) => {
+                let json = serde_json::json!({"type": "text_delta", "text": text});
+                Ok::<_, Infallible>(Event::default().data(json.to_string()))
+            }
+            Ok(StreamEvent::MessageEnd { .. }) => {
+                let json = serde_json::json!({"type": "done"});
+                Ok(Event::default().data(json.to_string()))
+            }
+            Ok(_) => Ok(Event::default().comment("")),
+            Err(e) => {
+                let json = serde_json::json!({"type": "error", "message": e.to_string()});
+                Ok(Event::default().data(json.to_string()))
+            }
+        }
+    });
+
+    Sse::new(sse_stream).into_response()
 }

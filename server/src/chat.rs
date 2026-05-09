@@ -1,4 +1,5 @@
 use crate::AppState;
+use crate::provider_registry;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -18,8 +19,6 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
-
-use crate::config::DEFAULT_MODEL;
 
 // --- Event Buffer types ---
 
@@ -79,23 +78,21 @@ pub async fn chat_handler(
         .as_deref()
         .unwrap_or(&state.config.server.default_provider);
 
-    let provider = match state.get_provider(provider_key) {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("Unknown provider: {provider_key}"),
-            )
-                .into_response();
-        }
-    };
+    // Resolve providers with fallback from DB
+    let fallback_list = provider_registry::resolve_with_fallback(&state.db, provider_key).await;
+    if fallback_list.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("No enabled providers available"),
+        )
+            .into_response();
+    }
 
-    let provider_config = state.config.find_provider(provider_key);
-    let model = match (body.model, provider_config) {
-        (Some(m), Some(pc)) => pc.resolve_model(&m),
-        (Some(m), None) => m,
-        (None, Some(pc)) => pc.resolve_default_model(),
-        (None, None) => DEFAULT_MODEL.to_string(),
+    // Determine model from the first (preferred) provider record
+    let first_record = &fallback_list[0].0;
+    let model = match &body.model {
+        Some(m) => provider_registry::resolve_model(first_record, m),
+        None => provider_registry::resolve_default_model(first_record),
     };
 
     let session_record = state.db.get_session(&session_id).await.ok().flatten();
@@ -114,37 +111,6 @@ pub async fn chat_handler(
         Arc::new(SearchTool::new(work_dir)),
     ];
 
-    let mut session = AgentSession::new(
-        provider,
-        tools,
-        model,
-        "You are a helpful AI assistant with access to shell commands. Execute tasks the user requests.".to_string(),
-    );
-
-    let history_len = {
-        let db_messages = if let Some(ref leaf) = parent_id_for_new_msg {
-            state.db.get_branch_messages(&session_id, leaf).await.unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let messages: Vec<hank_provider::Message> = db_messages
-            .iter()
-            .filter_map(|m| {
-                let content: Vec<hank_provider::ContentBlock> =
-                    serde_json::from_str(&m.content).ok()?;
-                let role = match m.role.as_str() {
-                    "user" => hank_provider::Role::User,
-                    "assistant" => hank_provider::Role::Assistant,
-                    _ => return None,
-                };
-                Some(hank_provider::Message { role, content })
-            })
-            .collect();
-        let len = messages.len();
-        session.set_messages(messages);
-        len
-    };
-
     // Initialize event buffer for this session
     {
         let mut buffers = state.event_buffers.write().await;
@@ -162,8 +128,35 @@ pub async fn chat_handler(
     let db = state.db.clone();
     let sid = session_id.clone();
     let content = body.content;
-    let is_first_message = history_len == 0;
-    let parent_for_chain = parent_id_for_new_msg;
+    let is_first_message = {
+        let msgs = if let Some(ref leaf) = parent_id_for_new_msg {
+            state.db.get_branch_messages(&session_id, leaf).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        msgs.is_empty()
+    };
+    let parent_for_chain = parent_id_for_new_msg.clone();
+
+    // Build history for the session
+    let history: Vec<hank_provider::Message> = if let Some(ref leaf) = parent_id_for_new_msg {
+        state.db.get_branch_messages(&session_id, leaf).await.unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+    .iter()
+    .filter_map(|m| {
+        let content: Vec<hank_provider::ContentBlock> =
+            serde_json::from_str(&m.content).ok()?;
+        let role = match m.role.as_str() {
+            "user" => hank_provider::Role::User,
+            "assistant" => hank_provider::Role::Assistant,
+            _ => return None,
+        };
+        Some(hank_provider::Message { role, content })
+    })
+    .collect();
+    let history_len = history.len();
 
     let cancel_token = CancellationToken::new();
     {
@@ -172,7 +165,6 @@ pub async fn chat_handler(
     }
     let state_for_cleanup = state.clone();
     let sid_for_cleanup = session_id.clone();
-    let provider_name = provider_key.to_string();
 
     // Forwarder task: reads from agent mpsc, writes to EventBuffer + persists metrics
     let state_fwd = state.clone();
@@ -181,7 +173,6 @@ pub async fn chat_handler(
     let sid_fwd2 = session_id.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            // Persist metrics events to DB
             match &event {
                 AgentEvent::Metrics { input_tokens, output_tokens, latency_ms, model, provider } => {
                     let _ = db_fwd.save_agent_metric(
@@ -202,24 +193,89 @@ pub async fn chat_handler(
         }
     });
 
-    // PLACEHOLDER_SPAWN_AGENT
-
-    // Agent task
+    // Agent task with fallback loop
     let state_for_buffer2 = state.clone();
     let sid_for_buffer2 = session_id.clone();
     tokio::spawn(async move {
-        if let Err(e) = session.run(content.clone(), event_tx.clone(), cancel_token).await {
-            error!(session_id = %sid, provider = %provider_name, "Agent error: {e:#}");
-            let _ = event_tx
-                .send(AgentEvent::Error {
-                    message: format!("{e:#}"),
-                })
-                .await;
+        let max_attempts = fallback_list.len().min(3);
+        let mut last_error = String::new();
 
-            let error_content = serde_json::json!([{"type": "error", "text": format!("{e:#}")}]);
-            let ts = chrono::Utc::now();
-            let _ = db.save_message(&sid, "assistant", &error_content, ts, parent_for_chain.as_deref()).await;
-            let _ = db.touch_session(&sid).await;
+        for attempt in 0..max_attempts {
+            let (ref record, ref provider) = fallback_list[attempt];
+            let current_model = if attempt == 0 {
+                model.clone()
+            } else {
+                provider_registry::resolve_default_model(record)
+            };
+
+            // Emit fallback event if not first attempt
+            if attempt > 0 {
+                let prev_name = &fallback_list[attempt - 1].0.name;
+                let _ = event_tx.send(AgentEvent::ProviderFallback {
+                    from: prev_name.clone(),
+                    to: record.name.clone(),
+                    reason: last_error.clone(),
+                }).await;
+            }
+
+            let mut session = AgentSession::new(
+                provider.clone(),
+                tools.clone(),
+                current_model,
+                "You are a helpful AI assistant with access to shell commands. Execute tasks the user requests.".to_string(),
+            );
+            session.set_messages(history.clone());
+
+            match session.run(content.clone(), event_tx.clone(), cancel_token.clone()).await {
+                Ok(()) => {
+                    // Success — save messages
+                    let new_messages: Vec<_> = session.messages().iter().skip(history_len).collect();
+                    if !new_messages.is_empty() {
+                        let base_time = chrono::Utc::now();
+                        let mut prev_id = parent_for_chain;
+                        for (i, msg) in new_messages.iter().enumerate() {
+                            let role = match msg.role {
+                                hank_provider::Role::User => "user",
+                                hank_provider::Role::Assistant => "assistant",
+                            };
+                            let content_val = serde_json::to_value(&msg.content).unwrap_or_default();
+                            let ts = base_time + chrono::Duration::microseconds(i as i64);
+                            match db.save_message(&sid, role, &content_val, ts, prev_id.as_deref()).await {
+                                Ok(new_id) => prev_id = Some(new_id),
+                                Err(_) => break,
+                            }
+                        }
+                        if let Some(ref leaf) = prev_id {
+                            let _ = db.update_active_leaf(&sid, leaf).await;
+                        }
+                        let _ = db.touch_session(&sid).await;
+                    }
+
+                    if is_first_message {
+                        let title: String = content.chars().take(50).collect();
+                        let _ = db.update_session_title(&sid, &title).await;
+                    }
+                    break;
+                }
+                Err(e) => {
+                    last_error = format!("{e:#}");
+                    let is_retryable = is_retryable_error(&last_error);
+
+                    if !is_retryable || attempt == max_attempts - 1 {
+                        // Non-retryable or last attempt — emit error
+                        error!(session_id = %sid, provider = %record.name, "Agent error: {e:#}");
+                        let _ = event_tx.send(AgentEvent::Error { message: format!("{e:#}") }).await;
+
+                        let error_content = serde_json::json!([{"type": "error", "text": format!("{e:#}")}]);
+                        let ts = chrono::Utc::now();
+                        let _ = db.save_message(&sid, "assistant", &error_content, ts, parent_for_chain.as_deref()).await;
+                        let _ = db.touch_session(&sid).await;
+                        break;
+                    }
+                    // Retryable — continue to next provider
+                    tracing::warn!(provider = %record.name, "Provider failed, trying fallback: {}", last_error);
+                }
+            }
         }
 
         // Drop event_tx so forwarder finishes
@@ -238,39 +294,25 @@ pub async fn chat_handler(
                 buf.completed = true;
             }
         }
-
-        // Batch save new messages to DB
-        let new_messages: Vec<_> = session.messages().iter().skip(history_len).collect();
-        if !new_messages.is_empty() {
-            let base_time = chrono::Utc::now();
-            let mut prev_id = parent_for_chain;
-            for (i, msg) in new_messages.iter().enumerate() {
-                let role = match msg.role {
-                    hank_provider::Role::User => "user",
-                    hank_provider::Role::Assistant => "assistant",
-                };
-                let content_val = serde_json::to_value(&msg.content).unwrap_or_default();
-                let ts = base_time + chrono::Duration::microseconds(i as i64);
-                match db.save_message(&sid, role, &content_val, ts, prev_id.as_deref()).await {
-                    Ok(new_id) => prev_id = Some(new_id),
-                    Err(_) => break,
-                }
-            }
-            if let Some(ref leaf) = prev_id {
-                let _ = db.update_active_leaf(&sid, leaf).await;
-            }
-            let _ = db.touch_session(&sid).await;
-        }
-
-        if is_first_message {
-            let title: String = content.chars().take(50).collect();
-            let _ = db.update_session_title(&sid, &title).await;
-        }
     });
 
     // Build SSE stream from broadcast receiver + heartbeat
     let stream = make_sse_stream(rx);
     Sse::new(stream).into_response()
+}
+
+/// Check if an error is retryable (network, rate limit, 5xx, auth issues).
+fn is_retryable_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("connection")
+        || lower.contains("timeout")
+        || lower.contains("rate limit")
+        || lower.contains("429")
+        || lower.contains("500")
+        || lower.contains("502")
+        || lower.contains("503")
+        || lower.contains("504")
+        || lower.contains("overloaded")
 }
 
 // PLACEHOLDER_MAKE_SSE

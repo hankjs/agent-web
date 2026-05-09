@@ -1,4 +1,4 @@
-const TOKEN_KEY = 'hank_token'
+const TOKEN_KEY = 'hank_admin_token'
 
 function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
@@ -8,6 +8,14 @@ export function setToken(token: string) {
   localStorage.setItem(TOKEN_KEY, token)
 }
 
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
+export function hasToken(): boolean {
+  return !!localStorage.getItem(TOKEN_KEY)
+}
+
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const token = getToken()
   const headers: Record<string, string> = {
@@ -15,6 +23,11 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   }
   const res = await fetch(url, { ...options, headers })
+  if (res.status === 401) {
+    clearToken()
+    window.location.href = '/admin/login'
+    throw new Error('Unauthorized')
+  }
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
   return res.json()
 }
@@ -28,9 +41,11 @@ export interface PaginatedResponse<T> {
 
 export interface Session {
   id: string
+  user_id: string | null
   title: string
   provider: string
   model: string
+  username: string | null
   created_at: string
   updated_at: string
 }
@@ -81,7 +96,36 @@ export interface DbMessage {
   created_at: string
 }
 
+export interface User {
+  id: string
+  username: string
+  can_login_admin: boolean
+  can_login_client: boolean
+  created_at: string
+}
+
+export interface Provider {
+  id: string
+  name: string
+  provider_type: string
+  api_key: string
+  base_url: string
+  default_model: string
+  models: string
+  priority: number
+  enabled: boolean
+  created_at: string
+}
+
 export const api = {
+  login(username: string, password: string) {
+    return fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, scope: 'admin' }),
+    })
+  },
+
   sessions(page = 1, perPage = 20, search = '') {
     const params = new URLSearchParams({ page: String(page), per_page: String(perPage) })
     if (search) params.set('search', search)
@@ -115,6 +159,10 @@ export const api = {
     })
   },
 
+  deletePromptTemplate(id: string) {
+    return request<void>(`/api/admin/prompt-templates/${id}`, { method: 'DELETE' })
+  },
+
   replay(sessionId: string, opts: { prompt_template_id?: string; system_prompt?: string }) {
     return fetch('/api/admin/replay', {
       method: 'POST',
@@ -123,6 +171,63 @@ export const api = {
         ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
       },
       body: JSON.stringify({ session_id: sessionId, ...opts }),
+    })
+  },
+
+  // User management
+  listUsers() {
+    return request<User[]>('/api/admin/users')
+  },
+
+  createUser(username: string, password: string, can_login_admin: boolean, can_login_client: boolean) {
+    return request<{ id: string; username: string }>('/api/admin/users', {
+      method: 'POST',
+      body: JSON.stringify({ username, password, can_login_admin, can_login_client }),
+    })
+  },
+
+  updateUser(id: string, data: { can_login_admin?: boolean; can_login_client?: boolean; password?: string }) {
+    return request<{ status: string }>(`/api/admin/users/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  },
+
+  deleteUser(id: string) {
+    return request<void>(`/api/admin/users/${id}`, { method: 'DELETE' })
+  },
+
+  // Provider management
+  listProviders() {
+    return request<Provider[]>('/api/admin/providers')
+  },
+
+  createProvider(data: { name: string; provider_type: string; api_key: string; base_url?: string; default_model?: string; models?: Record<string, string>; priority?: number; enabled?: boolean }) {
+    return request<Provider>('/api/admin/providers', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+
+  updateProvider(id: string, data: { name: string; provider_type: string; api_key: string; base_url?: string; default_model?: string; models?: Record<string, string>; priority?: number; enabled?: boolean }) {
+    return request<{ status: string }>(`/api/admin/providers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  },
+
+  deleteProvider(id: string) {
+    return request<void>(`/api/admin/providers/${id}`, { method: 'DELETE' })
+  },
+
+  chatGenerate(prompt: string, context?: string) {
+    return fetch('/api/admin/chat/generate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
+      },
+      body: JSON.stringify({ prompt, context }),
     })
   },
 }

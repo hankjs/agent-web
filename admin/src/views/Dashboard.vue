@@ -10,40 +10,51 @@ onMounted(async () => {
   const res = await api.sessions(1, 5)
   recentSessions.value = res.data
 })
+
+function formatTokens(n: number) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M'
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k'
+  return String(n)
+}
 </script>
 
 <template>
   <div>
-    <h1 class="text-2xl font-bold text-gray-900 mb-6">Dashboard</h1>
+    <h1 class="text-lg font-semibold text-text-primary mb-8">Overview</h1>
 
-    <div v-if="overview" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-      <div class="bg-white rounded-lg border p-4">
-        <div class="text-sm text-gray-500">Total Tokens</div>
-        <div class="text-2xl font-semibold">{{ (overview.total_input_tokens + overview.total_output_tokens).toLocaleString() }}</div>
-        <div class="text-xs text-gray-400 mt-1">In: {{ overview.total_input_tokens.toLocaleString() }} / Out: {{ overview.total_output_tokens.toLocaleString() }}</div>
+    <div v-if="overview" class="grid grid-cols-3 gap-12 mb-12">
+      <div>
+        <div class="text-[13px] text-text-tertiary mb-1">Tokens</div>
+        <div class="text-2xl font-semibold tabular-nums">{{ formatTokens(overview.total_input_tokens + overview.total_output_tokens) }}</div>
+        <div class="text-[12px] text-text-tertiary mt-1">{{ formatTokens(overview.total_input_tokens) }} in · {{ formatTokens(overview.total_output_tokens) }} out</div>
       </div>
-      <div class="bg-white rounded-lg border p-4">
-        <div class="text-sm text-gray-500">Avg Latency</div>
-        <div class="text-2xl font-semibold">{{ Math.round(overview.avg_latency_ms) }}ms</div>
-        <div class="text-xs text-gray-400 mt-1">{{ overview.total_llm_calls }} LLM calls</div>
+      <div>
+        <div class="text-[13px] text-text-tertiary mb-1">Avg latency</div>
+        <div class="text-2xl font-semibold tabular-nums">{{ Math.round(overview.avg_latency_ms) }}<span class="text-sm font-normal text-text-tertiary">ms</span></div>
+        <div class="text-[12px] text-text-tertiary mt-1">{{ overview.total_llm_calls }} calls</div>
       </div>
-      <div class="bg-white rounded-lg border p-4">
-        <div class="text-sm text-gray-500">Tool Error Rate</div>
-        <div class="text-2xl font-semibold">{{ overview.tool_total_count ? ((overview.tool_error_count / overview.tool_total_count) * 100).toFixed(1) : 0 }}%</div>
-        <div class="text-xs text-gray-400 mt-1">{{ overview.tool_error_count }} / {{ overview.tool_total_count }} executions</div>
+      <div>
+        <div class="text-[13px] text-text-tertiary mb-1">Tool errors</div>
+        <div class="text-2xl font-semibold tabular-nums">{{ overview.tool_total_count ? ((overview.tool_error_count / overview.tool_total_count) * 100).toFixed(1) : 0 }}<span class="text-sm font-normal text-text-tertiary">%</span></div>
+        <div class="text-[12px] text-text-tertiary mt-1">{{ overview.tool_error_count }} / {{ overview.tool_total_count }}</div>
       </div>
     </div>
 
-    <h2 class="text-lg font-semibold text-gray-800 mb-3">Recent Sessions</h2>
-    <div class="bg-white rounded-lg border">
-      <div v-for="s in recentSessions" :key="s.id" class="flex items-center justify-between px-4 py-3 border-b last:border-b-0">
-        <div>
-          <RouterLink :to="`/sessions/${s.id}`" class="text-sm font-medium text-blue-600 hover:underline">{{ s.title || s.id.slice(0, 8) }}</RouterLink>
-          <div class="text-xs text-gray-400">{{ s.provider }} / {{ s.model }}</div>
+    <div class="mb-3 text-[13px] text-text-tertiary font-medium">Recent sessions</div>
+    <div class="divide-y divide-border-subtle">
+      <RouterLink
+        v-for="s in recentSessions"
+        :key="s.id"
+        :to="`/sessions/${s.id}`"
+        class="flex items-center justify-between py-2.5 -mx-2 px-2 rounded-md hover:bg-hover transition-colors duration-100 cursor-pointer"
+      >
+        <div class="min-w-0">
+          <div class="text-[13px] text-text-primary truncate">{{ s.title || s.id.slice(0, 8) }}</div>
+          <div class="text-[12px] text-text-tertiary">{{ s.provider }} · {{ s.model }}</div>
         </div>
-        <div class="text-xs text-gray-400">{{ new Date(s.updated_at).toLocaleString() }}</div>
-      </div>
-      <div v-if="!recentSessions.length" class="px-4 py-6 text-center text-gray-400 text-sm">No sessions yet</div>
+        <div class="text-[12px] text-text-tertiary shrink-0 ml-4">{{ new Date(s.updated_at).toLocaleDateString() }}</div>
+      </RouterLink>
+      <div v-if="!recentSessions.length" class="py-8 text-center text-[13px] text-text-tertiary">No sessions yet</div>
     </div>
   </div>
 </template>

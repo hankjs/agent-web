@@ -51,6 +51,7 @@ pub struct Database {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Session {
     pub id: String,
+    pub user_id: Option<String>,
     pub title: String,
     pub provider: String,
     pub model: String,
@@ -115,6 +116,31 @@ pub struct PromptTemplate {
     pub name: String,
     pub content: String,
     pub version: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct User {
+    pub id: String,
+    pub username: String,
+    #[serde(skip_serializing)]
+    pub password_hash: String,
+    pub can_login_admin: bool,
+    pub can_login_client: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ProviderRecord {
+    pub id: String,
+    pub name: String,
+    pub provider_type: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub default_model: String,
+    pub models: String, // JSON
+    pub priority: i32,
+    pub enabled: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -258,6 +284,65 @@ impl Database {
             .execute(&pool)
             .await;
 
+        // Migration: add user_id to sessions
+        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN user_id VARCHAR(36) DEFAULT NULL AFTER id")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("CREATE INDEX idx_sessions_user ON sessions (user_id)")
+            .execute(&pool)
+            .await;
+
+        // Users table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS users (
+                id VARCHAR(36) PRIMARY KEY,
+                username VARCHAR(128) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                can_login_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                can_login_client BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                UNIQUE INDEX idx_users_username (username)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
+        // Seed default admin user if no users exist
+        let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+            .fetch_one(&pool)
+            .await?;
+        if user_count.0 == 0 {
+            let hash = bcrypt::hash("admin", bcrypt::DEFAULT_COST).unwrap();
+            let id = Uuid::new_v4().to_string();
+            let _ = sqlx::query(
+                "INSERT INTO users (id, username, password_hash, can_login_admin, can_login_client) VALUES (?, ?, ?, TRUE, TRUE)"
+            )
+            .bind(&id)
+            .bind("admin")
+            .bind(&hash)
+            .execute(&pool)
+            .await;
+        }
+
+        // Providers table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS providers (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(128) NOT NULL UNIQUE,
+                provider_type VARCHAR(32) NOT NULL,
+                api_key VARCHAR(512) NOT NULL,
+                base_url VARCHAR(512) NOT NULL DEFAULT '',
+                default_model VARCHAR(128) NOT NULL DEFAULT '',
+                models TEXT NOT NULL,
+                priority INT NOT NULL DEFAULT 0,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                INDEX idx_providers_priority (priority)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
         // Data migration: link existing messages by seq order and set active_leaf_id
         // Only run if there are messages without parent_id that should have one
         let unlinked: Vec<(String,)> = sqlx::query_as(
@@ -297,14 +382,15 @@ impl Database {
     }
 
     // Sessions
-    pub async fn create_session(&self, provider: &str, model: &str, work_dir: Option<&str>) -> Result<Session> {
+    pub async fn create_session(&self, provider: &str, model: &str, work_dir: Option<&str>, user_id: Option<&str>) -> Result<Session> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         db_retry!(
             sqlx::query(
-                "INSERT INTO sessions (id, title, provider, model, work_dir, created_at, updated_at) VALUES (?, '', ?, ?, ?, ?, ?)"
+                "INSERT INTO sessions (id, user_id, title, provider, model, work_dir, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?)"
             )
             .bind(&id)
+            .bind(user_id)
             .bind(provider)
             .bind(model)
             .bind(work_dir)
@@ -315,6 +401,7 @@ impl Database {
 
         Ok(Session {
             id,
+            user_id: user_id.map(|s| s.to_string()),
             title: String::new(),
             provider: provider.to_string(),
             model: model.to_string(),
@@ -328,8 +415,19 @@ impl Database {
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         let sessions = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+                "SELECT id, user_id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
             )
+            .fetch_all(&self.pool)
+        )?;
+        Ok(sessions)
+    }
+
+    pub async fn list_sessions_by_user(&self, user_id: &str) -> Result<Vec<Session>> {
+        let sessions = db_retry!(
+            sqlx::query_as::<_, Session>(
+                "SELECT id, user_id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions WHERE user_id = ? ORDER BY updated_at DESC"
+            )
+            .bind(user_id)
             .fetch_all(&self.pool)
         )?;
         Ok(sessions)
@@ -338,7 +436,7 @@ impl Database {
     pub async fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let session = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions WHERE id = ?"
+                "SELECT id, user_id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions WHERE id = ?"
             )
             .bind(id)
             .fetch_optional(&self.pool)
@@ -668,6 +766,195 @@ impl Database {
         Ok(row)
     }
 
+    pub async fn delete_prompt_template(&self, id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("DELETE FROM prompt_templates WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    // Users
+    pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>> {
+        let row = db_retry!(
+            sqlx::query_as::<_, User>(
+                "SELECT id, username, password_hash, can_login_admin, can_login_client, created_at FROM users WHERE username = ?"
+            )
+            .bind(username)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(row)
+    }
+
+    pub async fn list_users(&self) -> Result<Vec<User>> {
+        let rows = db_retry!(
+            sqlx::query_as::<_, User>(
+                "SELECT id, username, password_hash, can_login_admin, can_login_client, created_at FROM users ORDER BY created_at ASC"
+            )
+            .fetch_all(&self.pool)
+        )?;
+        Ok(rows)
+    }
+
+    pub async fn create_user(&self, username: &str, password: &str, can_admin: bool, can_client: bool) -> Result<User> {
+        let id = Uuid::new_v4().to_string();
+        let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)
+            .map_err(|e| anyhow::anyhow!("bcrypt error: {}", e))?;
+        let now = Utc::now();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO users (id, username, password_hash, can_login_admin, can_login_client, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(username)
+            .bind(&hash)
+            .bind(can_admin)
+            .bind(can_client)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
+        Ok(User { id, username: username.to_string(), password_hash: hash, can_login_admin: can_admin, can_login_client: can_client, created_at: now })
+    }
+
+    pub async fn update_user_permissions(&self, id: &str, can_admin: bool, can_client: bool) -> Result<()> {
+        db_retry!(
+            sqlx::query("UPDATE users SET can_login_admin = ?, can_login_client = ? WHERE id = ?")
+                .bind(can_admin)
+                .bind(can_client)
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn update_user_password(&self, id: &str, password: &str) -> Result<()> {
+        let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)
+            .map_err(|e| anyhow::anyhow!("bcrypt error: {}", e))?;
+        db_retry!(
+            sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+                .bind(&hash)
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn delete_user(&self, id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("DELETE FROM users WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    // Providers
+    pub async fn list_providers_ordered(&self) -> Result<Vec<ProviderRecord>> {
+        let rows = db_retry!(
+            sqlx::query_as::<_, ProviderRecord>(
+                "SELECT id, name, provider_type, api_key, base_url, default_model, models, priority, enabled, created_at FROM providers ORDER BY priority ASC"
+            )
+            .fetch_all(&self.pool)
+        )?;
+        Ok(rows)
+    }
+
+    pub async fn get_provider_by_name(&self, name: &str) -> Result<Option<ProviderRecord>> {
+        let row = db_retry!(
+            sqlx::query_as::<_, ProviderRecord>(
+                "SELECT id, name, provider_type, api_key, base_url, default_model, models, priority, enabled, created_at FROM providers WHERE name = ?"
+            )
+            .bind(name)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(row)
+    }
+
+    pub async fn create_provider(
+        &self,
+        name: &str,
+        provider_type: &str,
+        api_key: &str,
+        base_url: &str,
+        default_model: &str,
+        models: &str,
+        priority: i32,
+        enabled: bool,
+    ) -> Result<ProviderRecord> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO providers (id, name, provider_type, api_key, base_url, default_model, models, priority, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(name)
+            .bind(provider_type)
+            .bind(api_key)
+            .bind(base_url)
+            .bind(default_model)
+            .bind(models)
+            .bind(priority)
+            .bind(enabled)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
+        Ok(ProviderRecord {
+            id, name: name.to_string(), provider_type: provider_type.to_string(),
+            api_key: api_key.to_string(), base_url: base_url.to_string(),
+            default_model: default_model.to_string(), models: models.to_string(),
+            priority, enabled, created_at: now,
+        })
+    }
+
+    pub async fn update_provider(
+        &self,
+        id: &str,
+        name: &str,
+        provider_type: &str,
+        api_key: &str,
+        base_url: &str,
+        default_model: &str,
+        models: &str,
+        priority: i32,
+        enabled: bool,
+    ) -> Result<()> {
+        db_retry!(
+            sqlx::query(
+                "UPDATE providers SET name=?, provider_type=?, api_key=?, base_url=?, default_model=?, models=?, priority=?, enabled=? WHERE id=?"
+            )
+            .bind(name)
+            .bind(provider_type)
+            .bind(api_key)
+            .bind(base_url)
+            .bind(default_model)
+            .bind(models)
+            .bind(priority)
+            .bind(enabled)
+            .bind(id)
+            .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn delete_provider(&self, id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("DELETE FROM providers WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn provider_count(&self) -> Result<i64> {
+        let count: (i64,) = db_retry!(
+            sqlx::query_as("SELECT COUNT(*) FROM providers")
+                .fetch_one(&self.pool)
+        )?;
+        Ok(count.0)
+    }
+
     // Aggregated metrics for admin overview
     pub async fn get_metrics_overview(&self) -> Result<MetricsOverview> {
         #[derive(sqlx::FromRow)]
@@ -678,7 +965,7 @@ impl Database {
             total_calls: i64,
         }
         let agg: AggRow = sqlx::query_as(
-            "SELECT COALESCE(SUM(input_tokens), 0) as total_input_tokens, COALESCE(SUM(output_tokens), 0) as total_output_tokens, AVG(latency_ms) as avg_latency_ms, COUNT(*) as total_calls FROM agent_metrics"
+            "SELECT CAST(COALESCE(SUM(input_tokens), 0) AS SIGNED) as total_input_tokens, CAST(COALESCE(SUM(output_tokens), 0) AS SIGNED) as total_output_tokens, AVG(latency_ms) as avg_latency_ms, COUNT(*) as total_calls FROM agent_metrics"
         )
         .fetch_one(&self.pool)
         .await?;
@@ -689,7 +976,7 @@ impl Database {
             total_count: i64,
         }
         let err: ErrRow = sqlx::query_as(
-            "SELECT COALESCE(SUM(is_error), 0) as error_count, COUNT(*) as total_count FROM tool_executions"
+            "SELECT CAST(COALESCE(SUM(is_error), 0) AS SIGNED) as error_count, COUNT(*) as total_count FROM tool_executions"
         )
         .fetch_one(&self.pool)
         .await?;

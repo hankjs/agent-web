@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { api, type PromptTemplate } from '../composables/api'
+import { useAiGenerate } from '../composables/useAiGenerate'
+
+const { open } = useAiGenerate()
 
 const templates = ref<PromptTemplate[]>([])
 const name = ref('')
@@ -18,6 +21,11 @@ async function saveTemplate() {
   await api.createPromptTemplate(name.value, content.value)
   name.value = ''
   content.value = ''
+  await loadTemplates()
+}
+
+async function deleteTemplate(id: string) {
+  await api.deletePromptTemplate(id)
   await loadTemplates()
 }
 
@@ -60,42 +68,70 @@ onMounted(loadTemplates)
 </script>
 
 <template>
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-    <!-- Template Editor -->
-    <div>
-      <h1 class="text-2xl font-bold text-gray-900 mb-4">Prompt Lab</h1>
+  <div>
+    <h1 class="text-lg font-semibold text-text-primary mb-6">Prompts</h1>
 
-      <div class="bg-white rounded-lg border p-4 space-y-3">
-        <input v-model="name" placeholder="Template name" class="w-full border rounded px-3 py-2 text-sm" />
-        <textarea v-model="content" placeholder="System prompt content..." rows="10" class="w-full border rounded px-3 py-2 text-sm font-mono"></textarea>
-        <button @click="saveTemplate" class="px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700">Save Template</button>
-      </div>
-
-      <h2 class="text-lg font-semibold text-gray-800 mt-6 mb-3">Saved Templates</h2>
-      <div class="space-y-2">
-        <div v-for="t in templates" :key="t.id" class="bg-white rounded-lg border p-3 text-sm">
-          <div class="flex items-center justify-between">
-            <span class="font-medium">{{ t.name }} <span class="text-gray-400">v{{ t.version }}</span></span>
-            <button @click="content = t.content; name = t.name" class="text-xs text-blue-600 hover:underline">Load</button>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-10">
+      <div>
+        <div class="space-y-3 mb-8">
+          <input
+            v-model="name"
+            placeholder="Template name"
+            class="w-full bg-transparent border border-border rounded-md px-3 py-2 text-[13px] placeholder:text-text-tertiary focus:outline-none focus:border-accent transition-colors"
+          />
+          <textarea
+            v-model="content"
+            placeholder="System prompt..."
+            rows="10"
+            class="w-full bg-transparent border border-border rounded-md px-3 py-2 text-[13px] font-mono leading-relaxed placeholder:text-text-tertiary focus:outline-none focus:border-accent transition-colors resize-y"
+          ></textarea>
+          <div class="flex items-center gap-2">
+            <button
+              @click="saveTemplate"
+              class="px-3.5 py-1.5 bg-text-primary text-surface-raised text-[13px] rounded-md hover:opacity-80 transition-opacity"
+            >Save</button>
+            <button
+              @click="open(text => content = text)"
+              class="px-2 py-1.5 text-[13px] text-text-tertiary hover:text-accent transition-colors"
+              title="AI 生成"
+            >✨</button>
           </div>
-          <div class="text-xs text-gray-400 mt-1 truncate">{{ t.content.slice(0, 80) }}</div>
+        </div>
+
+        <div v-if="templates.length">
+          <div class="text-[13px] text-text-tertiary font-medium mb-3">Saved</div>
+          <div class="divide-y divide-border-subtle">
+            <div v-for="t in templates" :key="t.id" class="flex items-center justify-between py-2.5">
+              <div class="min-w-0">
+                <div class="text-[13px] text-text-primary">{{ t.name }} <span class="text-text-tertiary">v{{ t.version }}</span></div>
+                <div class="text-[12px] text-text-tertiary truncate mt-0.5">{{ t.content.slice(0, 60) }}</div>
+              </div>
+              <button @click="content = t.content; name = t.name" class="text-[12px] text-accent hover:text-accent-hover shrink-0 ml-3 transition-colors">Load</button>
+              <button @click="deleteTemplate(t.id)" class="text-[12px] text-text-tertiary hover:text-red-500 shrink-0 ml-2 transition-colors">删除</button>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
 
-    <!-- Replay Panel -->
-    <div>
-      <h2 class="text-lg font-semibold text-gray-800 mb-3">Compare Replay</h2>
-      <div class="bg-white rounded-lg border p-4 space-y-3">
-        <input v-model="replaySessionId" placeholder="Session ID to replay" class="w-full border rounded px-3 py-2 text-sm" />
-        <button @click="runReplay()" :disabled="isReplaying" class="px-4 py-2 bg-green-600 text-white text-sm rounded hover:bg-green-700 disabled:opacity-50">
-          {{ isReplaying ? 'Replaying...' : 'Run Replay' }}
-        </button>
-      </div>
+      <div>
+        <div class="text-[13px] text-text-tertiary font-medium mb-3">Replay</div>
+        <div class="space-y-3">
+          <input
+            v-model="replaySessionId"
+            placeholder="Session ID"
+            class="w-full bg-transparent border border-border rounded-md px-3 py-2 text-[13px] font-mono placeholder:text-text-tertiary focus:outline-none focus:border-accent transition-colors"
+          />
+          <button
+            @click="runReplay()"
+            :disabled="isReplaying"
+            class="px-3.5 py-1.5 bg-text-primary text-surface-raised text-[13px] rounded-md hover:opacity-80 disabled:opacity-40 transition-opacity"
+          >{{ isReplaying ? 'Running...' : 'Run' }}</button>
+        </div>
 
-      <div v-if="replayOutput.length" class="mt-4 bg-white rounded-lg border p-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-2">Output</h3>
-        <pre class="text-sm text-gray-600 whitespace-pre-wrap font-mono max-h-96 overflow-y-auto">{{ replayOutput.join('') }}</pre>
+        <div v-if="replayOutput.length" class="mt-6">
+          <div class="text-[13px] text-text-tertiary font-medium mb-2">Output</div>
+          <pre class="text-[12px] text-text-secondary whitespace-pre-wrap font-mono leading-relaxed max-h-96 overflow-y-auto">{{ replayOutput.join('') }}</pre>
+        </div>
       </div>
     </div>
   </div>

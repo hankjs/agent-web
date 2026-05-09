@@ -3,12 +3,12 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::auth;
+use crate::auth::{self, Claims};
 use crate::config::DEFAULT_MODEL;
 
 fn internal_error(e: impl ToString) -> axum::response::Response {
@@ -25,17 +25,38 @@ pub async fn health() -> impl IntoResponse {
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
-    // Accepted from client but not validated in single-user mode
-    #[allow(dead_code)]
+    pub username: Option<String>,
     pub password: Option<String>,
+    pub scope: Option<String>, // "admin" or "client"
 }
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
-    Json(_body): Json<LoginRequest>,
+    Json(body): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    match auth::create_token(&state.jwt_secret) {
-        Ok(token) => (StatusCode::OK, Json(serde_json::json!({"token": token}))).into_response(),
+    let username = body.username.unwrap_or_default();
+    let password = body.password.unwrap_or_default();
+    let scope = body.scope.unwrap_or_else(|| "client".to_string());
+
+    let user = match state.db.get_user_by_username(&username).await {
+        Ok(Some(u)) => u,
+        _ => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid credentials"}))).into_response(),
+    };
+
+    if !bcrypt::verify(&password, &user.password_hash).unwrap_or(false) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid credentials"}))).into_response();
+    }
+
+    // Check scope permission
+    if scope == "admin" && !user.can_login_admin {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "no admin access"}))).into_response();
+    }
+    if scope == "client" && !user.can_login_client {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "no client access"}))).into_response();
+    }
+
+    match auth::create_token(&state.jwt_secret, &user.id, &user.username, user.can_login_admin, user.can_login_client) {
+        Ok(token) => (StatusCode::OK, Json(serde_json::json!({"token": token, "username": user.username, "can_admin": user.can_login_admin, "can_client": user.can_login_client}))).into_response(),
         Err(e) => internal_error(e),
     }
 }
@@ -49,6 +70,7 @@ pub struct CreateSessionRequest {
 
 pub async fn create_session(
     State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<Claims>,
     Json(body): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let provider = body
@@ -64,7 +86,7 @@ pub async fn create_session(
 
     match state
         .db
-        .create_session(&provider, &model, body.work_dir.as_deref())
+        .create_session(&provider, &model, body.work_dir.as_deref(), Some(&claims.sub))
         .await
     {
         Ok(session) => (StatusCode::CREATED, Json(serde_json::json!(session))).into_response(),
@@ -72,8 +94,11 @@ pub async fn create_session(
     }
 }
 
-pub async fn list_sessions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.db.list_sessions().await {
+pub async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<Claims>,
+) -> impl IntoResponse {
+    match state.db.list_sessions_by_user(&claims.sub).await {
         Ok(sessions) => Json(serde_json::json!(sessions)).into_response(),
         Err(e) => internal_error(e),
     }
@@ -222,22 +247,23 @@ pub async fn update_settings(
 }
 
 pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let providers: Vec<serde_json::Value> = state
-        .config
-        .providers
+    let providers = state.db.list_providers_ordered().await.unwrap_or_default();
+    let provider_list: Vec<serde_json::Value> = providers
         .iter()
+        .filter(|p| p.enabled)
         .map(|p| {
+            let models: serde_json::Value = serde_json::from_str(&p.models).unwrap_or(serde_json::json!({}));
             serde_json::json!({
                 "name": p.name,
-                "type": format!("{:?}", p.provider_type).to_lowercase(),
+                "type": p.provider_type,
                 "default_model": p.default_model,
-                "models": p.models,
+                "models": models,
             })
         })
         .collect();
 
     Json(serde_json::json!({
-        "providers": providers,
+        "providers": provider_list,
         "default_provider": state.config.server.default_provider,
     }))
 }

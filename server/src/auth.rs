@@ -1,20 +1,26 @@
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String,
+    pub sub: String,        // user id
+    pub username: String,
+    pub can_admin: bool,
+    pub can_client: bool,
     pub exp: usize,
 }
 
-pub fn create_token(secret: &str) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn create_token(secret: &str, user_id: &str, username: &str, can_admin: bool, can_client: bool) -> Result<String, jsonwebtoken::errors::Error> {
     let exp = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::days(30))
         .unwrap()
         .timestamp() as usize;
 
     let claims = Claims {
-        sub: "user".to_string(),
+        sub: user_id.to_string(),
+        username: username.to_string(),
+        can_admin,
+        can_client,
         exp,
     };
 

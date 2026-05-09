@@ -2,6 +2,7 @@ mod admin;
 mod auth;
 mod chat;
 mod config;
+pub mod provider_registry;
 mod routes;
 
 use anyhow::Result;
@@ -13,11 +14,10 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
-use config::{Config, ProviderType};
+use config::Config;
 use hank_db::Database;
-use hank_provider::LlmProvider;
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
@@ -31,45 +31,14 @@ pub struct AppState {
     pub db: Database,
     pub jwt_secret: String,
     pub config: Config,
-    pub providers: HashMap<String, Arc<dyn LlmProvider>>,
     pub active_tasks: RwLock<HashMap<String, CancellationToken>>,
     pub event_buffers: RwLock<HashMap<String, EventBuffer>>,
-}
-
-impl AppState {
-    pub fn get_provider(&self, name: &str) -> Option<Arc<dyn LlmProvider>> {
-        self.providers.get(name).cloned()
-    }
-}
-
-fn build_providers(config: &Config) -> HashMap<String, Arc<dyn LlmProvider>> {
-    use hank_provider::anthropic::AnthropicProvider;
-    use hank_provider::openai::OpenAiProvider;
-
-    let mut map: HashMap<String, Arc<dyn LlmProvider>> = HashMap::new();
-
-    for p in &config.providers {
-        let provider: Arc<dyn LlmProvider> = match p.provider_type {
-            ProviderType::Anthropic => Arc::new(
-                AnthropicProvider::new(p.api_key.clone()).with_base_url(p.base_url.clone()),
-            ),
-            ProviderType::Openai => Arc::new(
-                OpenAiProvider::new(p.api_key.clone())
-                    .with_base_url(p.base_url.clone())
-                    .with_name(p.name.clone()),
-            ),
-        };
-        tracing::info!("Loaded provider: {} ({:?})", p.name, p.provider_type);
-        map.insert(p.name.clone(), provider);
-    }
-
-    map
 }
 
 async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    request: Request<axum::body::Body>,
+    mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let token = headers
@@ -78,7 +47,13 @@ async fn auth_middleware(
         .and_then(|v| v.strip_prefix("Bearer "));
 
     match token {
-        Some(t) if auth::verify_token(t, &state.jwt_secret).is_ok() => Ok(next.run(request).await),
+        Some(t) => match auth::verify_token(t, &state.jwt_secret) {
+            Ok(claims) => {
+                request.extensions_mut().insert(claims);
+                Ok(next.run(request).await)
+            }
+            Err(_) => Err(StatusCode::UNAUTHORIZED),
+        },
         _ => Err(StatusCode::UNAUTHORIZED),
     }
 }
@@ -91,16 +66,13 @@ async fn main() -> Result<()> {
 
     let config = Config::load()?;
     let db = Database::new(&config.server.database_url).await?;
-    let providers = build_providers(&config);
 
-    if providers.is_empty() {
-        anyhow::bail!("No providers configured. Check config.toml");
-    }
+    // Seed providers from config.toml into DB if table is empty
+    provider_registry::seed_from_config(&db, &config.providers).await;
 
     let state = Arc::new(AppState {
         db,
         jwt_secret: config.server.jwt_secret.clone(),
-        providers,
         config: config.clone(),
         active_tasks: RwLock::new(HashMap::new()),
         event_buffers: RwLock::new(HashMap::new()),
@@ -138,7 +110,17 @@ async fn main() -> Result<()> {
         .route("/api/admin/metrics/by-session/{id}", get(admin::metrics_by_session))
         .route("/api/admin/prompt-templates", post(admin::create_prompt_template))
         .route("/api/admin/prompt-templates", get(admin::list_prompt_templates))
+        .route("/api/admin/prompt-templates/{id}", delete(admin::delete_prompt_template))
+        .route("/api/admin/chat/generate", post(admin::chat_generate))
         .route("/api/admin/replay", post(admin::replay_with_prompt))
+        .route("/api/admin/users", get(admin::list_users))
+        .route("/api/admin/users", post(admin::create_user))
+        .route("/api/admin/users/{id}", put(admin::update_user))
+        .route("/api/admin/users/{id}", delete(admin::delete_user))
+        .route("/api/admin/providers", get(admin::list_providers))
+        .route("/api/admin/providers", post(admin::create_provider))
+        .route("/api/admin/providers/{id}", put(admin::update_provider))
+        .route("/api/admin/providers/{id}", delete(admin::delete_provider))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Static file serving for admin SPA

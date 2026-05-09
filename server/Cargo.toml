@@ -27,3 +27,4 @@ tokio-util = { workspace = true }
 async-stream = { workspace = true }
 toml = "0.8"
 dirs = "5"
+bcrypt = { workspace = true }

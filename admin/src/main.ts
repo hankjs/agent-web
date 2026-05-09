@@ -1,16 +1,26 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
+import { hasToken } from './composables/api'
 import './style.css'
 
 const router = createRouter({
   history: createWebHistory('/admin/'),
   routes: [
+    { path: '/login', component: () => import('./views/Login.vue'), meta: { public: true } },
     { path: '/', component: () => import('./views/Dashboard.vue') },
     { path: '/sessions', component: () => import('./views/Sessions.vue') },
     { path: '/sessions/:id', component: () => import('./views/SessionDetail.vue') },
     { path: '/prompts', component: () => import('./views/PromptLab.vue') },
+    { path: '/users', component: () => import('./views/Users.vue') },
+    { path: '/providers', component: () => import('./views/Providers.vue') },
   ],
+})
+
+router.beforeEach((to) => {
+  if (!to.meta.public && !hasToken()) {
+    return '/login'
+  }
 })
 
 const app = createApp(App)

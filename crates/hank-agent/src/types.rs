@@ -32,4 +32,10 @@ pub enum AgentEvent {
         duration_ms: u64,
         is_error: bool,
     },
+    /// Provider fallback occurred during chat
+    ProviderFallback {
+        from: String,
+        to: String,
+        reason: String,
+    },
 }
