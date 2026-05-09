@@ -153,7 +153,8 @@ async fn process_sse_stream(
             let event_str = buffer[..pos].to_string();
             buffer.drain(..pos + 2);
 
-            if let Some(event) = parse_sse_event(&event_str) {
+            let events = parse_sse_event(&event_str);
+            for event in events {
                 debug!("Parsed StreamEvent: {event:?}");
                 if tx.send(Ok(event)).await.is_err() {
                     return Ok(());
@@ -165,7 +166,7 @@ async fn process_sse_stream(
     Ok(())
 }
 
-fn parse_sse_event(raw: &str) -> Option<StreamEvent> {
+fn parse_sse_event(raw: &str) -> Vec<StreamEvent> {
     let mut event_type = String::new();
     let mut data = String::new();
 
@@ -178,53 +179,92 @@ fn parse_sse_event(raw: &str) -> Option<StreamEvent> {
     }
 
     if data.is_empty() {
-        return None;
+        return Vec::new();
     }
 
-    let parsed: serde_json::Value = serde_json::from_str(&data).ok()?;
+    let parsed: serde_json::Value = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
 
     match event_type.as_str() {
-        "content_block_start" => {
-            let block = parsed.get("content_block")?;
-            let block_type = block.get("type")?.as_str()?;
-            if block_type == "tool_use" {
-                let id = block.get("id")?.as_str()?.to_string();
-                let name = block.get("name")?.as_str()?.to_string();
-                Some(StreamEvent::ToolUseStart { id, name })
+        "message_start" => {
+            if let Some(usage) = parsed.get("message").and_then(|m| m.get("usage")) {
+                let input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                vec![StreamEvent::Usage { input_tokens, output_tokens }]
             } else {
-                None
+                Vec::new()
+            }
+        }
+        "content_block_start" => {
+            let block = match parsed.get("content_block") {
+                Some(b) => b,
+                None => return Vec::new(),
+            };
+            let block_type = match block.get("type").and_then(|t| t.as_str()) {
+                Some(t) => t,
+                None => return Vec::new(),
+            };
+            if block_type == "tool_use" {
+                let id = block.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                vec![StreamEvent::ToolUseStart { id, name }]
+            } else {
+                Vec::new()
             }
         }
         "content_block_delta" => {
-            let delta = parsed.get("delta")?;
-            let delta_type = delta.get("type")?.as_str()?;
+            let delta = match parsed.get("delta") {
+                Some(d) => d,
+                None => return Vec::new(),
+            };
+            let delta_type = match delta.get("type").and_then(|t| t.as_str()) {
+                Some(t) => t,
+                None => return Vec::new(),
+            };
             match delta_type {
                 "text_delta" => {
-                    let text = delta.get("text")?.as_str()?.to_string();
-                    Some(StreamEvent::TextDelta(text))
+                    if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                        vec![StreamEvent::TextDelta(text.to_string())]
+                    } else {
+                        Vec::new()
+                    }
                 }
                 "input_json_delta" => {
-                    let json = delta.get("partial_json")?.as_str()?.to_string();
-                    Some(StreamEvent::ToolUseInputDelta(json))
+                    if let Some(json) = delta.get("partial_json").and_then(|j| j.as_str()) {
+                        vec![StreamEvent::ToolUseInputDelta(json.to_string())]
+                    } else {
+                        Vec::new()
+                    }
                 }
-                _ => None,
+                _ => Vec::new(),
             }
         }
         "content_block_stop" => {
-            // Only emit ToolUseEnd — the session layer uses in_tool_block tracking
-            // to filter spurious events from text block stops
-            Some(StreamEvent::ToolUseEnd)
+            vec![StreamEvent::ToolUseEnd]
         }
         "message_delta" => {
-            let delta = parsed.get("delta")?;
-            let stop_reason = delta.get("stop_reason")?.as_str()?;
-            let reason = match stop_reason {
-                "end_turn" => StopReason::EndTurn,
-                "tool_use" => StopReason::ToolUse,
-                "max_tokens" => StopReason::MaxTokens,
-                _ => StopReason::EndTurn,
-            };
-            Some(StreamEvent::MessageEnd { stop_reason: reason })
+            let mut events = Vec::new();
+            // Extract output_tokens from usage field
+            if let Some(usage) = parsed.get("usage") {
+                let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                if output_tokens > 0 {
+                    events.push(StreamEvent::Usage { input_tokens: 0, output_tokens });
+                }
+            }
+            if let Some(delta) = parsed.get("delta") {
+                if let Some(stop_reason) = delta.get("stop_reason").and_then(|s| s.as_str()) {
+                    let reason = match stop_reason {
+                        "end_turn" => StopReason::EndTurn,
+                        "tool_use" => StopReason::ToolUse,
+                        "max_tokens" => StopReason::MaxTokens,
+                        _ => StopReason::EndTurn,
+                    };
+                    events.push(StreamEvent::MessageEnd { stop_reason: reason });
+                }
+            }
+            events
         }
         "error" => {
             let msg = parsed
@@ -233,8 +273,8 @@ fn parse_sse_event(raw: &str) -> Option<StreamEvent> {
                 .and_then(|m| m.as_str())
                 .unwrap_or("Unknown error")
                 .to_string();
-            Some(StreamEvent::Error(msg))
+            vec![StreamEvent::Error(msg)]
         }
-        _ => None,
+        _ => Vec::new(),
     }
 }

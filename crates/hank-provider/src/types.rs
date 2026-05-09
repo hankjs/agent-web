@@ -44,6 +44,7 @@ pub enum StreamEvent {
     ToolUseInputDelta(String),
     ToolUseEnd,
     MessageEnd { stop_reason: StopReason },
+    Usage { input_tokens: u32, output_tokens: u32 },
     Error(String),
 }
 

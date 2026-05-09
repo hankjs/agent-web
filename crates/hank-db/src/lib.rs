@@ -7,18 +7,19 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
 
-/// Retry a database operation up to `max` times on connection errors.
+/// Retry a database operation with exponential backoff on connection errors.
 macro_rules! db_retry {
     ($op:expr) => {{
         let mut attempts = 0u32;
-        const MAX_RETRIES: u32 = 2;
+        const MAX_RETRIES: u32 = 4;
         loop {
             match $op.await {
                 Ok(v) => break Ok(v),
                 Err(e) if attempts < MAX_RETRIES && is_connection_error(&e) => {
                     attempts += 1;
-                    tracing::warn!("DB connection error (attempt {}), retrying: {}", attempts, e);
-                    tokio::time::sleep(Duration::from_millis(200 * attempts as u64)).await;
+                    let delay_ms = 200u64 * (1u64 << (attempts - 1)); // 200, 400, 800, 1600ms
+                    tracing::warn!("DB connection error (attempt {}/{}), retrying in {}ms: {}", attempts, MAX_RETRIES, delay_ms, e);
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 }
                 Err(e) => break Err(anyhow::Error::from(e)),
             }
@@ -84,6 +85,49 @@ pub struct Setting {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AgentMetric {
+    pub id: String,
+    pub session_id: String,
+    pub message_id: Option<String>,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub latency_ms: u64,
+    pub model: String,
+    pub provider: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ToolExecution {
+    pub id: String,
+    pub session_id: String,
+    pub message_id: Option<String>,
+    pub tool_name: String,
+    pub duration_ms: u64,
+    pub is_error: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PromptTemplate {
+    pub id: String,
+    pub name: String,
+    pub content: String,
+    pub version: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsOverview {
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub avg_latency_ms: f64,
+    pub total_llm_calls: u64,
+    pub tool_error_count: u64,
+    pub tool_total_count: u64,
+}
+
 impl Database {
     pub async fn new(database_url: &str) -> Result<Self> {
         let connect_url = Self::maybe_setup_proxy_tunnel(database_url).await?;
@@ -144,6 +188,53 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS settings (
                 `key` VARCHAR(255) PRIMARY KEY,
                 value TEXT NOT NULL
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS agent_metrics (
+                id VARCHAR(36) PRIMARY KEY,
+                session_id VARCHAR(36) NOT NULL,
+                message_id VARCHAR(36) DEFAULT NULL,
+                input_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+                output_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+                latency_ms BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                model VARCHAR(128) NOT NULL DEFAULT '',
+                provider VARCHAR(64) NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                INDEX idx_agent_metrics_session (session_id)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tool_executions (
+                id VARCHAR(36) PRIMARY KEY,
+                session_id VARCHAR(36) NOT NULL,
+                message_id VARCHAR(36) DEFAULT NULL,
+                tool_name VARCHAR(128) NOT NULL,
+                duration_ms BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                is_error BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                INDEX idx_tool_executions_session (session_id)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS prompt_templates (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                content MEDIUMTEXT NOT NULL,
+                version INT NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                INDEX idx_prompt_templates_name (name)
             ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
@@ -453,6 +544,164 @@ impl Database {
             .execute(&self.pool)
         )?;
         Ok(())
+    }
+
+    // Agent Metrics
+    pub async fn save_agent_metric(
+        &self,
+        session_id: &str,
+        message_id: Option<&str>,
+        input_tokens: u32,
+        output_tokens: u32,
+        latency_ms: u64,
+        model: &str,
+        provider: &str,
+    ) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO agent_metrics (id, session_id, message_id, input_tokens, output_tokens, latency_ms, model, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(session_id)
+            .bind(message_id)
+            .bind(input_tokens)
+            .bind(output_tokens)
+            .bind(latency_ms)
+            .bind(model)
+            .bind(provider)
+            .execute(&self.pool)
+        )?;
+        Ok(id)
+    }
+
+    pub async fn get_session_metrics(&self, session_id: &str) -> Result<Vec<AgentMetric>> {
+        let rows = db_retry!(
+            sqlx::query_as::<_, AgentMetric>(
+                "SELECT id, session_id, message_id, input_tokens, output_tokens, latency_ms, model, provider, created_at FROM agent_metrics WHERE session_id = ? ORDER BY created_at ASC"
+            )
+            .bind(session_id)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(rows)
+    }
+
+    // Tool Executions
+    pub async fn save_tool_execution(
+        &self,
+        session_id: &str,
+        message_id: Option<&str>,
+        tool_name: &str,
+        duration_ms: u64,
+        is_error: bool,
+    ) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO tool_executions (id, session_id, message_id, tool_name, duration_ms, is_error) VALUES (?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(session_id)
+            .bind(message_id)
+            .bind(tool_name)
+            .bind(duration_ms)
+            .bind(is_error)
+            .execute(&self.pool)
+        )?;
+        Ok(id)
+    }
+
+    pub async fn get_session_tool_executions(&self, session_id: &str) -> Result<Vec<ToolExecution>> {
+        let rows = db_retry!(
+            sqlx::query_as::<_, ToolExecution>(
+                "SELECT id, session_id, message_id, tool_name, duration_ms, is_error, created_at FROM tool_executions WHERE session_id = ? ORDER BY created_at ASC"
+            )
+            .bind(session_id)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(rows)
+    }
+
+    // Prompt Templates
+    pub async fn save_prompt_template(&self, name: &str, content: &str) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        // Get next version for this name
+        let max_version: Option<(i32,)> = sqlx::query_as(
+            "SELECT COALESCE(MAX(version), 0) FROM prompt_templates WHERE name = ?"
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        let version = max_version.map(|r| r.0).unwrap_or(0) + 1;
+
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO prompt_templates (id, name, content, version) VALUES (?, ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(name)
+            .bind(content)
+            .bind(version)
+            .execute(&self.pool)
+        )?;
+        Ok(id)
+    }
+
+    pub async fn list_prompt_templates(&self) -> Result<Vec<PromptTemplate>> {
+        let rows = db_retry!(
+            sqlx::query_as::<_, PromptTemplate>(
+                "SELECT id, name, content, version, created_at FROM prompt_templates ORDER BY name ASC, version DESC"
+            )
+            .fetch_all(&self.pool)
+        )?;
+        Ok(rows)
+    }
+
+    pub async fn get_prompt_template(&self, id: &str) -> Result<Option<PromptTemplate>> {
+        let row = db_retry!(
+            sqlx::query_as::<_, PromptTemplate>(
+                "SELECT id, name, content, version, created_at FROM prompt_templates WHERE id = ?"
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(row)
+    }
+
+    // Aggregated metrics for admin overview
+    pub async fn get_metrics_overview(&self) -> Result<MetricsOverview> {
+        #[derive(sqlx::FromRow)]
+        struct AggRow {
+            total_input_tokens: Option<i64>,
+            total_output_tokens: Option<i64>,
+            avg_latency_ms: Option<f64>,
+            total_calls: i64,
+        }
+        let agg: AggRow = sqlx::query_as(
+            "SELECT COALESCE(SUM(input_tokens), 0) as total_input_tokens, COALESCE(SUM(output_tokens), 0) as total_output_tokens, AVG(latency_ms) as avg_latency_ms, COUNT(*) as total_calls FROM agent_metrics"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        #[derive(sqlx::FromRow)]
+        struct ErrRow {
+            error_count: i64,
+            total_count: i64,
+        }
+        let err: ErrRow = sqlx::query_as(
+            "SELECT COALESCE(SUM(is_error), 0) as error_count, COUNT(*) as total_count FROM tool_executions"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(MetricsOverview {
+            total_input_tokens: agg.total_input_tokens.unwrap_or(0) as u64,
+            total_output_tokens: agg.total_output_tokens.unwrap_or(0) as u64,
+            avg_latency_ms: agg.avg_latency_ms.unwrap_or(0.0),
+            total_llm_calls: agg.total_calls as u64,
+            tool_error_count: err.error_count as u64,
+            tool_total_count: err.total_count as u64,
+        })
     }
 
     /// Detect proxy env vars and set up a local TCP tunnel if needed.

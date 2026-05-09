@@ -1,3 +1,4 @@
+mod admin;
 mod auth;
 mod chat;
 mod config;
@@ -20,8 +21,11 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
+
+use crate::chat::EventBuffer;
 
 pub struct AppState {
     pub db: Database,
@@ -29,6 +33,7 @@ pub struct AppState {
     pub config: Config,
     pub providers: HashMap<String, Arc<dyn LlmProvider>>,
     pub active_tasks: RwLock<HashMap<String, CancellationToken>>,
+    pub event_buffers: RwLock<HashMap<String, EventBuffer>>,
 }
 
 impl AppState {
@@ -98,6 +103,7 @@ async fn main() -> Result<()> {
         providers,
         config: config.clone(),
         active_tasks: RwLock::new(HashMap::new()),
+        event_buffers: RwLock::new(HashMap::new()),
     });
 
     // Public routes (no auth required)
@@ -120,11 +126,29 @@ async fn main() -> Result<()> {
         .route("/api/providers", get(routes::list_providers))
         .route("/api/sessions/{id}/chat", post(chat::chat_handler))
         .route("/api/sessions/{id}/stop", post(chat::stop_handler))
+        .route("/api/sessions/{id}/events/resume", get(chat::resume_handler))
         .route("/api/fs/list", get(routes::list_directory))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    // Admin API routes (also protected)
+    let admin_api = Router::new()
+        .route("/api/admin/sessions", get(admin::list_sessions))
+        .route("/api/admin/sessions/{id}/replay", get(admin::session_replay))
+        .route("/api/admin/metrics/overview", get(admin::metrics_overview))
+        .route("/api/admin/metrics/by-session/{id}", get(admin::metrics_by_session))
+        .route("/api/admin/prompt-templates", post(admin::create_prompt_template))
+        .route("/api/admin/prompt-templates", get(admin::list_prompt_templates))
+        .route("/api/admin/replay", post(admin::replay_with_prompt))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+
+    // Static file serving for admin SPA
+    let admin_static = ServeDir::new("admin/dist")
+        .not_found_service(ServeFile::new("admin/dist/index.html"));
+
     let app = public
         .merge(protected)
+        .merge(admin_api)
+        .nest_service("/admin", admin_static)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);

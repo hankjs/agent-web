@@ -59,6 +59,15 @@ const messagesEl = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
+// SSE reconnection state
+let lastEventId = "";
+let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAYS = [1000, 3000, 5000];
+const HEARTBEAT_TIMEOUT = 20000;
+let currentSessionStreaming = false; // tracks if we're in an active SSE session
+
 // Editing state
 const editingMessageId = ref<string | null>(null);
 const editingContent = ref("");
@@ -239,18 +248,154 @@ function handleServerEvent(event: any) {
     }
     case "turn_complete":
       isStreaming.value = false;
-      // Refresh tree after completion
+      currentSessionStreaming = false;
+      clearHeartbeatTimer();
+      reconnectAttempts = 0;
       fetchTree(props.sessionId);
       break;
     case "error":
       blocks.value.push({ kind: "error", content: event.message });
       isStreaming.value = false;
+      currentSessionStreaming = false;
+      clearHeartbeatTimer();
       break;
   }
 
   nextTick(() => {
     messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight, behavior: "smooth" });
   });
+}
+
+function resetHeartbeatTimer() {
+  if (heartbeatTimer) clearTimeout(heartbeatTimer);
+  if (!currentSessionStreaming) return;
+  heartbeatTimer = setTimeout(() => {
+    // Heartbeat timeout — connection is dead
+    handleDisconnect();
+  }, HEARTBEAT_TIMEOUT);
+}
+
+function clearHeartbeatTimer() {
+  if (heartbeatTimer) {
+    clearTimeout(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+async function handleDisconnect() {
+  clearHeartbeatTimer();
+  // Cancel current reader
+  if (activeReader) {
+    try { await activeReader.cancel(); } catch { /* ignore */ }
+    activeReader = null;
+  }
+
+  if (!currentSessionStreaming) return;
+
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    blocks.value.push({ kind: "error", content: "Connection lost. Reconnection failed after multiple attempts." });
+    isStreaming.value = false;
+    currentSessionStreaming = false;
+    reconnectAttempts = 0;
+    return;
+  }
+
+  const delay = RECONNECT_DELAYS[reconnectAttempts] || 5000;
+  reconnectAttempts++;
+
+  await new Promise((r) => setTimeout(r, delay));
+  if (!currentSessionStreaming) return; // user may have stopped
+
+  try {
+    await resumeStream();
+  } catch {
+    // Will retry via heartbeat timeout
+    handleDisconnect();
+  }
+}
+
+async function resumeStream() {
+  const res = await authFetch(
+    `/api/sessions/${props.sessionId}/events/resume?last_event_id=${lastEventId}`
+  );
+
+  if (!res.ok) {
+    throw new Error(`Resume failed: ${res.status}`);
+  }
+
+  const reader = res.body!.getReader();
+  activeReader = reader;
+  resetHeartbeatTimer();
+
+  await readSSEStream(reader);
+}
+
+async function readSSEStream(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let currentId = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+
+      for (const line of lines) {
+        if (line.startsWith("id: ") || line.startsWith("id:")) {
+          currentId = line.slice(line.indexOf(":") + 1).trim();
+        } else if (line.startsWith("event: ")) {
+          const eventType = line.slice(7).trim();
+          if (eventType === "heartbeat") {
+            resetHeartbeatTimer();
+            currentId = "";
+          }
+        } else if (line.startsWith("data: ")) {
+          const json = line.slice(6);
+          if (json && json !== "{}") {
+            try {
+              handleServerEvent(JSON.parse(json));
+              if (currentId) {
+                lastEventId = currentId;
+                reconnectAttempts = 0; // successful event resets retry count
+              }
+            } catch { /* malformed SSE */ }
+          }
+          resetHeartbeatTimer();
+          currentId = "";
+        }
+      }
+    }
+
+    // Process remaining buffer
+    if (buffer) {
+      const lines = buffer.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("id: ") || line.startsWith("id:")) {
+          currentId = line.slice(line.indexOf(":") + 1).trim();
+        } else if (line.startsWith("data: ")) {
+          const json = line.slice(6);
+          if (json && json !== "{}") {
+            try {
+              handleServerEvent(JSON.parse(json));
+              if (currentId) lastEventId = currentId;
+            } catch { /* malformed SSE */ }
+          }
+        }
+      }
+    }
+  } catch (e: any) {
+    if (e.name === "AbortError") return;
+    // Connection error — trigger reconnect
+    if (currentSessionStreaming) {
+      handleDisconnect();
+    }
+  } finally {
+    activeReader = null;
+  }
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -335,7 +480,8 @@ async function submitEditMessage() {
   if (!item || item.kind !== "user") return;
 
   const content = editingContent.value.trim();
-  const parentId = item.parentId || undefined;
+  // For the first message (no parent), use "root" to signal branching from start
+  const parentId = item.parentId || "root";
 
   editingMessageId.value = null;
   editingContent.value = "";
@@ -372,6 +518,9 @@ async function send(parentIdOverride?: string) {
     messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
   });
   isStreaming.value = true;
+  currentSessionStreaming = true;
+  lastEventId = "";
+  reconnectAttempts = 0;
 
   const body: any = { content };
   if (parentIdOverride) {
@@ -391,44 +540,22 @@ async function send(parentIdOverride?: string) {
     if (!res.ok) {
       blocks.value.push({ kind: "error", content: `Request failed: ${res.status}` });
       isStreaming.value = false;
+      currentSessionStreaming = false;
       return;
     }
 
     const reader = res.body!.getReader();
     activeReader = reader;
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop()!;
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const json = line.slice(6);
-          if (json) {
-            try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
-          }
-        }
-      }
-    }
-
-    if (buffer.startsWith("data: ")) {
-      const json = buffer.slice(6);
-      if (json) {
-        try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
-      }
-    }
+    resetHeartbeatTimer();
+    await readSSEStream(reader);
   } catch (e: any) {
     if (e.name === "AbortError") return;
-    blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
-    isStreaming.value = false;
-  } finally {
-    activeReader = null;
+    if (currentSessionStreaming) {
+      handleDisconnect();
+    } else {
+      blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
+      isStreaming.value = false;
+    }
   }
 }
 
@@ -436,14 +563,9 @@ async function sendWithParent(content: string, parentId?: string) {
   if (!content.trim() || !isConnected.value || isStreaming.value) return;
 
   // Truncate blocks to show only up to the branch point
-  if (parentId) {
-    // Find the block with this parentId's message and truncate after it
-    const parentIdx = blocks.value.findIndex(
-      (b) => b.kind === "user" && b.messageId === parentId
-    );
-    // Keep blocks up to (but not including) the sibling message
-    // Actually we want to keep everything up to the parent message's response
-    // Find the user block that has parentId as its parentId
+  if (parentId === "root") {
+    blocks.value.splice(0);
+  } else if (parentId) {
     let cutIdx = -1;
     for (let i = 0; i < blocks.value.length; i++) {
       const b = blocks.value[i];
@@ -459,6 +581,9 @@ async function sendWithParent(content: string, parentId?: string) {
 
   blocks.value.push({ kind: "user", content });
   isStreaming.value = true;
+  currentSessionStreaming = true;
+  lastEventId = "";
+  reconnectAttempts = 0;
 
   nextTick(() => {
     messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
@@ -480,48 +605,30 @@ async function sendWithParent(content: string, parentId?: string) {
     if (!res.ok) {
       blocks.value.push({ kind: "error", content: `Request failed: ${res.status}` });
       isStreaming.value = false;
+      currentSessionStreaming = false;
       return;
     }
 
     const reader = res.body!.getReader();
     activeReader = reader;
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop()!;
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const json = line.slice(6);
-          if (json) {
-            try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
-          }
-        }
-      }
-    }
-
-    if (buffer.startsWith("data: ")) {
-      const json = buffer.slice(6);
-      if (json) {
-        try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
-      }
-    }
+    resetHeartbeatTimer();
+    await readSSEStream(reader);
   } catch (e: any) {
     if (e.name === "AbortError") return;
-    blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
-    isStreaming.value = false;
-  } finally {
-    activeReader = null;
+    if (currentSessionStreaming) {
+      handleDisconnect();
+    } else {
+      blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
+      isStreaming.value = false;
+    }
   }
 }
 
 async function stop() {
+  currentSessionStreaming = false;
+  clearHeartbeatTimer();
+  reconnectAttempts = 0;
+
   // Cancel client-side reader
   if (activeReader) {
     try { await activeReader.cancel(); } catch { /* ignore */ }
@@ -531,6 +638,21 @@ async function stop() {
   try {
     await authFetch(`/api/sessions/${props.sessionId}/stop`, { method: "POST" });
   } catch { /* best effort */ }
+
+  // Mark running tools as stopped but keep their groups expanded
+  const items = renderItems.value;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === "tool-group" && item.tools.some((t) => t.isRunning)) {
+      groupExpanded.value[i] = true;
+      for (const tc of item.tools) {
+        if (tc.isRunning) tc.isRunning = false;
+      }
+    } else if (item.kind === "tool" && item.tool.isRunning) {
+      item.tool.isRunning = false;
+    }
+  }
+
   isStreaming.value = false;
 }
 
@@ -585,6 +707,9 @@ async function resend() {
   // Re-send
   blocks.value.push({ kind: "user", content });
   isStreaming.value = true;
+  currentSessionStreaming = true;
+  lastEventId = "";
+  reconnectAttempts = 0;
 
   try {
     const res = await authFetch(
@@ -599,44 +724,22 @@ async function resend() {
     if (!res.ok) {
       blocks.value.push({ kind: "error", content: `Request failed: ${res.status}` });
       isStreaming.value = false;
+      currentSessionStreaming = false;
       return;
     }
 
     const reader = res.body!.getReader();
     activeReader = reader;
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop()!;
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const json = line.slice(6);
-          if (json) {
-            try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
-          }
-        }
-      }
-    }
-
-    if (buffer.startsWith("data: ")) {
-      const json = buffer.slice(6);
-      if (json) {
-        try { handleServerEvent(JSON.parse(json)); } catch { /* malformed SSE */ }
-      }
-    }
+    resetHeartbeatTimer();
+    await readSSEStream(reader);
   } catch (e: any) {
     if (e.name === "AbortError") return;
-    blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
-    isStreaming.value = false;
-  } finally {
-    activeReader = null;
+    if (currentSessionStreaming) {
+      handleDisconnect();
+    } else {
+      blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
+      isStreaming.value = false;
+    }
   }
 }
 

@@ -1,24 +1,63 @@
 use crate::AppState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{
-        sse::{Event, KeepAlive, Sse},
+        sse::{Event, Sse},
         IntoResponse,
     },
 };
-use futures::{stream::Stream, StreamExt};
+use futures::stream::Stream;
 use hank_agent::{AgentEvent, AgentSession};
-use hank_web_tools::{read_file::ReadFileTool, search::SearchTool, shell::ShellTool, write_file::WriteFileTool, Tool};
+use hank_web_tools::{
+    read_file::ReadFileTool, search::SearchTool, shell::ShellTool, write_file::WriteFileTool, Tool,
+};
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 use crate::config::DEFAULT_MODEL;
+
+// --- Event Buffer types ---
+
+#[derive(Clone, Debug)]
+pub struct EventEntry {
+    pub id: u64,
+    pub event: AgentEvent,
+}
+
+pub struct EventBuffer {
+    pub events: Vec<EventEntry>,
+    pub next_id: u64,
+    pub completed: bool,
+    pub tx: broadcast::Sender<EventEntry>,
+}
+
+impl EventBuffer {
+    pub fn new() -> Self {
+        let (tx, _) = broadcast::channel(256);
+        Self {
+            events: Vec::new(),
+            next_id: 1,
+            completed: false,
+            tx,
+        }
+    }
+
+    pub fn push(&mut self, event: AgentEvent) -> EventEntry {
+        let id = self.next_id;
+        self.next_id += 1;
+        let entry = EventEntry { id, event };
+        self.events.push(entry.clone());
+        let _ = self.tx.send(entry.clone());
+        entry
+    }
+}
+
+// --- Request types ---
 
 #[derive(Deserialize)]
 pub struct ChatRequest {
@@ -28,12 +67,13 @@ pub struct ChatRequest {
     pub parent_id: Option<String>,
 }
 
+// PLACEHOLDER_CHAT_HANDLER
+
 pub async fn chat_handler(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     axum::Json(body): axum::Json<ChatRequest>,
 ) -> impl IntoResponse {
-    // Resolve provider
     let provider_key = body
         .provider
         .as_deref()
@@ -50,7 +90,6 @@ pub async fn chat_handler(
         }
     };
 
-    // Resolve model from config
     let provider_config = state.config.find_provider(provider_key);
     let model = match (body.model, provider_config) {
         (Some(m), Some(pc)) => pc.resolve_model(&m),
@@ -59,15 +98,14 @@ pub async fn chat_handler(
         (None, None) => DEFAULT_MODEL.to_string(),
     };
 
-    // Look up session for work_dir and active_leaf_id
     let session_record = state.db.get_session(&session_id).await.ok().flatten();
     let work_dir = session_record.as_ref().and_then(|s| s.work_dir.clone());
 
-    // Determine the parent for the new user message
-    let parent_id_for_new_msg = body
-        .parent_id
-        .clone()
-        .or_else(|| session_record.as_ref().and_then(|s| s.active_leaf_id.clone()));
+    let parent_id_for_new_msg = match body.parent_id.as_deref() {
+        Some("root") => None,
+        Some(id) => Some(id.to_string()),
+        None => session_record.as_ref().and_then(|s| s.active_leaf_id.clone()),
+    };
 
     let tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ShellTool::new(work_dir.clone())),
@@ -83,7 +121,6 @@ pub async fn chat_handler(
         "You are a helpful AI assistant with access to shell commands. Execute tasks the user requests.".to_string(),
     );
 
-    // Load branch history from DB (root to parent)
     let history_len = {
         let db_messages = if let Some(ref leaf) = parent_id_for_new_msg {
             state.db.get_branch_messages(&session_id, leaf).await.unwrap_or_default()
@@ -108,15 +145,26 @@ pub async fn chat_handler(
         len
     };
 
-    // Set up SSE stream via mpsc channel
-    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
+    // Initialize event buffer for this session
+    {
+        let mut buffers = state.event_buffers.write().await;
+        buffers.insert(session_id.clone(), EventBuffer::new());
+    }
+
+    // Subscribe to the buffer's broadcast BEFORE spawning the task
+    let rx = {
+        let buffers = state.event_buffers.read().await;
+        buffers.get(&session_id).unwrap().tx.subscribe()
+    };
+
+    // Set up internal channel for agent -> buffer forwarding
+    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
     let db = state.db.clone();
     let sid = session_id.clone();
     let content = body.content;
     let is_first_message = history_len == 0;
     let parent_for_chain = parent_id_for_new_msg;
 
-    // Create cancellation token and store it
     let cancel_token = CancellationToken::new();
     {
         let mut tasks = state.active_tasks.write().await;
@@ -124,9 +172,41 @@ pub async fn chat_handler(
     }
     let state_for_cleanup = state.clone();
     let sid_for_cleanup = session_id.clone();
-
     let provider_name = provider_key.to_string();
 
+    // Forwarder task: reads from agent mpsc, writes to EventBuffer + persists metrics
+    let state_fwd = state.clone();
+    let sid_fwd = session_id.clone();
+    let db_fwd = state.db.clone();
+    let sid_fwd2 = session_id.clone();
+    tokio::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            // Persist metrics events to DB
+            match &event {
+                AgentEvent::Metrics { input_tokens, output_tokens, latency_ms, model, provider } => {
+                    let _ = db_fwd.save_agent_metric(
+                        &sid_fwd2, None, *input_tokens, *output_tokens, *latency_ms, model, provider,
+                    ).await;
+                }
+                AgentEvent::ToolMetrics { tool_name, duration_ms, is_error } => {
+                    let _ = db_fwd.save_tool_execution(
+                        &sid_fwd2, None, tool_name, *duration_ms, *is_error,
+                    ).await;
+                }
+                _ => {}
+            }
+            let mut buffers = state_fwd.event_buffers.write().await;
+            if let Some(buf) = buffers.get_mut(&sid_fwd) {
+                buf.push(event);
+            }
+        }
+    });
+
+    // PLACEHOLDER_SPAWN_AGENT
+
+    // Agent task
+    let state_for_buffer2 = state.clone();
+    let sid_for_buffer2 = session_id.clone();
     tokio::spawn(async move {
         if let Err(e) = session.run(content.clone(), event_tx.clone(), cancel_token).await {
             error!(session_id = %sid, provider = %provider_name, "Agent error: {e:#}");
@@ -136,12 +216,14 @@ pub async fn chat_handler(
                 })
                 .await;
 
-            // Persist error as an assistant message so it's visible on reload
             let error_content = serde_json::json!([{"type": "error", "text": format!("{e:#}")}]);
             let ts = chrono::Utc::now();
             let _ = db.save_message(&sid, "assistant", &error_content, ts, parent_for_chain.as_deref()).await;
             let _ = db.touch_session(&sid).await;
         }
+
+        // Drop event_tx so forwarder finishes
+        drop(event_tx);
 
         // Remove token from active tasks
         {
@@ -149,7 +231,15 @@ pub async fn chat_handler(
             tasks.remove(&sid_for_cleanup);
         }
 
-        // Batch save new messages to DB with parent_id chaining
+        // Mark buffer as completed
+        {
+            let mut buffers = state_for_buffer2.event_buffers.write().await;
+            if let Some(buf) = buffers.get_mut(&sid_for_buffer2) {
+                buf.completed = true;
+            }
+        }
+
+        // Batch save new messages to DB
         let new_messages: Vec<_> = session.messages().iter().skip(history_len).collect();
         if !new_messages.is_empty() {
             let base_time = chrono::Utc::now();
@@ -166,35 +256,160 @@ pub async fn chat_handler(
                     Err(_) => break,
                 }
             }
-            // Update active_leaf_id to the last saved message
             if let Some(ref leaf) = prev_id {
                 let _ = db.update_active_leaf(&sid, leaf).await;
             }
-            // Single updated_at bump after all messages saved
             let _ = db.touch_session(&sid).await;
         }
 
-        // Auto-set title from first user message
         if is_first_message {
             let title: String = content.chars().take(50).collect();
             let _ = db.update_session_title(&sid, &title).await;
         }
     });
 
-    let stream = make_sse_stream(event_rx);
-    Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response()
+    // Build SSE stream from broadcast receiver + heartbeat
+    let stream = make_sse_stream(rx);
+    Sse::new(stream).into_response()
 }
 
+// PLACEHOLDER_MAKE_SSE
+
 fn make_sse_stream(
-    rx: mpsc::Receiver<AgentEvent>,
+    mut rx: broadcast::Receiver<EventEntry>,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
-    ReceiverStream::new(rx).map(|event| {
-        let json = serde_json::to_string(&event).unwrap_or_default();
-        Ok(Event::default().data(json))
-    })
+    async_stream::stream! {
+        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+
+        loop {
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(entry) => {
+                            let json = serde_json::to_string(&entry.event).unwrap_or_default();
+                            yield Ok(Event::default().data(json).id(entry.id.to_string()));
+
+                            // If this was TurnComplete, end the stream
+                            if matches!(entry.event, AgentEvent::TurnComplete) {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("SSE client lagged by {n} events");
+                            break;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            break;
+                        }
+                    }
+                }
+                _ = heartbeat_interval.tick() => {
+                    yield Ok(Event::default().event("heartbeat").data("{}"));
+                }
+            }
+        }
+    }
 }
+
+// --- Resume handler ---
+
+#[derive(Deserialize)]
+pub struct ResumeQuery {
+    pub last_event_id: u64,
+}
+
+pub async fn resume_handler(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Query(query): Query<ResumeQuery>,
+) -> impl IntoResponse {
+    let last_id = query.last_event_id;
+
+    // Get missed events and optionally subscribe for live events
+    let (missed, rx, completed) = {
+        let buffers = state.event_buffers.read().await;
+        match buffers.get(&session_id) {
+            Some(buf) => {
+                let missed: Vec<EventEntry> = buf
+                    .events
+                    .iter()
+                    .filter(|e| e.id > last_id)
+                    .cloned()
+                    .collect();
+                let rx = if !buf.completed {
+                    Some(buf.tx.subscribe())
+                } else {
+                    None
+                };
+                (missed, rx, buf.completed)
+            }
+            None => {
+                return (StatusCode::NOT_FOUND, "No event buffer for session").into_response();
+            }
+        }
+    };
+
+    let stream = make_resume_stream(missed, rx, completed, last_id);
+    Sse::new(stream).into_response()
+}
+
+fn make_resume_stream(
+    missed: Vec<EventEntry>,
+    rx: Option<broadcast::Receiver<EventEntry>>,
+    completed: bool,
+    last_id: u64,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    async_stream::stream! {
+        // First replay missed events
+        for entry in &missed {
+            let json = serde_json::to_string(&entry.event).unwrap_or_default();
+            yield Ok(Event::default().data(json).id(entry.id.to_string()));
+        }
+
+        // If session already completed and TurnComplete wasn't in missed, send it
+        if completed {
+            let has_turn_complete = missed.iter().any(|e| matches!(e.event, AgentEvent::TurnComplete));
+            if !has_turn_complete {
+                let json = serde_json::to_string(&AgentEvent::TurnComplete).unwrap_or_default();
+                yield Ok(Event::default().data(json).id("end".to_string()));
+            }
+            return;
+        }
+
+        // Subscribe to live events
+        if let Some(mut rx) = rx {
+            let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            // Determine the highest ID we've already sent
+            let mut max_sent = missed.last().map(|e| e.id).unwrap_or(last_id);
+
+            loop {
+                tokio::select! {
+                    result = rx.recv() => {
+                        match result {
+                            Ok(entry) => {
+                                if entry.id <= max_sent {
+                                    continue; // already sent during replay
+                                }
+                                max_sent = entry.id;
+                                let json = serde_json::to_string(&entry.event).unwrap_or_default();
+                                yield Ok(Event::default().data(json).id(entry.id.to_string()));
+                                if matches!(entry.event, AgentEvent::TurnComplete) {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    _ = heartbeat_interval.tick() => {
+                        yield Ok(Event::default().event("heartbeat").data("{}"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- Stop handler ---
 
 pub async fn stop_handler(
     State(state): State<Arc<AppState>>,

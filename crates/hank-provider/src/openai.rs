@@ -173,6 +173,7 @@ fn build_request_body(req: &CompletionRequest) -> serde_json::Value {
         "max_tokens": req.max_tokens,
         "messages": messages,
         "stream": true,
+        "stream_options": {"include_usage": true},
     });
 
     if !req.tools.is_empty() {
@@ -239,12 +240,22 @@ async fn process_sse_stream(
 }
 
 fn parse_chunk(chunk: &serde_json::Value, current_tool_id: &mut String) -> Option<Vec<StreamEvent>> {
+    let mut events = Vec::new();
+
+    // OpenAI sends usage in a final chunk with empty choices
+    if let Some(usage) = chunk.get("usage") {
+        let input_tokens = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let output_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        events.push(StreamEvent::Usage { input_tokens, output_tokens });
+    }
+
     let choices = chunk.get("choices")?.as_array()?;
+    if choices.is_empty() {
+        return if events.is_empty() { None } else { Some(events) };
+    }
     let choice = choices.first()?;
     let delta = choice.get("delta")?;
     let finish_reason = choice.get("finish_reason").and_then(|v| v.as_str());
-
-    let mut events = Vec::new();
 
     // Text content
     if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
