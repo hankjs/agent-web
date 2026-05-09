@@ -13,3 +13,4 @@ tracing = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+url = "2"
