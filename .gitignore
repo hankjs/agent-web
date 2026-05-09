@@ -28,3 +28,4 @@ client/src-tauri/target/
 
 # Local
 *.local.*
+logs/
