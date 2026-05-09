@@ -10,10 +10,12 @@ const parentPath = ref<string | null>(null);
 const entries = ref<{ name: string; is_dir: boolean }[]>([]);
 const loading = ref(false);
 const error = ref("");
+const redirectMessage = ref("");
 
 async function fetchDir(path?: string) {
   loading.value = true;
   error.value = "";
+  redirectMessage.value = "";
   try {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
     const res = await authFetch(`/api/fs/list${query}`);
@@ -25,6 +27,9 @@ async function fetchDir(path?: string) {
     browsePath.value = data.path;
     parentPath.value = data.parent ?? null;
     entries.value = data.entries;
+    if (data.redirected) {
+      redirectMessage.value = data.message;
+    }
   } catch (e: any) {
     error.value = e.message || "Network error";
   } finally {
@@ -90,7 +95,9 @@ function closeBrowser() {
 
       <div v-if="loading" class="browser-loading">Loading...</div>
       <div v-else-if="error" class="browser-error">{{ error }}</div>
-      <div v-else class="browser-list">
+      <template v-else>
+        <div v-if="redirectMessage" class="browser-redirect">{{ redirectMessage }}</div>
+        <div class="browser-list">
         <button
           v-if="parentPath"
           class="browser-item browser-up"
@@ -110,6 +117,7 @@ function closeBrowser() {
         </button>
         <div v-if="!entries.length && !parentPath" class="browser-empty">No subdirectories</div>
       </div>
+      </template>
 
       <button class="browser-select" type="button" @click="selectCurrent">
         Select this folder
@@ -245,6 +253,14 @@ function closeBrowser() {
 
 .browser-error {
   color: var(--color-error, #f87171);
+}
+
+.browser-redirect {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--color-warning, #f59e0b);
+  background: rgba(245, 158, 11, 0.08);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .browser-select {

@@ -4,17 +4,24 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { useSession, authFetch } from "../composables/useSession";
 import { API_BASE } from "../config";
+import FolderPicker from "./FolderPicker.vue";
 
 const props = defineProps<{
   sessionId: string;
   workDir?: string;
+  title?: string;
 }>();
 
 const emit = defineEmits<{
   back: [];
 }>();
 
-const { login, token: sessionToken } = useSession();
+const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir } = useSession();
+
+const isEditingTitle = ref(false);
+const editTitle = ref("");
+const isEditingWorkDir = ref(false);
+const editWorkDir = ref("");
 
 interface ToolCall {
   id: string;
@@ -42,9 +49,7 @@ let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
 
 const displayDir = computed(() => {
-  if (!props.workDir) return "";
-  const parts = props.workDir.split("/");
-  return parts[parts.length - 1] || props.workDir;
+  return props.workDir || "";
 });
 
 function toggleToolCall(tc: ToolCall) {
@@ -200,6 +205,40 @@ function autoResize() {
   ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
 }
 
+function startEditTitle() {
+  editTitle.value = props.title || "";
+  isEditingTitle.value = true;
+}
+
+function cancelEditTitle() {
+  isEditingTitle.value = false;
+}
+
+async function confirmEditTitle() {
+  const newTitle = editTitle.value.trim();
+  isEditingTitle.value = false;
+  if (newTitle !== (props.title || "")) {
+    await updateSessionTitle(props.sessionId, newTitle);
+  }
+}
+
+function startEditWorkDir() {
+  editWorkDir.value = props.workDir || "";
+  isEditingWorkDir.value = true;
+}
+
+function cancelEditWorkDir() {
+  isEditingWorkDir.value = false;
+}
+
+async function confirmEditWorkDir() {
+  const newDir = editWorkDir.value.trim() || null;
+  isEditingWorkDir.value = false;
+  if (newDir !== (props.workDir || null)) {
+    await updateSessionWorkDir(props.sessionId, newDir);
+  }
+}
+
 async function send() {
   if (!input.value.trim() || !isConnected.value || isStreaming.value) return;
 
@@ -208,6 +247,7 @@ async function send() {
   input.value = "";
   nextTick(() => {
     if (textareaRef.value) textareaRef.value.style.height = "auto";
+    messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
   });
   isStreaming.value = true;
 
@@ -288,7 +328,26 @@ onMounted(async () => {
   <div class="flex flex-col h-full">
     <div class="context-bar">
       <button class="back-btn" @click="emit('back')" aria-label="Back to sessions">&larr;</button>
-      <span v-if="displayDir" class="context-dir">{{ displayDir }}</span>
+      <template v-if="isEditingTitle">
+        <input
+          v-model="editTitle"
+          class="title-input"
+          @keydown.enter="confirmEditTitle"
+          @keydown.escape="cancelEditTitle"
+          autofocus
+        />
+        <button class="title-action-btn confirm" @click="confirmEditTitle" aria-label="Confirm title">&#10003;</button>
+        <button class="title-action-btn cancel" @click="cancelEditTitle" aria-label="Cancel edit">&#10005;</button>
+      </template>
+      <span v-else class="context-title" @click="startEditTitle">{{ title || 'Untitled' }}</span>
+      <template v-if="isEditingWorkDir">
+        <div class="workdir-edit">
+          <FolderPicker v-model="editWorkDir" />
+          <button class="title-action-btn confirm" @click="confirmEditWorkDir" aria-label="Confirm work dir">&#10003;</button>
+          <button class="title-action-btn cancel" @click="cancelEditWorkDir" aria-label="Cancel edit">&#10005;</button>
+        </div>
+      </template>
+      <span v-else-if="displayDir && !isEditingTitle" class="context-dir" @click="startEditWorkDir">{{ displayDir }}</span>
     </div>
 
     <div v-if="!isEmpty" ref="messagesEl" class="flex-1 overflow-y-auto">
@@ -316,6 +375,7 @@ onMounted(async () => {
           </div>
         </template>
         <div v-if="isStreaming && blocks.length === 0" class="streaming-dot"></div>
+        <div class="scroll-spacer"></div>
       </div>
     </div>
 
@@ -379,7 +439,58 @@ onMounted(async () => {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.12s;
 }
+.context-dir:hover { background: var(--color-surface-1); }
+.workdir-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.context-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.12s;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+.context-title:hover { background: var(--color-surface-1); }
+.title-input {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  outline: none;
+  min-width: 120px;
+  max-width: 300px;
+}
+.title-input:focus { border-color: var(--color-accent-dim); }
+.title-action-btn {
+  background: none;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.12s;
+}
+.title-action-btn.confirm { color: var(--color-success, #22c55e); }
+.title-action-btn.cancel { color: var(--color-error, #ef4444); }
+.title-action-btn:hover { opacity: 0.7; }
 .user-block {
   padding-top: 8px;
   padding-bottom: 4px;
@@ -486,5 +597,6 @@ onMounted(async () => {
 .send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 .send-btn.stop-mode { background: var(--color-error, #ef4444); color: #fff; }
 .streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+.scroll-spacer { min-height: 60vh; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 </style>

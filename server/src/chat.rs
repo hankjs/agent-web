@@ -111,10 +111,10 @@ pub async fn chat_handler(
 
     tokio::spawn(async move {
         if let Err(e) = session.run(content.clone(), event_tx.clone(), cancel_token).await {
-            error!("Agent error: {e}");
+            error!("Agent error: {e:#}");
             let _ = event_tx
                 .send(AgentEvent::Error {
-                    message: e.to_string(),
+                    message: format!("{e:#}"),
                 })
                 .await;
         }

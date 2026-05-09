@@ -111,6 +111,7 @@ async fn main() -> Result<()> {
         .route("/api/sessions", get(routes::list_sessions))
         .route("/api/sessions/{id}", get(routes::get_session))
         .route("/api/sessions/{id}", delete(routes::delete_session))
+        .route("/api/sessions/{id}", put(routes::update_session))
         .route("/api/sessions/{id}/messages", get(routes::get_messages))
         .route("/api/settings", put(routes::update_settings))
         .route("/api/providers", get(routes::list_providers))

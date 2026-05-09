@@ -100,6 +100,34 @@ pub async fn delete_session(
     }
 }
 
+#[derive(Deserialize)]
+pub struct UpdateSessionRequest {
+    pub title: Option<String>,
+    pub work_dir: Option<String>,
+}
+
+pub async fn update_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateSessionRequest>,
+) -> impl IntoResponse {
+    if let Some(title) = &body.title {
+        if let Err(e) = state.db.update_session_title(&id, title).await {
+            return internal_error(e);
+        }
+    }
+    if body.work_dir.is_some() {
+        if let Err(e) = state.db.update_session_work_dir(&id, body.work_dir.as_deref()).await {
+            return internal_error(e);
+        }
+    }
+    match state.db.get_session(&id).await {
+        Ok(Some(session)) => Json(serde_json::json!(session)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => internal_error(e),
+    }
+}
+
 pub async fn get_messages(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -180,12 +208,21 @@ pub async fn list_directory(
 
     // Use spawn_blocking to avoid blocking the async runtime
     let dir_path_clone = dir_path.clone();
-    let entries_result = tokio::task::spawn_blocking(move || std::fs::read_dir(&dir_path_clone))
-        .await
-        .unwrap_or_else(|e| Err(std::io::Error::new(std::io::ErrorKind::Other, e)));
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+    let entries_result = tokio::task::spawn_blocking(move || {
+        match std::fs::read_dir(&dir_path_clone) {
+            Ok(rd) => Ok((rd, dir_path_clone, false)),
+            Err(_) => {
+                // Directory doesn't exist, fall back to home
+                std::fs::read_dir(&home).map(|rd| (rd, home, true))
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(std::io::Error::new(std::io::ErrorKind::Other, e)));
 
-    let entries = match entries_result {
-        Ok(rd) => rd,
+    let (entries, dir_path, redirected) = match entries_result {
+        Ok(tuple) => tuple,
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -217,10 +254,18 @@ pub async fn list_directory(
         .parent()
         .map(|p| p.to_string_lossy().to_string());
 
-    Json(serde_json::json!({
+    let mut result = serde_json::json!({
         "path": dir_path.to_string_lossy(),
         "parent": parent,
         "entries": dirs,
-    }))
-    .into_response()
+    });
+    if redirected {
+        result["redirected"] = serde_json::json!(true);
+        result["message"] = serde_json::json!(format!(
+            "目录已被移除，已重定向到 {}",
+            dir_path.to_string_lossy()
+        ));
+    }
+
+    Json(result).into_response()
 }

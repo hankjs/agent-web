@@ -1,5 +1,5 @@
 use crate::{CompletionRequest, LlmProvider, StopReason, StreamEvent};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
@@ -59,7 +59,8 @@ impl LlmProvider for OpenAiProvider {
             .header("content-type", "application/json")
             .json(&body)
             .send()
-            .await?;
+            .await
+            .with_context(|| format!("Failed to connect to {url}"))?;
 
         if !response.status().is_success() {
             let status = response.status();

@@ -14,6 +14,8 @@ const { view, currentSession, goBack } = useSession();
       class="flex-1 overflow-hidden"
       :session-id="currentSession!.id"
       :work-dir="currentSession!.work_dir ?? undefined"
+      :title="currentSession!.title"
+      :key="currentSession!.id"
       @back="goBack"
     />
   </div>

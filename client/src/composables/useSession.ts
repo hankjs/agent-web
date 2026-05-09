@@ -81,6 +81,38 @@ function goBack() {
   fetchSessions();
 }
 
+async function updateSessionTitle(id: string, title: string) {
+  const res = await authFetch(`/api/sessions/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (res.ok) {
+    const updated: Session = await res.json();
+    const idx = sessions.value.findIndex((s) => s.id === id);
+    if (idx !== -1) sessions.value[idx] = updated;
+    if (currentSession.value?.id === id) {
+      currentSession.value = updated;
+    }
+  }
+}
+
+async function updateSessionWorkDir(id: string, workDir: string | null) {
+  const res = await authFetch(`/api/sessions/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ work_dir: workDir }),
+  });
+  if (res.ok) {
+    const updated: Session = await res.json();
+    const idx = sessions.value.findIndex((s) => s.id === id);
+    if (idx !== -1) sessions.value[idx] = updated;
+    if (currentSession.value?.id === id) {
+      currentSession.value = updated;
+    }
+  }
+}
+
 export function useSession() {
   return {
     sessions: readonly(sessions),
@@ -93,5 +125,7 @@ export function useSession() {
     deleteSession,
     goBack,
     login,
+    updateSessionTitle,
+    updateSessionWorkDir,
   };
 }

@@ -169,6 +169,15 @@ impl Database {
         Ok(())
     }
 
+    pub async fn update_session_work_dir(&self, id: &str, work_dir: Option<&str>) -> Result<()> {
+        sqlx::query("UPDATE sessions SET work_dir = ?, updated_at = NOW() WHERE id = ?")
+            .bind(work_dir)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     // Messages
     pub async fn save_message(
         &self,
