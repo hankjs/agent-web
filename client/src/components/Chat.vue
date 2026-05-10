@@ -7,6 +7,8 @@ import { API_BASE } from "../config";
 import { useMessageTree } from "../composables/useMessageTree";
 import { useMessage } from "../composables/useMessage";
 import FolderPicker from "./FolderPicker.vue";
+import ChangeChatPanel from "./ChangeChatPanel.vue";
+import ArtifactReview from "./ArtifactReview.vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -15,6 +17,7 @@ const props = defineProps<{
   workDir?: string;
   title?: string;
   environment?: "remote" | "local";
+  sessionType?: "chat" | "explore";
   showOutlineToggle?: boolean;
 }>();
 
@@ -24,7 +27,7 @@ const emit = defineEmits<{
   openSettings: [];
 }>();
 
-const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir } = useSession();
+const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir, selectSession, sessions } = useSession();
 const { fetchTree, switchBranch, setActiveLeafId, activeLeafId, getSiblings, findLeafFromNode, hasBranching, treeNodes, scrollTargetId, clearScrollTarget } = useMessageTree();
 const { warning: showWarning } = useMessage();
 
@@ -49,14 +52,16 @@ type Block =
   | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
   | { kind: "text"; content: string }
   | { kind: "error"; content: string }
-  | { kind: "tool"; tool: ToolCall };
+  | { kind: "tool"; tool: ToolCall }
+  | { kind: "ask_user"; question: string; options: string[]; answered: boolean; selected?: string };
 
 type RenderItem =
   | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
   | { kind: "text"; content: string }
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall }
-  | { kind: "tool-group"; tools: ToolCall[] };
+  | { kind: "tool-group"; tools: ToolCall[] }
+  | { kind: "ask_user"; question: string; options: string[]; answered: boolean; selected?: string };
 
 const blocks = ref<Block[]>([]);
 const input = ref("");
@@ -65,6 +70,10 @@ const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+const changesPanelVisible = ref(false);
+const changesPanelRefreshKey = ref(0);
+const reviewingChangeId = ref<string | null>(null);
+const activeApplyChangeId = ref<string | null>(null);
 let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
 // Image upload state
@@ -442,6 +451,19 @@ function handleServerEvent(event: any) {
       currentSessionStreaming = false;
       clearHeartbeatTimer();
       break;
+    case "ask_user":
+      blocks.value.push({
+        kind: "ask_user",
+        question: event.question,
+        options: event.options || [],
+        answered: false,
+      });
+      break;
+    case "explore_complete":
+    case "generate_complete":
+    case "task_updated":
+      changesPanelRefreshKey.value++;
+      break;
   }
 
   // Auto-scroll: keep last content visible at bottom (exclude scroll-spacer)
@@ -764,6 +786,77 @@ async function send(parentIdOverride?: string) {
       isStreaming.value = false;
     }
   }
+}
+
+async function answerAskUser(answer: string, blockIndex: number) {
+  // Mark the ask_user block as answered
+  const block = blocks.value[blockIndex];
+  if (block && block.kind === "ask_user") {
+    block.answered = true;
+    block.selected = answer;
+  }
+  // Send the answer as a regular chat message (server detects pending_ask_user)
+  input.value = answer;
+  await send();
+}
+
+function handleNavigateSession(sessionId: string) {
+  const session = sessions.value.find(s => s.id === sessionId);
+  if (session) {
+    selectSession(session);
+  }
+}
+
+async function handleApplyChange(changeId: string) {
+  if (!isConnected.value || isStreaming.value) return;
+  changesPanelVisible.value = false;
+  activeApplyChangeId.value = changeId;
+  const content = "请根据 Change 的 specs 和 tasks 开始实施变更。";
+  blocks.value.push({ kind: "user", content });
+  isStreaming.value = true;
+  currentSessionStreaming = true;
+  lastEventId = "";
+  reconnectAttempts = 0;
+  nextTick(() => scrollToLastUserMessage());
+
+  try {
+    const res = await authFetch(
+      `/api/sessions/${props.sessionId}/chat`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, apply_change_id: changeId }),
+      }
+    );
+    if (!res.ok) {
+      blocks.value.push({ kind: "error", content: `Request failed: ${res.status}` });
+      isStreaming.value = false;
+      currentSessionStreaming = false;
+      return;
+    }
+    const reader = res.body!.getReader();
+    activeReader = reader;
+    resetHeartbeatTimer();
+    await readSSEStream(reader);
+  } catch (e: any) {
+    if (e.name === "AbortError") return;
+    if (currentSessionStreaming) {
+      handleDisconnect();
+    } else {
+      blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
+      isStreaming.value = false;
+    }
+  }
+}
+
+function handleReviewChange(changeId: string) {
+  reviewingChangeId.value = changeId;
+  changesPanelVisible.value = false;
+}
+
+function handleReviewConfirmed() {
+  reviewingChangeId.value = null;
+  changesPanelRefreshKey.value++;
 }
 
 async function sendWithParent(content: string, parentId?: string) {
@@ -1281,8 +1374,16 @@ function scrollToMessageId(id: string | null) {
         >
           {{ localAgentStatus === 'running' ? 'Running' : localAgentStatus === 'stopped' ? 'Stopped' : 'Not Configured' }}
         </span>
+        <span v-if="activeApplyChangeId" class="apply-indicator">Applying Change</span>
       </div>
       <div class="context-bar-right">
+        <button
+          v-if="workDir"
+          class="changes-toggle-btn"
+          :class="{ active: changesPanelVisible }"
+          @click="changesPanelVisible = !changesPanelVisible"
+          aria-label="Toggle changes panel"
+        >Changes</button>
         <button
           v-if="showOutlineToggle"
           class="outline-toggle-btn"
@@ -1306,6 +1407,31 @@ function scrollToMessageId(id: string | null) {
         </button>
       </div>
     </div>
+
+    <!-- Explore mode banner -->
+    <div v-if="props.sessionType === 'explore'" class="explore-banner">
+      Explore Mode — Describe what you want to build. The AI will ask questions and create a Change when ready.
+    </div>
+
+    <!-- Changes Panel Overlay -->
+    <ChangeChatPanel
+      v-if="changesPanelVisible && workDir"
+      :work-dir="workDir"
+      :session-id="props.sessionId"
+      :refresh-key="changesPanelRefreshKey"
+      @close="changesPanelVisible = false"
+      @navigate-session="handleNavigateSession"
+      @apply-change="handleApplyChange"
+      @review-change="handleReviewChange"
+    />
+
+    <!-- Artifact Review Panel -->
+    <ArtifactReview
+      v-if="reviewingChangeId"
+      :change-id="reviewingChangeId"
+      @confirmed="handleReviewConfirmed"
+      @close="reviewingChangeId = null"
+    />
 
     <div v-if="!isEmpty" ref="messagesEl" class="flex-1 overflow-y-auto">
       <div class="max-w-[720px] mx-auto px-6 py-8 space-y-6">
@@ -1410,6 +1536,32 @@ function scrollToMessageId(id: string | null) {
               </div>
             </div>
           </div>
+          <!-- Ask User Options -->
+          <div v-else-if="item.kind === 'ask_user'" class="ask-user-block">
+            <div class="ask-user-question">{{ item.question }}</div>
+            <div class="ask-user-options">
+              <button
+                v-for="(opt, oi) in item.options"
+                :key="oi"
+                class="ask-user-option"
+                :class="{ selected: item.selected === opt, disabled: item.answered }"
+                :disabled="item.answered || isStreaming"
+                @click="answerAskUser(opt, idx)"
+              >{{ opt }}</button>
+            </div>
+            <div v-if="!item.answered" class="ask-user-freetext">
+              <input
+                type="text"
+                placeholder="Or type your own answer..."
+                class="ask-user-input"
+                :disabled="isStreaming"
+                @keydown.enter="($event) => { const el = $event.target as HTMLInputElement; if (el.value.trim()) { answerAskUser(el.value.trim(), idx); el.value = ''; } }"
+              />
+            </div>
+            <div v-if="item.answered" class="ask-user-answered">
+              Answered: {{ item.selected }}
+            </div>
+          </div>
         </template>
         <div v-if="isStreaming && blocks.length === 0" class="streaming-dot"></div>
         <div class="scroll-spacer"></div>
@@ -1506,6 +1658,14 @@ function scrollToMessageId(id: string | null) {
 </template>
 
 <style scoped>
+.explore-banner {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #c084fc;
+  background: rgba(192, 132, 252, 0.08);
+  border-bottom: 1px solid rgba(192, 132, 252, 0.2);
+  text-align: center;
+}
 .context-bar {
   display: flex;
   align-items: center;
@@ -1998,6 +2158,31 @@ function scrollToMessageId(id: string | null) {
 }
 .outline-toggle-btn:hover { color: var(--color-text-primary); background: var(--color-surface-1); }
 
+/* Changes toggle button */
+.changes-toggle-btn {
+  background: none;
+  border: 1px solid var(--color-border, #333);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.changes-toggle-btn:hover { color: var(--color-text-primary); border-color: var(--color-accent, #6366f1); }
+.changes-toggle-btn.active { color: var(--color-accent, #6366f1); border-color: var(--color-accent, #6366f1); background: rgba(99, 102, 241, 0.08); }
+
+/* Apply change indicator */
+.apply-indicator {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+  color: #818cf8;
+  background: rgba(129, 140, 248, 0.1);
+}
+
 /* Agent status indicator */
 .agent-status {
   font-size: 11px;
@@ -2055,5 +2240,72 @@ function scrollToMessageId(id: string | null) {
 .source-badge.remote {
   color: #60a5fa;
   background: rgba(96, 165, 250, 0.15);
+}
+
+/* Ask User Options */
+.ask-user-block {
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--color-accent, #6366f1) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent, #6366f1) 20%, transparent);
+  border-radius: 8px;
+  margin: 8px 0;
+}
+.ask-user-question {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin-bottom: 10px;
+}
+.ask-user-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ask-user-option {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-accent, #6366f1) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent, #6366f1) 8%, transparent);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ask-user-option:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent, #6366f1) 18%, transparent);
+  border-color: var(--color-accent, #6366f1);
+}
+.ask-user-option.selected {
+  background: var(--color-accent, #6366f1);
+  color: white;
+  border-color: var(--color-accent, #6366f1);
+}
+.ask-user-option.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ask-user-freetext {
+  margin-top: 6px;
+}
+.ask-user-input {
+  width: 100%;
+  padding: 7px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border, #333);
+  background: var(--color-surface-1, #1a1a1a);
+  color: var(--color-text-primary);
+  outline: none;
+}
+.ask-user-input:focus {
+  border-color: var(--color-accent, #6366f1);
+}
+.ask-user-answered {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: 6px;
+  font-style: italic;
 }
 </style>

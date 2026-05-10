@@ -59,6 +59,9 @@ pub struct Session {
     pub local_agent: Option<String>,
     pub local_work_dir: Option<String>,
     pub environment: String,
+    pub session_type: String,
+    pub change_id: Option<String>,
+    pub pending_ask_user: Option<String>,
     pub active_leaf_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -168,6 +171,71 @@ pub struct LocalEvent {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Spec {
+    pub id: String,
+    pub capability: String,
+    pub title: String,
+    pub content: String,
+    pub metadata: Option<String>,
+    pub version: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct SpecVersion {
+    pub id: String,
+    pub spec_id: String,
+    pub version: i32,
+    pub content: String,
+    pub metadata: Option<String>,
+    pub change_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Change {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub work_dir: Option<String>,
+    pub explore_summary: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub archived_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChangeArtifact {
+    pub id: String,
+    pub change_id: String,
+    #[sqlx(rename = "type")]
+    #[serde(rename = "type")]
+    pub artifact_type: String,
+    pub capability: Option<String>,
+    pub content: String,
+    pub metadata: Option<String>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChangeTask {
+    pub id: String,
+    pub change_id: String,
+    pub group_name: String,
+    pub group_order: i32,
+    pub task_order: i32,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub session_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsOverview {
     pub total_input_tokens: u64,
@@ -194,12 +262,22 @@ impl Database {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS sessions (
                 id VARCHAR(36) PRIMARY KEY,
+                user_id VARCHAR(36) DEFAULT NULL,
                 title VARCHAR(255) NOT NULL DEFAULT '',
                 provider VARCHAR(64) NOT NULL DEFAULT 'anthropic',
                 model VARCHAR(128) NOT NULL DEFAULT '',
                 work_dir TEXT DEFAULT NULL,
+                local_agent VARCHAR(128) DEFAULT NULL,
+                local_work_dir TEXT DEFAULT NULL,
+                environment VARCHAR(16) NOT NULL DEFAULT 'remote',
+                session_type VARCHAR(16) NOT NULL DEFAULT 'chat',
+                change_id VARCHAR(36) DEFAULT NULL,
+                pending_ask_user JSON DEFAULT NULL,
+                active_leaf_id VARCHAR(36) DEFAULT NULL,
                 created_at DATETIME NOT NULL DEFAULT NOW(),
-                updated_at DATETIME NOT NULL DEFAULT NOW()
+                updated_at DATETIME NOT NULL DEFAULT NOW(),
+                INDEX idx_sessions_user (user_id),
+                INDEX idx_sessions_change (change_id)
             ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
@@ -211,28 +289,16 @@ impl Database {
                 session_id VARCHAR(36) NOT NULL,
                 role VARCHAR(16) NOT NULL,
                 content MEDIUMTEXT NOT NULL,
+                parent_id VARCHAR(36) DEFAULT NULL,
                 created_at DATETIME(6) NOT NULL DEFAULT NOW(6),
                 seq BIGINT NOT NULL DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-                INDEX idx_messages_session_seq (session_id, seq, created_at)
+                INDEX idx_messages_session_seq (session_id, seq, created_at),
+                INDEX idx_messages_parent (parent_id)
             ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
         .await?;
-
-        // Migration: add seq column if missing
-        let _ = sqlx::query(
-            "ALTER TABLE messages ADD COLUMN seq BIGINT NOT NULL DEFAULT 0"
-        )
-        .execute(&pool)
-        .await;
-
-        // Migration: upgrade created_at to microsecond precision
-        let _ = sqlx::query(
-            "ALTER TABLE messages MODIFY COLUMN created_at DATETIME(6) NOT NULL DEFAULT NOW(6)"
-        )
-        .execute(&pool)
-        .await;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS settings (
@@ -305,45 +371,6 @@ impl Database {
         .execute(&pool)
         .await?;
 
-        // Migration: add work_dir column if missing
-        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN work_dir TEXT DEFAULT NULL AFTER model")
-            .execute(&pool)
-            .await;
-
-        // Migration: add parent_id to messages
-        let _ = sqlx::query("ALTER TABLE messages ADD COLUMN parent_id VARCHAR(36) DEFAULT NULL")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("CREATE INDEX idx_messages_parent ON messages (parent_id)")
-            .execute(&pool)
-            .await;
-
-        // Migration: add active_leaf_id to sessions
-        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN active_leaf_id VARCHAR(36) DEFAULT NULL")
-            .execute(&pool)
-            .await;
-
-        // Migration: add user_id to sessions
-        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN user_id VARCHAR(36) DEFAULT NULL AFTER id")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("CREATE INDEX idx_sessions_user ON sessions (user_id)")
-            .execute(&pool)
-            .await;
-
-        // Migration: add local_agent and local_work_dir to sessions
-        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN local_agent VARCHAR(128) DEFAULT NULL")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN local_work_dir TEXT DEFAULT NULL")
-            .execute(&pool)
-            .await;
-
-        // Migration: add environment column (remote/local, defaults to remote for existing sessions)
-        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN environment VARCHAR(16) NOT NULL DEFAULT 'remote'")
-            .execute(&pool)
-            .await;
-
         // Users table
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS users (
@@ -412,52 +439,110 @@ impl Database {
         .execute(&pool)
         .await?;
 
-        // Data migration: link existing messages by seq order and set active_leaf_id
-        // Only run if there are messages without parent_id that should have one
-        let unlinked: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT session_id FROM messages WHERE parent_id IS NULL"
+        // Specs table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS specs (
+                id VARCHAR(36) PRIMARY KEY,
+                capability VARCHAR(255) NOT NULL UNIQUE,
+                title VARCHAR(255) NOT NULL,
+                content MEDIUMTEXT NOT NULL,
+                metadata JSON DEFAULT NULL,
+                version INT NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                updated_at DATETIME NOT NULL DEFAULT NOW(),
+                INDEX idx_specs_capability (capability)
+            ) DEFAULT CHARSET=utf8mb4",
         )
-        .fetch_all(&pool)
-        .await
-        .unwrap_or_default();
+        .execute(&pool)
+        .await?;
 
-        for (sid,) in &unlinked {
-            let msgs: Vec<(String,)> = sqlx::query_as(
-                "SELECT id FROM messages WHERE session_id = ? ORDER BY seq ASC, created_at ASC"
-            )
-            .bind(sid)
-            .fetch_all(&pool)
-            .await
-            .unwrap_or_default();
+        // Spec versions table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS spec_versions (
+                id VARCHAR(36) PRIMARY KEY,
+                spec_id VARCHAR(36) NOT NULL,
+                version INT NOT NULL,
+                content MEDIUMTEXT NOT NULL,
+                metadata JSON DEFAULT NULL,
+                change_id VARCHAR(36) DEFAULT NULL,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                FOREIGN KEY (spec_id) REFERENCES specs(id) ON DELETE CASCADE,
+                INDEX idx_spec_versions_spec (spec_id, version)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
 
-            for i in 1..msgs.len() {
-                let _ = sqlx::query("UPDATE messages SET parent_id = ? WHERE id = ?")
-                    .bind(&msgs[i - 1].0)
-                    .bind(&msgs[i].0)
-                    .execute(&pool)
-                    .await;
-            }
+        // Changes table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS changes (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                status VARCHAR(32) NOT NULL DEFAULT 'draft',
+                work_dir VARCHAR(512) DEFAULT NULL,
+                explore_summary TEXT DEFAULT NULL,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                updated_at DATETIME NOT NULL DEFAULT NOW(),
+                archived_at DATETIME DEFAULT NULL,
+                INDEX idx_changes_status (status)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
 
-            if let Some(last) = msgs.last() {
-                let _ = sqlx::query("UPDATE sessions SET active_leaf_id = ? WHERE id = ? AND active_leaf_id IS NULL")
-                    .bind(&last.0)
-                    .bind(sid)
-                    .execute(&pool)
-                    .await;
-            }
-        }
+        // Change artifacts table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS change_artifacts (
+                id VARCHAR(36) PRIMARY KEY,
+                change_id VARCHAR(36) NOT NULL,
+                type VARCHAR(32) NOT NULL,
+                capability VARCHAR(255) DEFAULT NULL,
+                content MEDIUMTEXT NOT NULL,
+                metadata JSON DEFAULT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'confirmed',
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                updated_at DATETIME NOT NULL DEFAULT NOW(),
+                FOREIGN KEY (change_id) REFERENCES changes(id) ON DELETE CASCADE,
+                UNIQUE KEY uk_change_type_cap (change_id, type, capability),
+                INDEX idx_change_artifacts_change (change_id)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
+        // Change tasks table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS change_tasks (
+                id VARCHAR(36) PRIMARY KEY,
+                change_id VARCHAR(36) NOT NULL,
+                group_name VARCHAR(255) NOT NULL,
+                group_order INT NOT NULL DEFAULT 0,
+                task_order INT NOT NULL DEFAULT 0,
+                title VARCHAR(512) NOT NULL,
+                description TEXT DEFAULT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                session_id VARCHAR(36) DEFAULT NULL,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                updated_at DATETIME NOT NULL DEFAULT NOW(),
+                FOREIGN KEY (change_id) REFERENCES changes(id) ON DELETE CASCADE,
+                INDEX idx_change_tasks_change (change_id, group_order, task_order)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
 
         Ok(Self { pool })
     }
 
     // Sessions
-    pub async fn create_session(&self, provider: &str, model: &str, work_dir: Option<&str>, user_id: Option<&str>, environment: Option<&str>) -> Result<Session> {
+    pub async fn create_session(&self, provider: &str, model: &str, work_dir: Option<&str>, user_id: Option<&str>, environment: Option<&str>, session_type: Option<&str>) -> Result<Session> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         let env = environment.unwrap_or("remote");
+        let s_type = session_type.unwrap_or("chat");
         db_retry!(
             sqlx::query(
-                "INSERT INTO sessions (id, user_id, title, provider, model, work_dir, environment, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO sessions (id, user_id, title, provider, model, work_dir, environment, session_type, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&id)
             .bind(user_id)
@@ -465,6 +550,7 @@ impl Database {
             .bind(model)
             .bind(work_dir)
             .bind(env)
+            .bind(s_type)
             .bind(now)
             .bind(now)
             .execute(&self.pool)
@@ -480,6 +566,9 @@ impl Database {
             local_agent: None,
             local_work_dir: None,
             environment: env.to_string(),
+            session_type: s_type.to_string(),
+            change_id: None,
+            pending_ask_user: None,
             active_leaf_id: None,
             created_at: now,
             updated_at: now,
@@ -489,7 +578,7 @@ impl Database {
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         let sessions = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, active_leaf_id, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
             )
             .fetch_all(&self.pool)
         )?;
@@ -499,7 +588,7 @@ impl Database {
     pub async fn list_sessions_by_user(&self, user_id: &str) -> Result<Vec<Session>> {
         let sessions = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, active_leaf_id, created_at, updated_at FROM sessions WHERE user_id = ? ORDER BY updated_at DESC"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, created_at, updated_at FROM sessions WHERE user_id = ? ORDER BY updated_at DESC"
             )
             .bind(user_id)
             .fetch_all(&self.pool)
@@ -510,7 +599,7 @@ impl Database {
     pub async fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let session = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, active_leaf_id, created_at, updated_at FROM sessions WHERE id = ?"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, created_at, updated_at FROM sessions WHERE id = ?"
             )
             .bind(id)
             .fetch_optional(&self.pool)
@@ -1237,6 +1326,504 @@ impl Database {
             .fetch_all(&self.pool)
         )?;
         Ok(events)
+    }
+
+    // ─── Specs ───────────────────────────────────────────────────────────
+
+    pub async fn create_spec(&self, capability: &str, title: &str, content: &str, metadata: Option<&str>) -> Result<Spec> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO specs (id, capability, title, content, metadata, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)"
+            )
+            .bind(&id)
+            .bind(capability)
+            .bind(title)
+            .bind(content)
+            .bind(metadata)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
+        Ok(Spec { id, capability: capability.to_string(), title: title.to_string(), content: content.to_string(), metadata: metadata.map(|s| s.to_string()), version: 1, created_at: now, updated_at: now })
+    }
+
+    pub async fn list_specs(&self) -> Result<Vec<Spec>> {
+        let specs = db_retry!(
+            sqlx::query_as::<_, Spec>(
+                "SELECT id, capability, title, content, metadata, version, created_at, updated_at FROM specs ORDER BY capability ASC"
+            )
+            .fetch_all(&self.pool)
+        )?;
+        Ok(specs)
+    }
+
+    pub async fn get_spec(&self, id: &str) -> Result<Option<Spec>> {
+        let spec = db_retry!(
+            sqlx::query_as::<_, Spec>(
+                "SELECT id, capability, title, content, metadata, version, created_at, updated_at FROM specs WHERE id = ?"
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(spec)
+    }
+
+    pub async fn get_spec_by_capability(&self, capability: &str) -> Result<Option<Spec>> {
+        let spec = db_retry!(
+            sqlx::query_as::<_, Spec>(
+                "SELECT id, capability, title, content, metadata, version, created_at, updated_at FROM specs WHERE capability = ?"
+            )
+            .bind(capability)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(spec)
+    }
+
+    pub async fn update_spec(&self, id: &str, content: Option<&str>, metadata: Option<&str>, title: Option<&str>) -> Result<()> {
+        let now = Utc::now();
+        if let Some(c) = content {
+            db_retry!(
+                sqlx::query("UPDATE specs SET content = ?, updated_at = ?, version = version + 1 WHERE id = ?")
+                    .bind(c)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        if let Some(m) = metadata {
+            db_retry!(
+                sqlx::query("UPDATE specs SET metadata = ?, updated_at = ? WHERE id = ?")
+                    .bind(m)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        if let Some(t) = title {
+            db_retry!(
+                sqlx::query("UPDATE specs SET title = ?, updated_at = ? WHERE id = ?")
+                    .bind(t)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        Ok(())
+    }
+
+    pub async fn delete_spec(&self, id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("DELETE FROM specs WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    // ─── Spec Versions ───────────────────────────────────────────────────
+
+    pub async fn create_spec_version(&self, spec_id: &str, version: i32, content: &str, metadata: Option<&str>, change_id: Option<&str>) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO spec_versions (id, spec_id, version, content, metadata, change_id, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())"
+            )
+            .bind(&id)
+            .bind(spec_id)
+            .bind(version)
+            .bind(content)
+            .bind(metadata)
+            .bind(change_id)
+            .execute(&self.pool)
+        )?;
+        Ok(id)
+    }
+
+    pub async fn list_spec_versions(&self, spec_id: &str) -> Result<Vec<SpecVersion>> {
+        let versions = db_retry!(
+            sqlx::query_as::<_, SpecVersion>(
+                "SELECT id, spec_id, version, content, metadata, change_id, created_at FROM spec_versions WHERE spec_id = ? ORDER BY version DESC"
+            )
+            .bind(spec_id)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(versions)
+    }
+
+    // ─── Changes ─────────────────────────────────────────────────────────
+
+    pub async fn create_change(&self, name: &str, work_dir: Option<&str>) -> Result<Change> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO changes (id, name, status, work_dir, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(name)
+            .bind(work_dir)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
+        Ok(Change { id, name: name.to_string(), status: "draft".to_string(), work_dir: work_dir.map(|s| s.to_string()), explore_summary: None, created_at: now, updated_at: now, archived_at: None })
+    }
+
+    pub async fn list_changes(&self, status: Option<&str>) -> Result<Vec<Change>> {
+        let changes = if let Some(s) = status {
+            db_retry!(
+                sqlx::query_as::<_, Change>(
+                    "SELECT id, name, status, work_dir, explore_summary, created_at, updated_at, archived_at FROM changes WHERE status = ? ORDER BY updated_at DESC"
+                )
+                .bind(s)
+                .fetch_all(&self.pool)
+            )?
+        } else {
+            db_retry!(
+                sqlx::query_as::<_, Change>(
+                    "SELECT id, name, status, work_dir, explore_summary, created_at, updated_at, archived_at FROM changes WHERE status != 'archived' ORDER BY updated_at DESC"
+                )
+                .fetch_all(&self.pool)
+            )?
+        };
+        Ok(changes)
+    }
+
+    pub async fn get_change(&self, id: &str) -> Result<Option<Change>> {
+        let change = db_retry!(
+            sqlx::query_as::<_, Change>(
+                "SELECT id, name, status, work_dir, explore_summary, created_at, updated_at, archived_at FROM changes WHERE id = ?"
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(change)
+    }
+
+    pub async fn update_change(&self, id: &str, name: Option<&str>, status: Option<&str>) -> Result<()> {
+        let now = Utc::now();
+        if let Some(n) = name {
+            db_retry!(
+                sqlx::query("UPDATE changes SET name = ?, updated_at = ? WHERE id = ?")
+                    .bind(n)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        if let Some(s) = status {
+            if s == "archived" {
+                db_retry!(
+                    sqlx::query("UPDATE changes SET status = ?, updated_at = ?, archived_at = ? WHERE id = ?")
+                        .bind(s)
+                        .bind(now)
+                        .bind(now)
+                        .bind(id)
+                        .execute(&self.pool)
+                )?;
+            } else {
+                db_retry!(
+                    sqlx::query("UPDATE changes SET status = ?, updated_at = ? WHERE id = ?")
+                        .bind(s)
+                        .bind(now)
+                        .bind(id)
+                        .execute(&self.pool)
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn delete_change(&self, id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("DELETE FROM changes WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn list_changes_by_work_dir(&self, work_dir: &str) -> Result<Vec<Change>> {
+        let changes = db_retry!(
+            sqlx::query_as::<_, Change>(
+                "SELECT id, name, status, work_dir, explore_summary, created_at, updated_at, archived_at FROM changes WHERE work_dir = ? AND status != 'archived' ORDER BY updated_at DESC"
+            )
+            .bind(work_dir)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(changes)
+    }
+
+    pub async fn update_change_explore_summary(&self, change_id: &str, summary: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("UPDATE changes SET explore_summary = ?, updated_at = NOW() WHERE id = ?")
+                .bind(summary)
+                .bind(change_id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    // ─── Session: pending_ask_user & change_id ──────────────────────────
+
+    pub async fn get_session_pending_ask_user(&self, session_id: &str) -> Result<Option<String>> {
+        let row: Option<(Option<String>,)> = db_retry!(
+            sqlx::query_as("SELECT pending_ask_user FROM sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&self.pool)
+        )?;
+        Ok(row.and_then(|r| r.0))
+    }
+
+    pub async fn set_session_pending_ask_user(&self, session_id: &str, json: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("UPDATE sessions SET pending_ask_user = ?, updated_at = NOW() WHERE id = ?")
+                .bind(json)
+                .bind(session_id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn clear_session_pending_ask_user(&self, session_id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("UPDATE sessions SET pending_ask_user = NULL, updated_at = NOW() WHERE id = ?")
+                .bind(session_id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn get_session_by_change_id(&self, change_id: &str) -> Result<Option<Session>> {
+        let session = db_retry!(
+            sqlx::query_as::<_, Session>(
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, created_at, updated_at FROM sessions WHERE change_id = ? ORDER BY updated_at DESC LIMIT 1"
+            )
+            .bind(change_id)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(session)
+    }
+
+    pub async fn set_session_change_id(&self, session_id: &str, change_id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("UPDATE sessions SET change_id = ?, updated_at = NOW() WHERE id = ?")
+                .bind(change_id)
+                .bind(session_id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    // ─── Change Artifacts ────────────────────────────────────────────────
+
+    pub async fn create_artifact(&self, change_id: &str, artifact_type: &str, capability: Option<&str>, content: &str, metadata: Option<&str>, status: Option<&str>) -> Result<ChangeArtifact> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let st = status.unwrap_or("confirmed");
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO change_artifacts (id, change_id, `type`, capability, content, metadata, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(change_id)
+            .bind(artifact_type)
+            .bind(capability)
+            .bind(content)
+            .bind(metadata)
+            .bind(st)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
+        Ok(ChangeArtifact { id, change_id: change_id.to_string(), artifact_type: artifact_type.to_string(), capability: capability.map(|s| s.to_string()), content: content.to_string(), metadata: metadata.map(|s| s.to_string()), status: st.to_string(), created_at: now, updated_at: now })
+    }
+
+    pub async fn list_artifacts(&self, change_id: &str) -> Result<Vec<ChangeArtifact>> {
+        let artifacts = db_retry!(
+            sqlx::query_as::<_, ChangeArtifact>(
+                "SELECT id, change_id, `type` as artifact_type, capability, content, metadata, status, created_at, updated_at FROM change_artifacts WHERE change_id = ? ORDER BY created_at ASC"
+            )
+            .bind(change_id)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(artifacts)
+    }
+
+    pub async fn get_artifact(&self, id: &str) -> Result<Option<ChangeArtifact>> {
+        let artifact = db_retry!(
+            sqlx::query_as::<_, ChangeArtifact>(
+                "SELECT id, change_id, `type` as artifact_type, capability, content, metadata, status, created_at, updated_at FROM change_artifacts WHERE id = ?"
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(artifact)
+    }
+
+    pub async fn update_artifact(&self, id: &str, content: Option<&str>, metadata: Option<&str>, status: Option<&str>) -> Result<()> {
+        let now = Utc::now();
+        if let Some(c) = content {
+            db_retry!(
+                sqlx::query("UPDATE change_artifacts SET content = ?, updated_at = ? WHERE id = ?")
+                    .bind(c)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        if let Some(m) = metadata {
+            db_retry!(
+                sqlx::query("UPDATE change_artifacts SET metadata = ?, updated_at = ? WHERE id = ?")
+                    .bind(m)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        if let Some(s) = status {
+            db_retry!(
+                sqlx::query("UPDATE change_artifacts SET status = ?, updated_at = ? WHERE id = ?")
+                    .bind(s)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        Ok(())
+    }
+
+    pub async fn delete_artifact(&self, id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("DELETE FROM change_artifacts WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn confirm_artifacts(&self, change_id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("UPDATE change_artifacts SET status = 'confirmed', updated_at = NOW() WHERE change_id = ? AND status = 'draft'")
+                .bind(change_id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    // ─── Change Tasks ────────────────────────────────────────────────────
+
+    pub async fn batch_create_tasks(&self, change_id: &str, tasks: &[(String, i32, i32, String, Option<String>)]) -> Result<Vec<ChangeTask>> {
+        let now = Utc::now();
+        let mut created = Vec::new();
+        for (group_name, group_order, task_order, title, description) in tasks {
+            let id = Uuid::new_v4().to_string();
+            db_retry!(
+                sqlx::query(
+                    "INSERT INTO change_tasks (id, change_id, group_name, group_order, task_order, title, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)"
+                )
+                .bind(&id)
+                .bind(change_id)
+                .bind(group_name)
+                .bind(group_order)
+                .bind(task_order)
+                .bind(title)
+                .bind(description.as_deref())
+                .bind(now)
+                .bind(now)
+                .execute(&self.pool)
+            )?;
+            created.push(ChangeTask {
+                id, change_id: change_id.to_string(), group_name: group_name.clone(),
+                group_order: *group_order, task_order: *task_order, title: title.clone(),
+                description: description.clone(), status: "pending".to_string(),
+                session_id: None, created_at: now, updated_at: now,
+            });
+        }
+        Ok(created)
+    }
+
+    pub async fn list_tasks(&self, change_id: &str) -> Result<Vec<ChangeTask>> {
+        let tasks = db_retry!(
+            sqlx::query_as::<_, ChangeTask>(
+                "SELECT id, change_id, group_name, group_order, task_order, title, description, status, session_id, created_at, updated_at FROM change_tasks WHERE change_id = ? ORDER BY group_order ASC, task_order ASC"
+            )
+            .bind(change_id)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(tasks)
+    }
+
+    pub async fn update_task(&self, id: &str, status: Option<&str>, title: Option<&str>, description: Option<&str>, session_id: Option<&str>) -> Result<()> {
+        let now = Utc::now();
+        if let Some(s) = status {
+            db_retry!(
+                sqlx::query("UPDATE change_tasks SET status = ?, updated_at = ? WHERE id = ?")
+                    .bind(s)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        if let Some(t) = title {
+            db_retry!(
+                sqlx::query("UPDATE change_tasks SET title = ?, updated_at = ? WHERE id = ?")
+                    .bind(t)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        if let Some(d) = description {
+            db_retry!(
+                sqlx::query("UPDATE change_tasks SET description = ?, updated_at = ? WHERE id = ?")
+                    .bind(d)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        if let Some(sid) = session_id {
+            db_retry!(
+                sqlx::query("UPDATE change_tasks SET session_id = ?, updated_at = ? WHERE id = ?")
+                    .bind(sid)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool)
+            )?;
+        }
+        Ok(())
+    }
+
+    pub async fn delete_task(&self, id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("DELETE FROM change_tasks WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn get_change_task_counts(&self, change_id: &str) -> Result<(i64, i64, i64, i64)> {
+        let total: (i64,) = db_retry!(
+            sqlx::query_as("SELECT COUNT(*) FROM change_tasks WHERE change_id = ?")
+                .bind(change_id)
+                .fetch_one(&self.pool)
+        )?;
+        let done: (i64,) = db_retry!(
+            sqlx::query_as("SELECT COUNT(*) FROM change_tasks WHERE change_id = ? AND status = 'done'")
+                .bind(change_id)
+                .fetch_one(&self.pool)
+        )?;
+        let in_progress: (i64,) = db_retry!(
+            sqlx::query_as("SELECT COUNT(*) FROM change_tasks WHERE change_id = ? AND status = 'in_progress'")
+                .bind(change_id)
+                .fetch_one(&self.pool)
+        )?;
+        let pending = total.0 - done.0 - in_progress.0;
+        Ok((total.0, done.0, in_progress.0, pending))
     }
 }
 

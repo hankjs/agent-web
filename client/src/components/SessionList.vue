@@ -1,15 +1,50 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, ref, computed } from "vue";
 import { useSession } from "../composables/useSession";
+import { createChange } from "../api/changes";
 import FolderPicker from "./FolderPicker.vue";
 
-const { sessions, fetchSessions, createSession, selectSession, deleteSession } = useSession();
+const { sessions, fetchSessions, createSession, selectSession, deleteSession, navigateTo } = useSession();
 
 type EnvTab = "remote" | "local";
 const activeTab = ref<EnvTab>("remote");
 const workDir = ref("");
 const localWorkDir = ref("");
 const isTauri = ref(false);
+
+// New Change flow
+const showNewChange = ref(false);
+const newChangeName = ref("");
+const selectedProjectDir = ref<string | null>(null);
+
+const projectDirs = computed(() => {
+  const dirs = new Set<string>();
+  for (const s of sessions.value) {
+    if (s.work_dir) dirs.add(s.work_dir);
+  }
+  return Array.from(dirs).sort();
+});
+
+function startNewChange() {
+  showNewChange.value = true;
+  newChangeName.value = "";
+  selectedProjectDir.value = projectDirs.value.length === 1 ? projectDirs.value[0] : null;
+}
+
+async function submitNewChange() {
+  if (!newChangeName.value.trim() || !selectedProjectDir.value) return;
+  const res = await createChange(newChangeName.value.trim(), selectedProjectDir.value);
+  if (res.ok && res.data) {
+    navigateTo("change-detail", res.data.id);
+  }
+  showNewChange.value = false;
+  newChangeName.value = "";
+  selectedProjectDir.value = null;
+}
+
+function dirName(path: string): string {
+  return path.split("/").pop() || path;
+}
 
 async function start() {
   if (activeTab.value === "remote") {
@@ -83,7 +118,33 @@ onMounted(async () => {
             <button class="start-btn" @click="start">Start</button>
           </div>
         </div>
-<!-- SESSION_LIST_PART2 -->
+        <!-- New Change -->
+        <div v-if="!showNewChange" class="new-change-trigger">
+          <button class="new-change-btn" @click="startNewChange">New Change</button>
+        </div>
+        <div v-else class="new-change-form">
+          <div class="new-change-title">New Change</div>
+          <div class="project-select">
+            <div class="project-label">Select project:</div>
+            <div class="project-options">
+              <div
+                v-for="dir in projectDirs" :key="dir"
+                class="project-option" :class="{ active: selectedProjectDir === dir }"
+                @click="selectedProjectDir = dir"
+              >
+                <span class="project-name">{{ dirName(dir) }}</span>
+                <span class="project-path">{{ dir }}</span>
+              </div>
+              <div v-if="projectDirs.length === 0" class="empty-inline">No projects yet. Start a session first.</div>
+            </div>
+          </div>
+          <input v-model="newChangeName" placeholder="Change name" class="change-input" @keyup.enter="submitNewChange" />
+          <div class="new-change-actions">
+            <button @click="showNewChange = false" class="cancel-btn">Cancel</button>
+            <button class="start-btn" :disabled="!newChangeName.trim() || !selectedProjectDir" @click="submitNewChange">Create</button>
+          </div>
+        </div>
+
         <!-- Session list -->
         <div v-if="sessions.length" class="session-list">
           <div
@@ -97,6 +158,7 @@ onMounted(async () => {
               <span v-if="s.work_dir" class="session-dir">{{ s.work_dir }}</span>
             </div>
             <div class="session-meta">
+              <span v-if="s.session_type === 'explore'" class="env-badge explore">Explore</span>
               <span class="env-badge" :class="s.environment === 'local' ? 'local' : 'remote'">{{ s.environment === 'local' ? 'Local' : 'Remote' }}</span>
               <span class="session-time">{{ relativeTime(s.updated_at) }}</span>
               <button
@@ -305,5 +367,133 @@ onMounted(async () => {
 .env-badge.remote {
   color: var(--color-env-remote);
   background: var(--color-env-remote-bg);
+}
+
+.env-badge.explore {
+  color: #c084fc;
+  background: rgba(192, 132, 252, 0.12);
+}
+
+.new-change-trigger {
+  margin-bottom: 24px;
+}
+
+.new-change-btn {
+  padding: 8px 16px;
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.new-change-btn:hover {
+  background: var(--color-surface-hover);
+  border-color: var(--color-text-muted);
+}
+
+.new-change-form {
+  margin-bottom: 24px;
+  padding: 16px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: var(--color-surface-1);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.new-change-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.project-select {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.project-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.project-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-option {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--color-border-subtle);
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.project-option:hover {
+  background: var(--color-surface-hover);
+}
+
+.project-option.active {
+  border-color: var(--color-accent);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.project-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.project-path {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-input {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-0);
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.new-change-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.cancel-btn {
+  padding: 6px 12px;
+  background: none;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.cancel-btn:hover {
+  color: var(--color-text-primary);
+}
+
+.empty-inline {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  padding: 8px;
 }
 </style>

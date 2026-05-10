@@ -1,15 +1,17 @@
 mod admin;
 mod auth;
+mod changes;
 mod chat;
 mod config;
 pub mod provider_registry;
 pub mod response;
 mod routes;
+mod specs;
 
 use anyhow::Result;
 use axum::{
     extract::State,
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, Request},
     middleware::{self, Next},
     response::Response,
     routing::{delete, get, post, put},
@@ -23,7 +25,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
+use tracing::Level;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::chat::EventBuffer;
@@ -41,7 +44,7 @@ async fn auth_middleware(
     headers: HeaderMap,
     mut request: Request<axum::body::Body>,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Response {
     let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -51,11 +54,17 @@ async fn auth_middleware(
         Some(t) => match auth::verify_token(t, &state.jwt_secret) {
             Ok(claims) => {
                 request.extensions_mut().insert(claims);
-                Ok(next.run(request).await)
+                next.run(request).await
             }
-            Err(_) => Err(StatusCode::UNAUTHORIZED),
+            Err(e) => {
+                tracing::warn!(error = %e, "auth failed: invalid token");
+                response::unauthorized("invalid or expired token")
+            }
         },
-        _ => Err(StatusCode::UNAUTHORIZED),
+        _ => {
+            tracing::warn!("auth failed: missing token");
+            response::unauthorized("missing authorization token")
+        }
     }
 }
 
@@ -114,6 +123,36 @@ async fn main() -> Result<()> {
         .route("/api/sessions/{id}/stop", post(chat::stop_handler))
         .route("/api/sessions/{id}/events/resume", get(chat::resume_handler))
         .route("/api/fs/list", get(routes::list_directory))
+        // Specs routes
+        .route("/api/specs", get(specs::list_specs))
+        .route("/api/specs", post(specs::create_spec))
+        .route("/api/specs/{id}", get(specs::get_spec))
+        .route("/api/specs/{id}", put(specs::update_spec))
+        .route("/api/specs/{id}", delete(specs::delete_spec))
+        .route("/api/specs/{id}/versions", get(specs::list_spec_versions))
+        // Changes routes
+        .route("/api/changes", get(changes::list_changes))
+        .route("/api/changes", post(changes::create_change))
+        .route("/api/changes/{id}", get(changes::get_change))
+        .route("/api/changes/{id}", put(changes::update_change))
+        .route("/api/changes/{id}", delete(changes::delete_change))
+        .route("/api/changes/{id}/explore", post(changes::start_explore))
+        .route("/api/changes/{id}/generate", post(changes::start_generate))
+        .route("/api/changes/{id}/artifacts/confirm", post(changes::confirm_artifacts))
+        .route("/api/changes/{id}/archive", post(changes::archive_change))
+        // Artifacts routes
+        .route("/api/changes/{id}/artifacts", get(changes::list_artifacts))
+        .route("/api/changes/{id}/artifacts", post(changes::create_artifact))
+        .route("/api/changes/{id}/artifacts/{aid}", get(changes::get_artifact))
+        .route("/api/changes/{id}/artifacts/{aid}", put(changes::update_artifact))
+        .route("/api/changes/{id}/artifacts/{aid}", delete(changes::delete_artifact))
+        // Tasks routes
+        .route("/api/changes/{id}/tasks", get(changes::list_tasks))
+        .route("/api/changes/{id}/tasks", post(changes::batch_create_tasks))
+        .route("/api/changes/{id}/tasks/{tid}", put(changes::update_task))
+        .route("/api/changes/{id}/tasks/{tid}", delete(changes::delete_task))
+        // Context route
+        .route("/api/changes/{id}/context", get(changes::get_change_context))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Admin API routes (also protected)
@@ -147,7 +186,17 @@ async fn main() -> Result<()> {
         .merge(admin_api)
         .nest_service("/admin", admin_static)
         .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                    )
+                })
+                .on_response(DefaultOnResponse::new().level(Level::INFO))
+        )
         .with_state(state);
 
     let addr = format!("{}:{}", config.server.host, config.server.port);

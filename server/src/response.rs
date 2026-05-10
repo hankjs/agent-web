@@ -56,8 +56,16 @@ pub fn err(status: StatusCode, msg: impl ToString) -> axum::response::Response {
         .into_response()
 }
 
+#[track_caller]
 pub fn internal_error(e: impl ToString) -> axum::response::Response {
-    err(StatusCode::INTERNAL_SERVER_ERROR, e)
+    let msg = e.to_string();
+    let caller = std::panic::Location::caller();
+    tracing::error!(
+        error = %msg,
+        caller = %format!("{}:{}", caller.file(), caller.line()),
+        "internal server error"
+    );
+    err(StatusCode::INTERNAL_SERVER_ERROR, msg)
 }
 
 pub fn not_found(msg: impl ToString) -> axum::response::Response {

@@ -11,7 +11,12 @@ use axum::{
 use futures::stream::Stream;
 use hank_agent::{AgentEvent, AgentSession};
 use hank_web_tools::{
-    read_file::ReadFileTool, search::SearchTool, shell::ShellTool, write_file::WriteFileTool, Tool,
+    ask_user::AskUserTool,
+    explore_tools::FinalizeExploreTool,
+    generate_tools::GenerateArtifactsTool,
+    read_file::ReadFileTool, search::SearchTool, shell::ShellTool,
+    spec_tools::{UpdateArtifactTool, UpdateSpecTool, UpdateTaskStatusTool},
+    write_file::WriteFileTool, Tool,
 };
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -65,6 +70,7 @@ pub struct ChatRequest {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub parent_id: Option<String>,
+    pub apply_change_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +84,7 @@ pub struct ImagePayload {
 pub async fn chat_handler(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<ChatRequest>,
 ) -> impl IntoResponse {
     // Resolve providers with fallback from DB
@@ -111,6 +118,11 @@ pub async fn chat_handler(
 
     let session_record = state.db.get_session(&session_id).await.ok().flatten();
     let work_dir = session_record.as_ref().and_then(|s| s.work_dir.clone());
+    let session_change_id = session_record.as_ref().and_then(|s| s.change_id.clone());
+    let session_type = session_record.as_ref().map(|s| s.session_type.clone()).unwrap_or_else(|| "chat".to_string());
+
+    // Check if this session has a pending ask_user state
+    let pending_ask_user = session_record.as_ref().and_then(|s| s.pending_ask_user.clone());
 
     let parent_id_for_new_msg = match body.parent_id.as_deref() {
         Some("root") => None,
@@ -118,12 +130,33 @@ pub async fn chat_handler(
         None => session_record.as_ref().and_then(|s| s.active_leaf_id.clone()),
     };
 
-    let tools: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(ShellTool::new(work_dir.clone())),
-        Arc::new(ReadFileTool::new(work_dir.clone())),
-        Arc::new(WriteFileTool::new(work_dir.clone())),
-        Arc::new(SearchTool::new(work_dir)),
-    ];
+    let tools: Vec<Arc<dyn Tool>> = {
+        let base_url = format!("http://127.0.0.1:{}", state.config.server.port);
+        let token = headers.get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or_default()
+            .to_string();
+        let mut t: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(ShellTool::new(work_dir.clone())),
+            Arc::new(ReadFileTool::new(work_dir.clone())),
+            Arc::new(WriteFileTool::new(work_dir.clone())),
+            Arc::new(SearchTool::new(work_dir)),
+            Arc::new(UpdateSpecTool::new(base_url.clone(), token.clone(), session_id.clone())),
+            Arc::new(UpdateTaskStatusTool::new(base_url.clone(), token.clone(), session_id.clone())),
+            Arc::new(UpdateArtifactTool::new(base_url.clone(), token.clone(), session_id.clone())),
+            Arc::new(AskUserTool::new()),
+        ];
+        // Add explore/generate tools if session is bound to a change or is explore type
+        if let Some(ref cid) = session_change_id {
+            t.push(Arc::new(FinalizeExploreTool::new(base_url.clone(), token.clone(), cid.clone(), session_id.clone())));
+            t.push(Arc::new(GenerateArtifactsTool::new(base_url.clone(), token.clone(), cid.clone())));
+        } else if session_type == "explore" {
+            // Explore session without a change yet — finalize_explore will create the change
+            t.push(Arc::new(FinalizeExploreTool::new(base_url.clone(), token.clone(), String::new(), session_id.clone())));
+        }
+        t
+    };
 
     // Initialize event buffer for this session
     {
@@ -142,7 +175,21 @@ pub async fn chat_handler(
     let db = state.db.clone();
     let sid = session_id.clone();
     let content_text = body.content.clone();
-    let user_content: Vec<hank_provider::ContentBlock> = {
+    let apply_change_id = body.apply_change_id.clone();
+
+    // If pending_ask_user, the user's reply becomes a tool_result
+    let user_content: Vec<hank_provider::ContentBlock> = if let Some(ref pending_json) = pending_ask_user {
+        // Parse pending state to get tool_use_id
+        let pending: serde_json::Value = serde_json::from_str(pending_json).unwrap_or_default();
+        let tool_use_id = pending["tool_use_id"].as_str().unwrap_or_default().to_string();
+        // Clear pending state
+        let _ = state.db.clear_session_pending_ask_user(&session_id).await;
+        vec![hank_provider::ContentBlock::ToolResult {
+            tool_use_id,
+            content: body.content.clone(),
+            is_error: false,
+        }]
+    } else {
         let mut blocks = vec![hank_provider::ContentBlock::Text { text: body.content }];
         if let Some(images) = body.images {
             for img in images {
@@ -224,6 +271,15 @@ pub async fn chat_handler(
                         &sid_fwd2, None, tool_name, *duration_ms, *is_error,
                     ).await;
                 }
+                AgentEvent::AskUser { question, options, tool_use_id } => {
+                    // Persist pending ask_user state to session
+                    let pending = serde_json::json!({
+                        "tool_use_id": tool_use_id,
+                        "question": question,
+                        "options": options,
+                    });
+                    let _ = db_fwd.set_session_pending_ask_user(&sid_fwd2, &pending.to_string()).await;
+                }
                 _ => {}
             }
             let mut buffers = state_fwd.event_buffers.write().await;
@@ -240,6 +296,64 @@ pub async fn chat_handler(
     tokio::spawn(async move {
         let max_attempts = fallback_list.len().min(3);
         let mut last_error = String::new();
+
+        // Build system prompt based on context
+        let system_prompt = if session_type == "explore" {
+            // Explore session — use explore prompt
+            let change_ctx = if let Some(ref cid) = session_change_id {
+                format!("\nChange ID: {}", cid)
+            } else {
+                String::new()
+            };
+            format!(
+                "You are exploring a project to understand requirements for a change.\n\
+                 Use the ask_user tool to present questions with options to the user.\n\
+                 Read project files to understand the codebase, then ask clarifying questions.\n\
+                 Keep asking until you have enough context to generate a complete proposal.\n\
+                 When ready, use the finalize_explore tool with a comprehensive summary and a short name for the change.{}",
+                change_ctx
+            )
+        } else if let Some(ref apply_cid) = apply_change_id {
+            // Apply mode — fetch change context and augment prompt
+            let ctx = match db.list_artifacts(apply_cid).await {
+                Ok(artifacts) => {
+                    let tasks = db.list_tasks(apply_cid).await.unwrap_or_default();
+                    let change = db.get_change(apply_cid).await.ok().flatten();
+                    let name = change.map(|c| c.name).unwrap_or_default();
+                    let mut ctx = format!("# Change: {}\n\n", name);
+                    if let Some(proposal) = artifacts.iter().find(|a| a.artifact_type == "proposal") {
+                        ctx.push_str("## Proposal\n\n");
+                        ctx.push_str(&proposal.content);
+                        ctx.push_str("\n\n");
+                    }
+                    if let Some(design) = artifacts.iter().find(|a| a.artifact_type == "design") {
+                        ctx.push_str("## Design\n\n");
+                        ctx.push_str(&design.content);
+                        ctx.push_str("\n\n");
+                    }
+                    if !tasks.is_empty() {
+                        ctx.push_str("## Tasks\n\n");
+                        for task in &tasks {
+                            let marker = if task.status == "done" { "x" } else { " " };
+                            ctx.push_str(&format!("- [{}] {}\n", marker, task.title));
+                        }
+                    }
+                    ctx
+                }
+                Err(_) => String::new(),
+            };
+            format!(
+                "You are a helpful AI assistant implementing a change. Execute the pending tasks sequentially.\n\
+                 Use update_task_status to mark tasks as done when complete.\n\n{}", ctx
+            )
+        } else {
+            "You are a helpful AI assistant with access to shell commands. Execute tasks the user requests.".to_string()
+        };
+
+        // If apply_change_id provided, bind session to change
+        if let Some(ref apply_cid) = apply_change_id {
+            let _ = db.set_session_change_id(&sid, apply_cid).await;
+        }
 
         for attempt in 0..max_attempts {
             let (ref record, ref provider) = fallback_list[attempt];
@@ -263,7 +377,7 @@ pub async fn chat_handler(
                 provider.clone(),
                 tools.clone(),
                 current_model,
-                "You are a helpful AI assistant with access to shell commands. Execute tasks the user requests.".to_string(),
+                system_prompt.clone(),
             );
             session.set_messages(history.clone());
 
@@ -521,5 +635,11 @@ fn extract_event_type(event: &AgentEvent) -> &'static str {
         AgentEvent::Metrics { .. } => "metrics",
         AgentEvent::ToolMetrics { .. } => "tool_metrics",
         AgentEvent::ProviderFallback { .. } => "provider_fallback",
+        AgentEvent::SpecUpdated { .. } => "spec_updated",
+        AgentEvent::TaskUpdated { .. } => "task_updated",
+        AgentEvent::ArtifactUpdated { .. } => "artifact_updated",
+        AgentEvent::AskUser { .. } => "ask_user",
+        AgentEvent::ExploreComplete { .. } => "explore_complete",
+        AgentEvent::GenerateComplete { .. } => "generate_complete",
     }
 }

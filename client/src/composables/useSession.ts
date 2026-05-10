@@ -8,16 +8,18 @@ export interface Session {
   model: string;
   work_dir: string | null;
   environment: "remote" | "local";
+  session_type: "chat" | "explore";
   active_leaf_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
-type View = "list" | "chat";
+type View = "list" | "chat" | "specs" | "changes" | "change-detail";
 
 const sessions = ref<Session[]>([]);
 const currentSession = ref<Session | null>(null);
 const view = ref<View>("list");
+const currentChangeId = ref<string | null>(null);
 const TOKEN_KEY = "hank_client_token";
 const token = ref(localStorage.getItem(TOKEN_KEY) || "");
 const isAuthenticated = ref(!!token.value);
@@ -84,21 +86,28 @@ async function fetchSessions() {
   }
 }
 
-async function createSession(workDir?: string, environment?: "remote" | "local"): Promise<Session | null> {
+async function createSession(workDir?: string, environment?: "remote" | "local", sessionType?: "chat" | "explore"): Promise<Session | null> {
   const result = await apiRequest<Session>("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ work_dir: workDir || null, environment: environment || "remote" }),
+    body: JSON.stringify({ work_dir: workDir || null, environment: environment || "remote", session_type: sessionType || "chat" }),
   });
   if (!result.ok || !result.data) return null;
   const session = result.data;
   if (!session.environment) {
     session.environment = environment || "remote";
   }
+  if (!session.session_type) {
+    session.session_type = sessionType || "chat";
+  }
   sessions.value.unshift(session);
   currentSession.value = session;
   view.value = "chat";
   return session;
+}
+
+async function createExploreSession(workDir?: string): Promise<Session | null> {
+  return createSession(workDir, "remote", "explore");
 }
 
 function selectSession(session: Session) {
@@ -121,6 +130,11 @@ function goBack() {
   currentSession.value = null;
   view.value = "list";
   fetchSessions();
+}
+
+function navigateTo(v: View, changeId?: string) {
+  view.value = v;
+  if (changeId) currentChangeId.value = changeId;
 }
 
 async function updateSessionTitle(id: string, title: string) {
@@ -162,11 +176,14 @@ export function useSession() {
     view: readonly(view),
     token: readonly(token),
     isAuthenticated: readonly(isAuthenticated),
+    currentChangeId: readonly(currentChangeId),
     fetchSessions,
     createSession,
+    createExploreSession,
     selectSession,
     deleteSession,
     goBack,
+    navigateTo,
     login,
     logout,
     updateSessionTitle,

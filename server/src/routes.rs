@@ -60,6 +60,7 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     pub work_dir: Option<String>,
     pub environment: Option<String>,
+    pub session_type: Option<String>,
 }
 
 pub async fn create_session(
@@ -86,7 +87,7 @@ pub async fn create_session(
 
     match state
         .db
-        .create_session(&provider, &model, body.work_dir.as_deref(), Some(&claims.sub), body.environment.as_deref())
+        .create_session(&provider, &model, body.work_dir.as_deref(), Some(&claims.sub), body.environment.as_deref(), body.session_type.as_deref())
         .await
     {
         Ok(session) => R::created(serde_json::json!(session)),
@@ -131,6 +132,7 @@ pub struct UpdateSessionRequest {
     pub work_dir: Option<String>,
     pub local_agent: Option<String>,
     pub local_work_dir: Option<String>,
+    pub change_id: Option<String>,
 }
 
 pub async fn update_session(
@@ -150,6 +152,11 @@ pub async fn update_session(
     }
     if body.local_agent.is_some() || body.local_work_dir.is_some() {
         if let Err(e) = state.db.update_session_local_agent(&id, body.local_agent.as_deref(), body.local_work_dir.as_deref()).await {
+            return R::internal_error(e);
+        }
+    }
+    if let Some(ref change_id) = body.change_id {
+        if let Err(e) = state.db.set_session_change_id(&id, change_id).await {
             return R::internal_error(e);
         }
     }

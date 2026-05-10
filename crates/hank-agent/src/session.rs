@@ -306,6 +306,7 @@ impl AgentSession {
             if stop_reason == StopReason::ToolUse {
                 consecutive_max_tokens = 0;
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
+                let mut ask_user_triggered = false;
 
                 for block in &assistant_content {
                     if let ContentBlock::ToolUse { id, name, input } = block {
@@ -313,6 +314,21 @@ impl AgentSession {
                         if cancel.is_cancelled() {
                             let _ = event_tx.send(AgentEvent::TurnComplete).await;
                             return Ok(());
+                        }
+
+                        // Detect ask_user tool — emit event and break
+                        if name == "ask_user" {
+                            let question = input["question"].as_str().unwrap_or_default().to_string();
+                            let options = input["options"].as_array()
+                                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                                .unwrap_or_default();
+                            let _ = event_tx.send(AgentEvent::AskUser {
+                                question,
+                                options,
+                                tool_use_id: id.clone(),
+                            }).await;
+                            ask_user_triggered = true;
+                            break;
                         }
 
                         let input_str = serde_json::to_string(input).unwrap_or_default();
@@ -348,6 +364,12 @@ impl AgentSession {
                             is_error: output.is_error,
                         });
                     }
+                }
+
+                // If ask_user was triggered, break the agent loop (don't push tool results)
+                if ask_user_triggered {
+                    let _ = event_tx.send(AgentEvent::TurnComplete).await;
+                    break;
                 }
 
                 self.messages.push(Message {

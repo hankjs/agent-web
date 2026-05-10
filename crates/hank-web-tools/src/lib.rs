@@ -1,6 +1,10 @@
+pub mod ask_user;
+pub mod explore_tools;
+pub mod generate_tools;
 pub mod read_file;
 pub mod search;
 pub mod shell;
+pub mod spec_tools;
 pub mod write_file;
 
 use anyhow::Result;

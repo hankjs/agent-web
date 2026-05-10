@@ -38,4 +38,39 @@ pub enum AgentEvent {
         to: String,
         reason: String,
     },
+    /// A spec was updated by agent tool
+    SpecUpdated {
+        spec_id: String,
+        capability: String,
+        version: i32,
+    },
+    /// A task status was updated by agent tool
+    TaskUpdated {
+        task_id: String,
+        change_id: String,
+        status: String,
+    },
+    /// An artifact was updated by agent tool
+    ArtifactUpdated {
+        artifact_id: String,
+        change_id: String,
+        #[serde(rename = "artifact_type")]
+        artifact_type: String,
+    },
+    /// Agent is asking the user a question (interrupts agent loop)
+    AskUser {
+        question: String,
+        options: Vec<String>,
+        tool_use_id: String,
+    },
+    /// Explore phase completed for a change
+    ExploreComplete {
+        change_id: String,
+        summary: String,
+    },
+    /// Generate phase completed for a change
+    GenerateComplete {
+        change_id: String,
+        artifact_count: u32,
+    },
 }
