@@ -56,6 +56,9 @@ pub struct Session {
     pub provider: String,
     pub model: String,
     pub work_dir: Option<String>,
+    pub local_agent: Option<String>,
+    pub local_work_dir: Option<String>,
+    pub environment: String,
     pub active_leaf_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -151,6 +154,17 @@ pub struct AgentEventRecord {
     pub event_type: String,
     pub payload: String,
     pub seq: u64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct LocalEvent {
+    pub id: String,
+    pub session_id: String,
+    pub event_type: String,
+    pub agent_type: String,
+    pub payload: String,
+    pub source: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -317,6 +331,19 @@ impl Database {
             .execute(&pool)
             .await;
 
+        // Migration: add local_agent and local_work_dir to sessions
+        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN local_agent VARCHAR(128) DEFAULT NULL")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN local_work_dir TEXT DEFAULT NULL")
+            .execute(&pool)
+            .await;
+
+        // Migration: add environment column (remote/local, defaults to remote for existing sessions)
+        let _ = sqlx::query("ALTER TABLE sessions ADD COLUMN environment VARCHAR(16) NOT NULL DEFAULT 'remote'")
+            .execute(&pool)
+            .await;
+
         // Users table
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS users (
@@ -368,6 +395,23 @@ impl Database {
         .execute(&pool)
         .await?;
 
+        // Local events table (client-reported ACP execution records)
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS local_events (
+                id VARCHAR(36) PRIMARY KEY,
+                session_id VARCHAR(36) NOT NULL,
+                event_type VARCHAR(64) NOT NULL,
+                agent_type VARCHAR(64) NOT NULL DEFAULT '',
+                payload MEDIUMTEXT NOT NULL,
+                source VARCHAR(16) NOT NULL DEFAULT 'local',
+                created_at DATETIME(6) NOT NULL DEFAULT NOW(6),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                INDEX idx_local_events_session (session_id, created_at)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
         // Data migration: link existing messages by seq order and set active_leaf_id
         // Only run if there are messages without parent_id that should have one
         let unlinked: Vec<(String,)> = sqlx::query_as(
@@ -407,18 +451,20 @@ impl Database {
     }
 
     // Sessions
-    pub async fn create_session(&self, provider: &str, model: &str, work_dir: Option<&str>, user_id: Option<&str>) -> Result<Session> {
+    pub async fn create_session(&self, provider: &str, model: &str, work_dir: Option<&str>, user_id: Option<&str>, environment: Option<&str>) -> Result<Session> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
+        let env = environment.unwrap_or("remote");
         db_retry!(
             sqlx::query(
-                "INSERT INTO sessions (id, user_id, title, provider, model, work_dir, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?)"
+                "INSERT INTO sessions (id, user_id, title, provider, model, work_dir, environment, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?)"
             )
             .bind(&id)
             .bind(user_id)
             .bind(provider)
             .bind(model)
             .bind(work_dir)
+            .bind(env)
             .bind(now)
             .bind(now)
             .execute(&self.pool)
@@ -431,6 +477,9 @@ impl Database {
             provider: provider.to_string(),
             model: model.to_string(),
             work_dir: work_dir.map(|s| s.to_string()),
+            local_agent: None,
+            local_work_dir: None,
+            environment: env.to_string(),
             active_leaf_id: None,
             created_at: now,
             updated_at: now,
@@ -440,7 +489,7 @@ impl Database {
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         let sessions = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, active_leaf_id, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
             )
             .fetch_all(&self.pool)
         )?;
@@ -450,7 +499,7 @@ impl Database {
     pub async fn list_sessions_by_user(&self, user_id: &str) -> Result<Vec<Session>> {
         let sessions = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions WHERE user_id = ? ORDER BY updated_at DESC"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, active_leaf_id, created_at, updated_at FROM sessions WHERE user_id = ? ORDER BY updated_at DESC"
             )
             .bind(user_id)
             .fetch_all(&self.pool)
@@ -461,7 +510,7 @@ impl Database {
     pub async fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let session = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, active_leaf_id, created_at, updated_at FROM sessions WHERE id = ?"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, active_leaf_id, created_at, updated_at FROM sessions WHERE id = ?"
             )
             .bind(id)
             .fetch_optional(&self.pool)
@@ -492,6 +541,17 @@ impl Database {
         db_retry!(
             sqlx::query("UPDATE sessions SET work_dir = ?, updated_at = NOW() WHERE id = ?")
                 .bind(work_dir)
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn update_session_local_agent(&self, id: &str, local_agent: Option<&str>, local_work_dir: Option<&str>) -> Result<()> {
+        db_retry!(
+            sqlx::query("UPDATE sessions SET local_agent = ?, local_work_dir = ?, updated_at = NOW() WHERE id = ?")
+                .bind(local_agent)
+                .bind(local_work_dir)
                 .bind(id)
                 .execute(&self.pool)
         )?;
@@ -1024,7 +1084,7 @@ impl Database {
             total_calls: i64,
         }
         let agg: AggRow = sqlx::query_as(
-            "SELECT CAST(COALESCE(SUM(input_tokens), 0) AS SIGNED) as total_input_tokens, CAST(COALESCE(SUM(output_tokens), 0) AS SIGNED) as total_output_tokens, AVG(latency_ms) as avg_latency_ms, COUNT(*) as total_calls FROM agent_metrics"
+            "SELECT CAST(COALESCE(SUM(input_tokens), 0) AS SIGNED) as total_input_tokens, CAST(COALESCE(SUM(output_tokens), 0) AS SIGNED) as total_output_tokens, CAST(AVG(latency_ms) AS DOUBLE) as avg_latency_ms, COUNT(*) as total_calls FROM agent_metrics"
         )
         .fetch_one(&self.pool)
         .await?;
@@ -1146,6 +1206,37 @@ impl Database {
         // Relay data between client and proxy
         tokio::io::copy_bidirectional(&mut client, &mut proxy).await?;
         Ok(())
+    }
+
+    // Local Events
+    pub async fn insert_local_events(&self, events: &[LocalEvent]) -> Result<()> {
+        for event in events {
+            db_retry!(
+                sqlx::query(
+                    "INSERT INTO local_events (id, session_id, event_type, agent_type, payload, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                )
+                .bind(&event.id)
+                .bind(&event.session_id)
+                .bind(&event.event_type)
+                .bind(&event.agent_type)
+                .bind(&event.payload)
+                .bind(&event.source)
+                .bind(event.created_at)
+                .execute(&self.pool)
+            )?;
+        }
+        Ok(())
+    }
+
+    pub async fn get_local_events(&self, session_id: &str) -> Result<Vec<LocalEvent>> {
+        let events = db_retry!(
+            sqlx::query_as::<_, LocalEvent>(
+                "SELECT id, session_id, event_type, agent_type, payload, source, created_at FROM local_events WHERE session_id = ? ORDER BY created_at ASC"
+            )
+            .bind(session_id)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(events)
     }
 }
 

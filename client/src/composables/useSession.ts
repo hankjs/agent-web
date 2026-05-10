@@ -7,6 +7,7 @@ export interface Session {
   provider: string;
   model: string;
   work_dir: string | null;
+  environment: "remote" | "local";
   active_leaf_id: string | null;
   created_at: string;
   updated_at: string;
@@ -17,43 +18,83 @@ type View = "list" | "chat";
 const sessions = ref<Session[]>([]);
 const currentSession = ref<Session | null>(null);
 const view = ref<View>("list");
-const token = ref("");
+const TOKEN_KEY = "hank_client_token";
+const token = ref(localStorage.getItem(TOKEN_KEY) || "");
+const isAuthenticated = ref(!!token.value);
 
-async function login() {
-  if (token.value) return;
+function setToken(t: string) {
+  token.value = t;
+  isAuthenticated.value = true;
+  localStorage.setItem(TOKEN_KEY, t);
+}
+
+function clearAuth() {
+  token.value = "";
+  isAuthenticated.value = false;
+  localStorage.removeItem(TOKEN_KEY);
+  sessions.value = [];
+  currentSession.value = null;
+  view.value = "list";
+}
+
+async function login(username?: string, password?: string): Promise<{ ok: boolean; error?: string }> {
   const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ username: username || "", password: password || "", scope: "client" }),
   });
-  if (res.ok) {
-    const data = await res.json();
-    token.value = data.token;
+  const json = await res.json().catch(() => null);
+  if (json && json.code === 0) {
+    setToken(json.data.token);
+    return { ok: true };
   }
+  return { ok: false, error: json?.msg || "Invalid credentials" };
+}
+
+function logout() {
+  clearAuth();
+  sessions.value = [];
+  currentSession.value = null;
+  view.value = "list";
 }
 
 export async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  await login();
   const headers = new Headers(options.headers);
   headers.set("Authorization", `Bearer ${token.value}`);
-  return fetch(`${API_BASE}${path}`, { ...options, headers });
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (res.status === 401) {
+    clearAuth();
+  }
+  return res;
+}
+
+export async function apiRequest<T = any>(path: string, options: RequestInit = {}): Promise<{ ok: boolean; data?: T; msg?: string }> {
+  const res = await authFetch(path, options);
+  const json = await res.json().catch(() => null);
+  if (!json) return { ok: false, msg: "Invalid response" };
+  if (json.code === 0) return { ok: true, data: json.data as T };
+  return { ok: false, msg: json.msg || "Request failed" };
 }
 
 async function fetchSessions() {
-  const res = await authFetch("/api/sessions");
-  if (res.ok) {
-    sessions.value = await res.json();
+  const result = await apiRequest<Session[]>("/api/sessions");
+  if (result.ok && result.data) {
+    result.data.forEach(s => { if (!s.environment) s.environment = "remote"; });
+    sessions.value = result.data;
   }
 }
 
-async function createSession(workDir?: string): Promise<Session | null> {
-  const res = await authFetch("/api/sessions", {
+async function createSession(workDir?: string, environment?: "remote" | "local"): Promise<Session | null> {
+  const result = await apiRequest<Session>("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ work_dir: workDir || null }),
+    body: JSON.stringify({ work_dir: workDir || null, environment: environment || "remote" }),
   });
-  if (!res.ok) return null;
-  const session: Session = await res.json();
+  if (!result.ok || !result.data) return null;
+  const session = result.data;
+  if (!session.environment) {
+    session.environment = environment || "remote";
+  }
   sessions.value.unshift(session);
   currentSession.value = session;
   view.value = "chat";
@@ -66,8 +107,8 @@ function selectSession(session: Session) {
 }
 
 async function deleteSession(id: string) {
-  const res = await authFetch(`/api/sessions/${id}`, { method: "DELETE" });
-  if (res.ok) {
+  const result = await apiRequest(`/api/sessions/${id}`, { method: "DELETE" });
+  if (result.ok) {
     sessions.value = sessions.value.filter((s) => s.id !== id);
     if (currentSession.value?.id === id) {
       currentSession.value = null;
@@ -83,13 +124,13 @@ function goBack() {
 }
 
 async function updateSessionTitle(id: string, title: string) {
-  const res = await authFetch(`/api/sessions/${id}`, {
+  const result = await apiRequest<Session>(`/api/sessions/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
   });
-  if (res.ok) {
-    const updated: Session = await res.json();
+  if (result.ok && result.data) {
+    const updated = result.data;
     const idx = sessions.value.findIndex((s) => s.id === id);
     if (idx !== -1) sessions.value[idx] = updated;
     if (currentSession.value?.id === id) {
@@ -99,13 +140,13 @@ async function updateSessionTitle(id: string, title: string) {
 }
 
 async function updateSessionWorkDir(id: string, workDir: string | null) {
-  const res = await authFetch(`/api/sessions/${id}`, {
+  const result = await apiRequest<Session>(`/api/sessions/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ work_dir: workDir }),
   });
-  if (res.ok) {
-    const updated: Session = await res.json();
+  if (result.ok && result.data) {
+    const updated = result.data;
     const idx = sessions.value.findIndex((s) => s.id === id);
     if (idx !== -1) sessions.value[idx] = updated;
     if (currentSession.value?.id === id) {
@@ -120,12 +161,14 @@ export function useSession() {
     currentSession: readonly(currentSession),
     view: readonly(view),
     token: readonly(token),
+    isAuthenticated: readonly(isAuthenticated),
     fetchSessions,
     createSession,
     selectSession,
     deleteSession,
     goBack,
     login,
+    logout,
     updateSessionTitle,
     updateSessionWorkDir,
   };

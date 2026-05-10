@@ -18,7 +18,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::error;
+use tracing::{error, Instrument};
 
 // --- Event Buffer types ---
 
@@ -61,9 +61,16 @@ impl EventBuffer {
 #[derive(Deserialize)]
 pub struct ChatRequest {
     pub content: String,
+    pub images: Option<Vec<ImagePayload>>,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub parent_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ImagePayload {
+    pub media_type: String,
+    pub data: String,
 }
 
 // PLACEHOLDER_CHAT_HANDLER
@@ -134,7 +141,22 @@ pub async fn chat_handler(
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
     let db = state.db.clone();
     let sid = session_id.clone();
-    let content = body.content;
+    let content_text = body.content.clone();
+    let user_content: Vec<hank_provider::ContentBlock> = {
+        let mut blocks = vec![hank_provider::ContentBlock::Text { text: body.content }];
+        if let Some(images) = body.images {
+            for img in images {
+                blocks.push(hank_provider::ContentBlock::Image {
+                    source: hank_provider::ImageSource {
+                        source_type: "base64".to_string(),
+                        media_type: img.media_type,
+                        data: img.data,
+                    },
+                });
+            }
+        }
+        blocks
+    };
     let is_first_message = {
         let msgs = if let Some(ref leaf) = parent_id_for_new_msg {
             state.db.get_branch_messages(&session_id, leaf).await.unwrap_or_default()
@@ -178,6 +200,7 @@ pub async fn chat_handler(
     let sid_fwd = session_id.clone();
     let db_fwd = state.db.clone();
     let sid_fwd2 = session_id.clone();
+    let fwd_span = tracing::info_span!("chat_fwd", session_id = %session_id);
     tokio::spawn(async move {
         let mut seq: u64 = 0;
         while let Some(event) = event_rx.recv().await {
@@ -208,11 +231,12 @@ pub async fn chat_handler(
                 buf.push(event);
             }
         }
-    });
+    }.instrument(fwd_span));
 
     // Agent task with fallback loop
     let state_for_buffer2 = state.clone();
     let sid_for_buffer2 = session_id.clone();
+    let agent_span = tracing::info_span!("chat_agent", session_id = %session_id);
     tokio::spawn(async move {
         let max_attempts = fallback_list.len().min(3);
         let mut last_error = String::new();
@@ -243,7 +267,7 @@ pub async fn chat_handler(
             );
             session.set_messages(history.clone());
 
-            match session.run(content.clone(), event_tx.clone(), cancel_token.clone()).await {
+            match session.run(user_content.clone(), event_tx.clone(), cancel_token.clone()).await {
                 Ok(()) => {
                     // Success — save messages
                     let new_messages: Vec<_> = session.messages().iter().skip(history_len).collect();
@@ -269,7 +293,7 @@ pub async fn chat_handler(
                     }
 
                     if is_first_message {
-                        let title: String = content.chars().take(50).collect();
+                        let title: String = content_text.chars().take(50).collect();
                         let _ = db.update_session_title(&sid, &title).await;
                     }
                     break;
@@ -311,7 +335,7 @@ pub async fn chat_handler(
                 buf.completed = true;
             }
         }
-    });
+    }.instrument(agent_span));
 
     // Build SSE stream from broadcast receiver + heartbeat
     let stream = make_sse_stream(rx);

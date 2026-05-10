@@ -28,8 +28,11 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     window.location.href = '/admin/login'
     throw new Error('Unauthorized')
   }
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
-  return res.json()
+  const json = await res.json()
+  if (json.code !== 0) {
+    throw new Error(json.msg || `Request failed: ${res.status}`)
+  }
+  return json.data as T
 }
 
 export interface PaginatedResponse<T> {

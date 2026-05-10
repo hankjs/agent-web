@@ -1,5 +1,5 @@
 import { ref, readonly, computed } from "vue";
-import { authFetch } from "./useSession";
+import { authFetch, apiRequest } from "./useSession";
 
 export interface TreeNode {
   id: string;
@@ -93,19 +93,19 @@ function findLeafFromNode(nodeId: string): string {
 }
 
 async function fetchTree(sessionId: string) {
-  const res = await authFetch(`/api/sessions/${sessionId}/tree`);
-  if (res.ok) {
-    treeNodes.value = await res.json();
+  const result = await apiRequest(`/api/sessions/${sessionId}/tree`);
+  if (result.ok && result.data) {
+    treeNodes.value = result.data;
   }
 }
 
 async function switchBranch(sessionId: string, leafId: string) {
-  const res = await authFetch(`/api/sessions/${sessionId}/active-leaf`, {
+  const result = await apiRequest(`/api/sessions/${sessionId}/active-leaf`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ leaf_id: leafId }),
   });
-  if (res.ok) {
+  if (result.ok) {
     activeLeafId.value = leafId;
   }
 }

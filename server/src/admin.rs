@@ -1,8 +1,8 @@
 use crate::AppState;
 use crate::provider_registry;
+use crate::response::{self as R};
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
     response::{
         sse::{Event, Sse},
         IntoResponse,
@@ -67,7 +67,7 @@ pub async fn list_sessions(
 
     let all_sessions = match state.db.list_sessions().await {
         Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return R::internal_error(e),
     };
 
     // Load users for username lookup
@@ -100,7 +100,7 @@ pub async fn list_sessions(
         SessionWithUser { session: sess, username }
     }).collect();
 
-    Json(PaginatedResponse { data, total, page, per_page }).into_response()
+    R::ok(PaginatedResponse { data, total, page, per_page })
 }
 
 pub async fn session_replay(
@@ -109,7 +109,7 @@ pub async fn session_replay(
 ) -> impl IntoResponse {
     let messages = match state.db.get_messages(&session_id).await {
         Ok(m) => m,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return R::internal_error(e),
     };
     let metrics = state.db.get_session_metrics(&session_id).await.unwrap_or_default();
     let tool_executions = state.db.get_session_tool_executions(&session_id).await.unwrap_or_default();
@@ -121,7 +121,7 @@ pub async fn session_replay(
         tool_executions: Vec<hank_db::ToolExecution>,
     }
 
-    Json(ReplayResponse { messages, metrics, tool_executions }).into_response()
+    R::ok(ReplayResponse { messages, metrics, tool_executions })
 }
 
 pub async fn session_events(
@@ -129,8 +129,8 @@ pub async fn session_events(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     match state.db.get_session_events(&session_id).await {
-        Ok(events) => Json(events).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(events) => R::ok(events),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -138,8 +138,8 @@ pub async fn metrics_overview(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     match state.db.get_metrics_overview().await {
-        Ok(overview) => Json(overview).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(overview) => R::ok(overview),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -156,7 +156,7 @@ pub async fn metrics_by_session(
         tool_executions: Vec<hank_db::ToolExecution>,
     }
 
-    Json(SessionMetrics { metrics, tool_executions }).into_response()
+    R::ok(SessionMetrics { metrics, tool_executions })
 }
 
 pub async fn create_prompt_template(
@@ -164,8 +164,8 @@ pub async fn create_prompt_template(
     Json(body): Json<PromptTemplateRequest>,
 ) -> impl IntoResponse {
     match state.db.save_prompt_template(&body.name, &body.content).await {
-        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(id) => R::created(serde_json::json!({"id": id})),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -173,8 +173,8 @@ pub async fn list_prompt_templates(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     match state.db.list_prompt_templates().await {
-        Ok(templates) => Json(templates).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(templates) => R::ok(templates),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -183,8 +183,8 @@ pub async fn delete_prompt_template(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.db.delete_prompt_template(&id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(()) => R::no_content(),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -195,7 +195,7 @@ pub async fn replay_with_prompt(
     // Load original session messages (user messages only)
     let all_messages = match state.db.get_messages(&body.session_id).await {
         Ok(m) => m,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return R::internal_error(e),
     };
 
     let user_messages: Vec<String> = all_messages.iter()
@@ -207,7 +207,7 @@ pub async fn replay_with_prompt(
         .collect();
 
     if user_messages.is_empty() {
-        return (StatusCode::BAD_REQUEST, "No user messages found in session").into_response();
+        return R::bad_request("No user messages found in session");
     }
 
     // Determine system prompt
@@ -216,7 +216,7 @@ pub async fn replay_with_prompt(
     } else if let Some(ref template_id) = body.prompt_template_id {
         match state.db.get_prompt_template(template_id).await {
             Ok(Some(t)) => t.content,
-            _ => return (StatusCode::BAD_REQUEST, "Template not found").into_response(),
+            _ => return R::bad_request("Template not found"),
         }
     } else {
         "You are a helpful AI assistant.".to_string()
@@ -225,7 +225,7 @@ pub async fn replay_with_prompt(
     // Get default provider from DB
     let (record, provider) = match provider_registry::resolve_default(&state.db).await {
         Some(p) => p,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, "No provider available").into_response(),
+        None => return R::internal_error("No provider available"),
     };
 
     let model = provider_registry::resolve_default_model(&record);
@@ -244,7 +244,8 @@ pub async fn replay_with_prompt(
     // Spawn agent task that replays all user messages sequentially
     tokio::spawn(async move {
         for msg in user_messages {
-            if let Err(e) = session.run(msg, event_tx.clone(), cancel.clone()).await {
+            let content = vec![hank_provider::ContentBlock::Text { text: msg }];
+            if let Err(e) = session.run(content, event_tx.clone(), cancel.clone()).await {
                 let _ = event_tx.send(AgentEvent::Error { message: format!("{e:#}") }).await;
                 break;
             }
@@ -268,8 +269,8 @@ pub async fn list_users(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     match state.db.list_users().await {
-        Ok(users) => Json(users).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(users) => R::ok(users),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -288,8 +289,8 @@ pub async fn create_user(
     let can_admin = body.can_login_admin.unwrap_or(false);
     let can_client = body.can_login_client.unwrap_or(true);
     match state.db.create_user(&body.username, &body.password, can_admin, can_client).await {
-        Ok(user) => (StatusCode::CREATED, Json(serde_json::json!({"id": user.id, "username": user.username}))).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(user) => R::created(serde_json::json!({"id": user.id, "username": user.username})),
+        Err(e) => R::bad_request(e),
     }
 }
 
@@ -307,26 +308,26 @@ pub async fn update_user(
 ) -> impl IntoResponse {
     if let (Some(can_admin), Some(can_client)) = (body.can_login_admin, body.can_login_client) {
         if let Err(e) = state.db.update_user_permissions(&id, can_admin, can_client).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            return R::internal_error(e);
         }
     } else if let Some(can_admin) = body.can_login_admin {
         // Fetch current to preserve other field
         if let Err(e) = state.db.update_user_permissions(&id, can_admin, true).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            return R::internal_error(e);
         }
     } else if let Some(can_client) = body.can_login_client {
         if let Err(e) = state.db.update_user_permissions(&id, true, can_client).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            return R::internal_error(e);
         }
     }
 
     if let Some(ref password) = body.password {
         if let Err(e) = state.db.update_user_password(&id, password).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            return R::internal_error(e);
         }
     }
 
-    Json(serde_json::json!({"status": "ok"})).into_response()
+    R::ok(serde_json::json!({"status": "ok"}))
 }
 
 pub async fn delete_user(
@@ -334,8 +335,8 @@ pub async fn delete_user(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.db.delete_user(&id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(()) => R::no_content(),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -345,8 +346,8 @@ pub async fn list_providers(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     match state.db.list_providers_ordered().await {
-        Ok(providers) => Json(providers).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(providers) => R::ok(providers),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -380,8 +381,8 @@ pub async fn create_provider(
         body.priority.unwrap_or(0),
         body.enabled.unwrap_or(true),
     ).await {
-        Ok(record) => (StatusCode::CREATED, Json(serde_json::json!(record))).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(record) => R::created(serde_json::json!(record)),
+        Err(e) => R::bad_request(e),
     }
 }
 
@@ -417,8 +418,8 @@ pub async fn update_provider(
         body.priority.unwrap_or(0),
         body.enabled.unwrap_or(true),
     ).await {
-        Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(()) => R::ok(serde_json::json!({"status": "ok"})),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -427,8 +428,8 @@ pub async fn delete_provider(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.db.delete_provider(&id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(()) => R::no_content(),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -449,7 +450,7 @@ pub async fn chat_generate(
 
     let (record, provider) = match provider_registry::resolve_default(&state.db).await {
         Some(p) => p,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, "No provider available").into_response(),
+        None => return R::internal_error("No provider available"),
     };
 
     let model = provider_registry::resolve_default_model(&record);
@@ -472,7 +473,7 @@ pub async fn chat_generate(
 
     let event_stream = match provider.stream(req).await {
         Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return R::internal_error(e),
     };
 
     let sse_stream = event_stream.map(|result| {

@@ -68,6 +68,7 @@ impl WorkerAgent {
 
         let mut artifacts = Vec::new();
         let mut final_text = String::new();
+        let mut consecutive_max_tokens = 0u32;
 
         for iteration in 0..WORKER_MAX_ITERATIONS {
             if cancel.is_cancelled() {
@@ -79,7 +80,7 @@ impl WorkerAgent {
                 system: Some(system_prompt.clone()),
                 messages: messages.clone(),
                 tools: self.tool_definitions.clone(),
-                max_tokens: 4096,
+                max_tokens: 8192,
             };
 
             debug!("Worker iteration {iteration} for task {}", task.id);
@@ -171,7 +172,26 @@ impl WorkerAgent {
                 break;
             }
 
+            // Handle MaxTokens: continue generation instead of stopping
+            if stop_reason == StopReason::MaxTokens {
+                warn!("Worker MaxTokens hit at iteration {iteration} for task {}", task.id);
+                consecutive_max_tokens += 1;
+                if consecutive_max_tokens >= 3 {
+                    warn!("Worker: 3 consecutive MaxTokens without tool use, treating as done");
+                    break;
+                }
+                // Inject continuation prompt
+                messages.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: "[Your previous response was cut off. Continue from where you left off.]".to_string(),
+                    }],
+                });
+                continue;
+            }
+
             if stop_reason == StopReason::ToolUse {
+                consecutive_max_tokens = 0;
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
                 for block in &assistant_content {
                     if let ContentBlock::ToolUse { id, name, input } = block {

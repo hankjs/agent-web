@@ -104,17 +104,17 @@ impl AgentSession {
     /// Run the agent loop, dispatching based on mode.
     pub async fn run(
         &mut self,
-        user_message: String,
+        user_content: Vec<ContentBlock>,
         event_tx: mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
     ) -> Result<()> {
         match &self.mode {
             AgentMode::Simple => {
-                self.run_simple(user_message, event_tx, cancel).await
+                self.run_simple(user_content, event_tx, cancel).await
             }
             AgentMode::Orchestrated { think_strategy } => {
                 let think_strategy = think_strategy.clone();
-                self.run_orchestrated(user_message, event_tx, cancel, think_strategy)
+                self.run_orchestrated(user_content, event_tx, cancel, think_strategy)
                     .await
             }
         }
@@ -123,7 +123,7 @@ impl AgentSession {
     /// Orchestrated mode: delegate to OrchestratorAgent
     async fn run_orchestrated(
         &mut self,
-        user_message: String,
+        user_content: Vec<ContentBlock>,
         event_tx: mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
         think_strategy: ThinkStrategy,
@@ -136,7 +136,7 @@ impl AgentSession {
             think_strategy,
         );
         orchestrator.set_messages(std::mem::take(&mut self.messages));
-        let result = orchestrator.run(user_message, event_tx, cancel).await;
+        let result = orchestrator.run(user_content, event_tx, cancel).await;
         self.messages = orchestrator.messages().to_vec();
         result
     }
@@ -144,14 +144,16 @@ impl AgentSession {
     /// Simple mode: flat stream → tools → loop (original behavior)
     async fn run_simple(
         &mut self,
-        user_message: String,
+        user_content: Vec<ContentBlock>,
         event_tx: mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
     ) -> Result<()> {
         self.messages.push(Message {
             role: Role::User,
-            content: vec![ContentBlock::Text { text: user_message }],
+            content: user_content,
         });
+
+        let mut consecutive_max_tokens = 0u32;
 
         for iteration in 0..MAX_ITERATIONS {
             if cancel.is_cancelled() {
@@ -164,7 +166,7 @@ impl AgentSession {
                 system: Some(self.system_prompt.clone()),
                 messages: self.messages.clone(),
                 tools: self.tool_definitions.clone(),
-                max_tokens: 4096,
+                max_tokens: 16384,
             };
 
             debug!("Agent loop iteration {iteration}: model={}, messages={}", req.model, req.messages.len());
@@ -279,8 +281,30 @@ impl AgentSession {
                 break;
             }
 
+            // Handle MaxTokens: continue generation instead of stopping
+            if stop_reason == StopReason::MaxTokens {
+                warn!("MaxTokens hit at iteration {iteration}, continuing generation");
+                consecutive_max_tokens += 1;
+                if consecutive_max_tokens >= 3 {
+                    warn!("3 consecutive MaxTokens without tool use, treating as done");
+                    let _ = event_tx.send(AgentEvent::TurnComplete).await;
+                    break;
+                }
+                // Note: if in_tool_block was true, the partial tool call was never
+                // pushed to assistant_content, so it's already discarded.
+                // Assistant content already pushed above; inject continuation prompt
+                self.messages.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: "[Your previous response was cut off. Continue from where you left off.]".to_string(),
+                    }],
+                });
+                continue;
+            }
+
             // If stop reason is tool_use, execute tools and loop
             if stop_reason == StopReason::ToolUse {
+                consecutive_max_tokens = 0;
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
 
                 for block in &assistant_content {

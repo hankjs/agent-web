@@ -1,26 +1,32 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, computed, watch } from "vue";
+import { ref, nextTick, onMounted, onUnmounted, computed, watch } from "vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { useSession, authFetch } from "../composables/useSession";
+import { useSession, authFetch, apiRequest } from "../composables/useSession";
 import { API_BASE } from "../config";
 import { useMessageTree } from "../composables/useMessageTree";
+import { useMessage } from "../composables/useMessage";
 import FolderPicker from "./FolderPicker.vue";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 const props = defineProps<{
   sessionId: string;
   workDir?: string;
   title?: string;
+  environment?: "remote" | "local";
   showOutlineToggle?: boolean;
 }>();
 
 const emit = defineEmits<{
   back: [];
   toggleOutline: [];
+  openSettings: [];
 }>();
 
 const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir } = useSession();
 const { fetchTree, switchBranch, setActiveLeafId, activeLeafId, getSiblings, findLeafFromNode, hasBranching, treeNodes, scrollTargetId, clearScrollTarget } = useMessageTree();
+const { warning: showWarning } = useMessage();
 
 const isEditingTitle = ref(false);
 const editTitle = ref("");
@@ -36,16 +42,17 @@ interface ToolCall {
   isError?: boolean;
   isRunning: boolean;
   expanded: boolean;
+  source?: "local" | "remote";
 }
 
 type Block =
-  | { kind: "user"; content: string; messageId?: string; parentId?: string | null }
+  | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
   | { kind: "text"; content: string }
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall };
 
 type RenderItem =
-  | { kind: "user"; content: string; messageId?: string; parentId?: string | null }
+  | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
   | { kind: "text"; content: string }
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall }
@@ -57,7 +64,82 @@ const isConnected = ref(false);
 const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
+const fileInputRef = ref<HTMLInputElement | null>(null);
 let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+// Image upload state
+interface PendingImage {
+  file: File;
+  preview: string;
+  media_type: string;
+  data: string;
+}
+const pendingImages = ref<PendingImage[]>([]);
+
+function triggerImagePicker() {
+  fileInputRef.value?.click();
+}
+
+function handleImageSelect(e: Event) {
+  const files = (e.target as HTMLInputElement).files;
+  if (!files) return;
+  let hasInvalid = false;
+  for (const file of Array.from(files)) {
+    if (!file.type.startsWith("image/")) {
+      hasInvalid = true;
+      continue;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(",")[1];
+      pendingImages.value.push({
+        file,
+        preview: dataUrl,
+        media_type: file.type,
+        data: base64,
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+  if (hasInvalid) {
+    showWarning("仅支持图片文件");
+  }
+  // Reset input so same file can be re-selected
+  (e.target as HTMLInputElement).value = "";
+}
+
+function removeImage(index: number) {
+  pendingImages.value.splice(index, 1);
+}
+
+function handlePaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  const imageFiles: File[] = [];
+  for (const item of Array.from(items)) {
+    if (item.type.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) imageFiles.push(file);
+    }
+  }
+  if (imageFiles.length === 0) return;
+  e.preventDefault();
+  for (const file of imageFiles) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(",")[1];
+      pendingImages.value.push({
+        file,
+        preview: dataUrl,
+        media_type: file.type,
+        data: base64,
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+}
 
 // SSE reconnection state
 let lastEventId = "";
@@ -67,6 +149,68 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAYS = [1000, 3000, 5000];
 const HEARTBEAT_TIMEOUT = 20000;
 let currentSessionStreaming = false; // tracks if we're in an active SSE session
+
+// Local ACP agent state
+const sessionEnvironment = computed(() => props.environment || "remote");
+const configuredAgents = ref<Array<{ name: string; agent_type: string; binary_path: string }>>([]);
+const serverProviders = ref<Array<{ name: string; type: string; default_model: string }>>([]);
+
+interface ProviderOption {
+  name: string;
+  key: string;
+  source: "local" | "server";
+}
+
+const providerOptions = computed<ProviderOption[]>(() => {
+  const opts: ProviderOption[] = [];
+  if (sessionEnvironment.value === "local") {
+    for (const a of configuredAgents.value) {
+      opts.push({ name: a.name, key: `local:${a.name}`, source: "local" });
+    }
+    for (const p of serverProviders.value) {
+      opts.push({ name: p.name, key: `server:${p.name}`, source: "server" });
+    }
+  } else {
+    opts.push({ name: "hank-agent", key: "server:hank-agent", source: "server" });
+  }
+  return opts;
+});
+const selectedProvider = ref("");
+const showProviderDropdown = ref(false);
+watch(providerOptions, (opts) => {
+  if (opts.length > 0 && !opts.find(o => o.key === selectedProvider.value)) {
+    selectedProvider.value = opts[0].key;
+  }
+}, { immediate: true });
+
+const selectedProviderSource = computed<"local" | "server">(() => {
+  const opt = providerOptions.value.find(o => o.key === selectedProvider.value);
+  return opt?.source || "local";
+});
+const selectedProviderName = computed(() => {
+  const opt = providerOptions.value.find(o => o.key === selectedProvider.value);
+  return opt?.name || "";
+});
+
+const localAgentStatus = ref<"running" | "stopped" | "not_configured">("not_configured");
+const localAgentName = computed(() => selectedProviderName.value);
+// When user switches provider, stop the current local session so next prompt creates a new one
+watch(selectedProvider, async (_newVal, oldVal) => {
+  if (localAgentStatus.value === "running") {
+    // Only stop local agent if the previous selection was a local provider
+    const oldOpt = providerOptions.value.find(o => o.key === oldVal);
+    if (oldOpt?.source === "local") {
+      try {
+        await invoke("acp_stop", { sessionId: props.sessionId });
+      } catch { /* ignore */ }
+      localAgentStatus.value = "stopped";
+    }
+  }
+});
+let acpUnlisten: UnlistenFn | null = null;
+let localEvents: Array<{ event_type: string; agent_type: string; payload: any }> = [];
+let localUserMessageId: string | null = null; // track saved user message id for parent linking
+let localAssistantBlocks: Array<any> = []; // accumulate assistant content blocks
 
 // Editing state
 const editingMessageId = ref<string | null>(null);
@@ -112,10 +256,41 @@ function toggleGroup(idx: number, tools: ToolCall[]) {
   groupExpanded.value[idx] = !current;
 }
 
+// Collapse tool groups that have no running tools (called when a new non-tool block starts)
+function collapseFinishedToolGroups() {
+  const items = renderItems.value;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === "tool-group" && !item.tools.some((t) => t.isRunning)) {
+      if (groupExpanded.value[i] === undefined || groupExpanded.value[i]) {
+        groupExpanded.value[i] = false;
+      }
+    }
+  }
+}
+
 function groupSummary(tools: ToolCall[]): string {
+  // If the group contains an Agent tool, use its subagent_type as the group label
+  const agentTool = tools.find((t) => t.name === "Agent");
+  let agentLabel = "";
+  if (agentTool && agentTool.input) {
+    try {
+      const parsed = JSON.parse(agentTool.input);
+      if (parsed.subagent_type) agentLabel = parsed.subagent_type;
+    } catch { /* ignore */ }
+  }
+
   const counts: Record<string, number> = {};
   for (const t of tools) {
+    if (t.name === "Agent" && agentLabel) continue; // exclude Agent from inner list
     counts[t.name] = (counts[t.name] || 0) + 1;
+  }
+  const inner = Object.entries(counts)
+    .map(([name, count]) => count > 1 ? `${name} x${count}` : name)
+    .join(", ");
+
+  if (agentLabel) {
+    return inner ? `${agentLabel}(${inner})` : agentLabel;
   }
   return Object.entries(counts)
     .map(([name, count]) => `${name} x${count}`)
@@ -151,21 +326,22 @@ function renderMarkdown(text: string): string {
 }
 
 async function connect() {
-  await login();
   isConnected.value = !!sessionToken.value;
 }
 
 async function loadHistory(leafId?: string) {
   try {
     const query = leafId ? `?leaf_id=${leafId}` : "";
-    const res = await authFetch(`/api/sessions/${props.sessionId}/messages${query}`);
-    if (!res.ok) return;
-    const messages = await res.json();
+    const result = await apiRequest<any[]>(`/api/sessions/${props.sessionId}/messages${query}`);
+    if (!result.ok || !result.data) return;
+    const messages = result.data;
     blocks.value = [];
     for (const msg of messages) {
       try {
         const content = JSON.parse(msg.content);
         if (msg.role === "user") {
+          let textContent = "";
+          const images: Array<{ media_type: string; data: string }> = [];
           for (const block of content) {
             if (block.type === "tool_result") {
               for (let i = blocks.value.length - 1; i >= 0; i--) {
@@ -177,9 +353,14 @@ async function loadHistory(leafId?: string) {
                   break;
                 }
               }
+            } else if (block.type === "image" && block.source) {
+              images.push({ media_type: block.source.media_type, data: block.source.data });
             } else if (block.text) {
-              blocks.value.push({ kind: "user", content: block.text, messageId: msg.id, parentId: msg.parent_id });
+              textContent = block.text;
             }
+          }
+          if (textContent || images.length > 0) {
+            blocks.value.push({ kind: "user", content: textContent, images: images.length > 0 ? images : undefined, messageId: msg.id, parentId: msg.parent_id });
           }
         } else {
           for (const block of content) {
@@ -217,6 +398,8 @@ function handleServerEvent(event: any) {
       if (last && last.kind === "text") {
         last.content += event.text;
       } else {
+        // New non-tool block starting — collapse previous tool groups that are done
+        collapseFinishedToolGroups();
         blocks.value.push({ kind: "text", content: event.text });
       }
       break;
@@ -261,8 +444,17 @@ function handleServerEvent(event: any) {
       break;
   }
 
+  // Auto-scroll: keep last content visible at bottom (exclude scroll-spacer)
   nextTick(() => {
-    messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight, behavior: "smooth" });
+    if (!messagesEl.value) return;
+    const spacer = messagesEl.value.querySelector('.scroll-spacer') as HTMLElement | null;
+    if (spacer) {
+      // Scroll so the spacer's top aligns with the container's bottom
+      const target = spacer.offsetTop - messagesEl.value.clientHeight;
+      if (target > messagesEl.value.scrollTop) {
+        messagesEl.value.scrollTo({ top: target, behavior: "smooth" });
+      }
+    }
   });
 }
 
@@ -508,14 +700,22 @@ async function switchToBranch(siblingId: string) {
 }
 
 async function send(parentIdOverride?: string) {
-  if (!input.value.trim() || !isConnected.value || isStreaming.value) return;
+  // Route based on selected provider source
+  if (sessionEnvironment.value === "local" && selectedProviderSource.value === "local") {
+    return sendLocal();
+  }
+  if (!input.value.trim() && pendingImages.value.length === 0 || !isConnected.value || isStreaming.value) return;
 
   const content = input.value.trim();
-  blocks.value.push({ kind: "user", content });
+  const images = pendingImages.value.length > 0
+    ? pendingImages.value.map(img => ({ media_type: img.media_type, data: img.data }))
+    : undefined;
+  blocks.value.push({ kind: "user", content, images });
   input.value = "";
+  pendingImages.value = [];
   nextTick(() => {
     if (textareaRef.value) textareaRef.value.style.height = "auto";
-    messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
+    scrollToLastUserMessage();
   });
   isStreaming.value = true;
   currentSessionStreaming = true;
@@ -523,8 +723,15 @@ async function send(parentIdOverride?: string) {
   reconnectAttempts = 0;
 
   const body: any = { content };
+  if (images) {
+    body.images = images;
+  }
   if (parentIdOverride) {
     body.parent_id = parentIdOverride;
+  }
+  // When a local session uses a server provider, pass the provider name
+  if (sessionEnvironment.value === "local" && selectedProviderSource.value === "server") {
+    body.provider = selectedProviderName.value;
   }
 
   try {
@@ -586,11 +793,15 @@ async function sendWithParent(content: string, parentId?: string) {
   reconnectAttempts = 0;
 
   nextTick(() => {
-    messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
+    scrollToLastUserMessage();
   });
 
   const body: any = { content };
   if (parentId) body.parent_id = parentId;
+  // When a local session uses a server provider, pass the provider name
+  if (sessionEnvironment.value === "local" && selectedProviderSource.value === "server") {
+    body.provider = selectedProviderName.value;
+  }
 
   try {
     const res = await authFetch(
@@ -625,6 +836,10 @@ async function sendWithParent(content: string, parentId?: string) {
 }
 
 async function stop() {
+  // Handle local agent cancel
+  if (sessionEnvironment.value === "local" && selectedProviderSource.value === "local") {
+    return stopLocal();
+  }
   currentSessionStreaming = false;
   clearHeartbeatTimer();
   reconnectAttempts = 0;
@@ -655,6 +870,195 @@ async function stop() {
 
   isStreaming.value = false;
 }
+
+// --- Local ACP Agent Functions ---
+
+function handleAcpEvent(event: any) {
+  const eventType = event.type;
+  // Collect events for batch upload
+  localEvents.push({ event_type: eventType, agent_type: localAgentName.value, payload: event });
+
+  switch (eventType) {
+    case "text_delta": {
+      const last = blocks.value[blocks.value.length - 1];
+      if (last && last.kind === "text") {
+        last.content += event.content;
+        // Append to last text block in assistant accumulator
+        const lastAcc = localAssistantBlocks[localAssistantBlocks.length - 1];
+        if (lastAcc && lastAcc.type === "text") {
+          lastAcc.text += event.content;
+        } else {
+          localAssistantBlocks.push({ type: "text", text: event.content });
+        }
+      } else {
+        collapseFinishedToolGroups();
+        blocks.value.push({ kind: "text", content: event.content });
+        localAssistantBlocks.push({ type: "text", text: event.content });
+      }
+      break;
+    }
+    case "tool_use": {
+      blocks.value.push({
+        kind: "tool",
+        tool: {
+          id: event.tool_call_id,
+          name: event.tool_name,
+          input: typeof event.input === "string" ? event.input : JSON.stringify(event.input),
+          isRunning: true,
+          expanded: false,
+          source: "local",
+        },
+      });
+      localAssistantBlocks.push({
+        type: "tool_use",
+        id: event.tool_call_id,
+        name: event.tool_name,
+        input: event.input,
+      });
+      break;
+    }
+    case "tool_result": {
+      for (let i = blocks.value.length - 1; i >= 0; i--) {
+        const b = blocks.value[i];
+        if (b.kind === "tool" && b.tool.id === event.tool_call_id) {
+          b.tool.result = typeof event.output === "string" ? event.output : JSON.stringify(event.output);
+          b.tool.isError = event.is_error;
+          b.tool.isRunning = false;
+          break;
+        }
+      }
+      // tool_result goes into the next user message content (Anthropic format),
+      // but for display purposes we store it as part of the assistant turn
+      break;
+    }
+    case "done": {
+      isStreaming.value = false;
+      localAgentStatus.value = "stopped";
+      // Save assistant message and upload local events
+      saveLocalAssistantMessage();
+      uploadLocalEvents();
+      break;
+    }
+    case "error": {
+      blocks.value.push({ kind: "error", content: event.message });
+      isStreaming.value = false;
+      localAgentStatus.value = "stopped";
+      break;
+    }
+  }
+
+  nextTick(() => {
+    if (!messagesEl.value) return;
+    const spacer = messagesEl.value.querySelector('.scroll-spacer') as HTMLElement | null;
+    if (spacer) {
+      const target = spacer.offsetTop - messagesEl.value.clientHeight;
+      if (target > messagesEl.value.scrollTop) {
+        messagesEl.value.scrollTo({ top: target, behavior: "smooth" });
+      }
+    }
+  });
+}
+
+async function sendLocal() {
+  if (!input.value.trim() || isStreaming.value) return;
+  if (!localAgentName.value) {
+    blocks.value.push({ kind: "error", content: "Local agent not configured. Please set up an agent in Settings." });
+    return;
+  }
+
+  const content = input.value.trim();
+  blocks.value.push({ kind: "user", content });
+  input.value = "";
+  nextTick(() => {
+    if (textareaRef.value) textareaRef.value.style.height = "auto";
+    scrollToLastUserMessage();
+  });
+  isStreaming.value = true;
+  localEvents = [];
+  localAssistantBlocks = [];
+  localUserMessageId = null;
+
+  // Save user message to server
+  try {
+    const userContent = [{ type: "text", text: content }];
+    const parentId = activeLeafId.value || undefined;
+    const res = await authFetch(`/api/sessions/${props.sessionId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "user", content: userContent, parent_id: parentId }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      localUserMessageId = data.id;
+      setActiveLeafId(data.id);
+    }
+  } catch { /* best effort */ }
+
+  // Also add user prompt to local events for admin visibility
+  localEvents.push({ event_type: "user_message", agent_type: localAgentName.value, payload: { text: content } });
+
+  try {
+    // Start ACP session if not already running
+    if (localAgentStatus.value !== "running") {
+      const workDir = props.workDir || ".";
+      await invoke("acp_new_session", {
+        agentName: localAgentName.value,
+        workDir,
+        sessionId: props.sessionId,
+      });
+      localAgentStatus.value = "running";
+    }
+
+    // Send prompt (non-blocking — events come via acp-event listener)
+    await invoke("acp_prompt", {
+      sessionId: props.sessionId,
+      message: content,
+    });
+  } catch (e: any) {
+    blocks.value.push({ kind: "error", content: `Local agent error: ${e}` });
+    isStreaming.value = false;
+  }
+}
+
+async function stopLocal() {
+  try {
+    await invoke("acp_cancel", { sessionId: props.sessionId });
+  } catch { /* best effort */ }
+  isStreaming.value = false;
+}
+
+async function uploadLocalEvents() {
+  if (localEvents.length === 0) return;
+  try {
+    await authFetch(`/api/sessions/${props.sessionId}/local-events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(localEvents),
+    });
+  } catch { /* best effort — events are not critical */ }
+  localEvents = [];
+}
+
+async function saveLocalAssistantMessage() {
+  if (localAssistantBlocks.length === 0) return;
+  try {
+    const parentId = localUserMessageId || activeLeafId.value || undefined;
+    const res = await authFetch(`/api/sessions/${props.sessionId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "assistant", content: localAssistantBlocks, parent_id: parentId }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setActiveLeafId(data.id);
+      fetchTree(props.sessionId);
+    }
+  } catch { /* best effort */ }
+  localAssistantBlocks = [];
+  localUserMessageId = null;
+}
+
+// --- End Local ACP Agent Functions ---
 
 async function resend() {
   // Find the last user block before the error
@@ -748,9 +1152,55 @@ onMounted(async () => {
   await loadHistory();
   await fetchTree(props.sessionId);
   nextTick(() => {
-    messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
+    messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight, behavior: "smooth" });
   });
+
+  // Check if local agents are configured
+  try {
+    const agents = await invoke<Array<{ name: string; agent_type: string; binary_path: string }>>("acp_get_agents");
+    configuredAgents.value = agents;
+    if (agents.length > 0) {
+      localAgentStatus.value = "stopped";
+    }
+  } catch {
+    // Not in Tauri environment or no agents
+  }
+
+  // Fetch server providers (available for both local and remote sessions)
+  try {
+    const result = await apiRequest<{ providers: Array<{ name: string; type: string; default_model: string }>; default_provider: string }>("/api/providers");
+    if (result.ok && result.data) {
+      serverProviders.value = result.data.providers;
+    }
+  } catch { /* offline or not available */ }
+
+  // Listen for ACP events from Tauri backend
+  try {
+    acpUnlisten = await listen<{ session_id: string; event: any }>("acp-event", (ev) => {
+      if (ev.payload.session_id !== props.sessionId) return;
+      handleAcpEvent(ev.payload.event);
+    });
+  } catch {
+    // Not in Tauri environment
+  }
+
+  document.addEventListener("click", closeProviderDropdown);
 });
+
+onUnmounted(() => {
+  if (acpUnlisten) {
+    acpUnlisten();
+    acpUnlisten = null;
+  }
+  document.removeEventListener("click", closeProviderDropdown);
+});
+
+function closeProviderDropdown(e: MouseEvent) {
+  const target = e.target as HTMLElement;
+  if (!target.closest(".provider-selector")) {
+    showProviderDropdown.value = false;
+  }
+}
 
 // Watch for external branch switches (from outline panel)
 let internalLeafChange = false;
@@ -774,6 +1224,18 @@ watch(scrollTargetId, (id) => {
   }
 });
 
+function scrollToLastUserMessage() {
+  if (!messagesEl.value) return;
+  const userBlocks = messagesEl.value.querySelectorAll('.user-block');
+  const lastUser = userBlocks[userBlocks.length - 1] as HTMLElement | undefined;
+  if (lastUser) {
+    const containerTop = messagesEl.value.getBoundingClientRect().top;
+    const elTop = lastUser.getBoundingClientRect().top;
+    const offset = messagesEl.value.scrollTop + (elTop - containerTop);
+    messagesEl.value.scrollTo({ top: offset, behavior: "smooth" });
+  }
+}
+
 function scrollToMessageId(id: string | null) {
   if (!id) return;
   clearScrollTarget();
@@ -787,38 +1249,62 @@ function scrollToMessageId(id: string | null) {
 <template>
   <div class="flex flex-col h-full">
     <div class="context-bar">
-      <button class="back-btn" @click="emit('back')" aria-label="Back to sessions">&larr;</button>
-      <template v-if="isEditingTitle">
-        <input
-          ref="titleInputRef"
-          v-model="editTitle"
-          class="title-input"
-          @keydown.enter="confirmEditTitle"
-          @keydown.escape="cancelEditTitle"
-        />
-        <button class="title-action-btn confirm" @click="confirmEditTitle" aria-label="Confirm title">&#10003;</button>
-        <button class="title-action-btn cancel" @click="cancelEditTitle" aria-label="Cancel edit">&#10005;</button>
-      </template>
-      <span v-else class="context-title" @click="startEditTitle">{{ title || 'Untitled' }}</span>
-      <template v-if="isEditingWorkDir">
-        <div class="workdir-edit">
-          <FolderPicker v-model="editWorkDir" />
-          <button class="title-action-btn confirm" @click="confirmEditWorkDir" aria-label="Confirm work dir">&#10003;</button>
-          <button class="title-action-btn cancel" @click="cancelEditWorkDir" aria-label="Cancel edit">&#10005;</button>
-        </div>
-      </template>
-      <span v-else-if="displayDir && !isEditingTitle" class="context-dir" @click="startEditWorkDir">{{ displayDir }}</span>
-      <button
-        v-if="showOutlineToggle"
-        class="outline-toggle-btn"
-        @click="emit('toggleOutline')"
-        aria-label="Toggle outline"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
-          <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
-        </svg>
-      </button>
+      <div class="context-bar-left">
+        <button class="back-btn" @click="emit('back')" aria-label="Back to sessions">&larr;</button>
+        <template v-if="isEditingTitle">
+          <input
+            ref="titleInputRef"
+            v-model="editTitle"
+            class="title-input"
+            @keydown.enter="confirmEditTitle"
+            @keydown.escape="cancelEditTitle"
+          />
+          <button class="title-action-btn confirm" @click="confirmEditTitle" aria-label="Confirm title">&#10003;</button>
+          <button class="title-action-btn cancel" @click="cancelEditTitle" aria-label="Cancel edit">&#10005;</button>
+        </template>
+        <span v-else class="context-title" @click="startEditTitle">{{ title || 'Untitled' }}</span>
+        <span class="env-tag" :class="sessionEnvironment">{{ sessionEnvironment === 'local' ? 'Local' : 'Remote' }}</span>
+        <template v-if="isEditingWorkDir">
+          <div class="workdir-edit">
+            <FolderPicker v-model="editWorkDir" />
+            <button class="title-action-btn confirm" @click="confirmEditWorkDir" aria-label="Confirm work dir">&#10003;</button>
+            <button class="title-action-btn cancel" @click="cancelEditWorkDir" aria-label="Cancel edit">&#10005;</button>
+          </div>
+        </template>
+        <span v-else-if="displayDir && !isEditingTitle" class="context-dir" @click="startEditWorkDir">{{ displayDir }}</span>
+        <!-- Local agent status indicator -->
+        <span
+          v-if="sessionEnvironment === 'local'"
+          class="agent-status"
+          :class="[localAgentStatus, { clickable: localAgentStatus === 'not_configured' }]"
+          @click="localAgentStatus === 'not_configured' && emit('openSettings')"
+        >
+          {{ localAgentStatus === 'running' ? 'Running' : localAgentStatus === 'stopped' ? 'Stopped' : 'Not Configured' }}
+        </span>
+      </div>
+      <div class="context-bar-right">
+        <button
+          v-if="showOutlineToggle"
+          class="outline-toggle-btn"
+          @click="emit('toggleOutline')"
+          aria-label="Toggle outline"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+            <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+          </svg>
+        </button>
+        <button
+          v-if="sessionEnvironment === 'local'"
+          class="settings-icon-btn"
+          @click="emit('openSettings')"
+          aria-label="Local Agent Settings"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div v-if="!isEmpty" ref="messagesEl" class="flex-1 overflow-y-auto">
@@ -857,7 +1343,12 @@ function scrollToMessageId(id: string | null) {
             </div>
             <!-- Normal display -->
             <div v-else class="user-content-row">
-              <pre class="whitespace-pre-wrap text-[15px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ item.content }}</pre>
+              <div class="user-content-body">
+                <pre v-if="item.content" class="whitespace-pre-wrap text-[15px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ item.content }}</pre>
+                <div v-if="item.images && item.images.length > 0" class="user-images">
+                  <img v-for="(img, imgIdx) in item.images" :key="imgIdx" :src="`data:${img.media_type};base64,${img.data}`" alt="User uploaded image" class="user-image-thumb" />
+                </div>
+              </div>
               <button
                 v-if="!isStreaming"
                 class="edit-btn"
@@ -876,12 +1367,14 @@ function scrollToMessageId(id: string | null) {
           </div>
           <div v-else-if="item.kind === 'error'" class="error-block">
             <span class="error-message">{{ item.content }}</span>
-            <button class="retry-btn" @click="resend" :disabled="isStreaming">Retry</button>
+            <button v-if="item.content.includes('not configured')" class="retry-btn" @click="emit('openSettings')">Go to Settings</button>
+            <button v-else class="retry-btn" @click="resend" :disabled="isStreaming">Retry</button>
           </div>
           <div v-else-if="item.kind === 'tool'" class="tool-block">
             <button @click="toggleToolCall(item.tool)" class="tool-header" :class="{ 'tool-running': item.tool.isRunning, 'tool-error': item.tool.isError && !item.tool.isRunning }">
               <span class="tool-indicator" :class="{ active: item.tool.isRunning }"></span>
               <span class="tool-name">{{ item.tool.name }}</span>
+              <span v-if="item.tool.source" class="source-badge" :class="item.tool.source">{{ item.tool.source === 'local' ? 'Local' : 'Server' }}</span>
               <span class="tool-summary">{{ toolSummary(item.tool) }}</span>
             </button>
             <div v-if="!item.tool.expanded && item.tool.result" class="tool-preview" @click="toggleToolCall(item.tool)">
@@ -904,6 +1397,7 @@ function scrollToMessageId(id: string | null) {
                 <button @click="toggleToolCall(tc)" class="tool-header" :class="{ 'tool-running': tc.isRunning, 'tool-error': tc.isError && !tc.isRunning }">
                   <span class="tool-indicator" :class="{ active: tc.isRunning }"></span>
                   <span class="tool-name">{{ tc.name }}</span>
+                  <span v-if="tc.source" class="source-badge" :class="tc.source">{{ tc.source === 'local' ? 'Local' : 'Server' }}</span>
                   <span class="tool-summary">{{ toolSummary(tc) }}</span>
                 </button>
                 <div v-if="!tc.expanded && tc.result" class="tool-preview" @click="toggleToolCall(tc)">
@@ -927,11 +1421,20 @@ function scrollToMessageId(id: string | null) {
     <div class="input-area" :class="isEmpty ? 'input-centered' : 'input-docked'">
       <div class="max-w-[720px] mx-auto w-full px-6">
         <div class="input-wrapper">
+          <input
+            ref="fileInputRef"
+            type="file"
+            accept="image/*"
+            multiple
+            style="display: none"
+            @change="handleImageSelect"
+          />
           <textarea
             ref="textareaRef"
             v-model="input"
             @keydown="handleKeydown"
             @input="autoResize"
+            @paste="handlePaste"
             :disabled="!isConnected"
             :placeholder="!isConnected ? 'Offline' : ''"
             class="input-field"
@@ -942,7 +1445,7 @@ function scrollToMessageId(id: string | null) {
             class="send-btn"
             :class="{ 'stop-mode': isStreaming }"
             @click="isStreaming ? stop() : send()"
-            :disabled="!isConnected || (!isStreaming && !input.trim())"
+            :disabled="!isConnected || (!isStreaming && !input.trim() && pendingImages.length === 0)"
             :aria-label="isStreaming ? 'Stop generation' : 'Send message'"
           >
             <svg v-if="!isStreaming" width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -950,6 +1453,50 @@ function scrollToMessageId(id: string | null) {
             </svg>
             <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none">
               <rect x="1" y="1" width="12" height="12" rx="2" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+        <!-- Image previews -->
+        <div v-if="pendingImages.length > 0" class="image-preview-row">
+          <div v-for="(img, idx) in pendingImages" :key="idx" class="image-preview-item">
+            <img :src="img.preview" alt="Upload preview" />
+            <button class="image-remove-btn" @click="removeImage(idx)" aria-label="Remove image">&times;</button>
+          </div>
+        </div>
+        <div class="input-meta">
+          <div class="provider-selector" v-if="providerOptions.length > 0">
+            <button class="provider-current" @click="showProviderDropdown = !showProviderDropdown">
+              <span class="provider-source-dot" :class="selectedProviderSource"></span>
+              <span>{{ selectedProviderName || 'Select provider' }}</span>
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2.5 4L5 6.5L7.5 4"/>
+              </svg>
+            </button>
+            <div v-if="showProviderDropdown" class="provider-dropdown">
+              <button
+                v-for="p in providerOptions"
+                :key="p.key"
+                class="provider-dropdown-item"
+                :class="{ active: selectedProvider === p.key }"
+                @click="selectedProvider = p.key; showProviderDropdown = false"
+              >
+                <span class="provider-source-dot" :class="p.source"></span>
+                <span class="provider-dropdown-name">{{ p.name }}</span>
+                <span class="provider-dropdown-tag">{{ p.source === 'local' ? 'Local' : 'Server' }}</span>
+              </button>
+            </div>
+          </div>
+          <button
+            class="image-upload-btn"
+            @click="triggerImagePicker"
+            :disabled="!isConnected || isStreaming || (sessionEnvironment === 'local' && selectedProviderSource === 'local')"
+            :title="sessionEnvironment === 'local' && selectedProviderSource === 'local' ? 'Images not supported with local agent' : 'Attach image'"
+            aria-label="Attach image"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
             </svg>
           </button>
         </div>
@@ -962,10 +1509,23 @@ function scrollToMessageId(id: string | null) {
 .context-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
   padding: 8px 16px;
   border-bottom: 1px solid var(--color-border-subtle);
   min-height: 40px;
+}
+.context-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+.context-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 .back-btn {
   background: none;
@@ -1009,6 +1569,22 @@ function scrollToMessageId(id: string | null) {
   max-width: 300px;
 }
 .context-title:hover { background: var(--color-surface-1); }
+.env-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-left: 6px;
+}
+.env-tag.local {
+  color: var(--color-env-local);
+  background: var(--color-env-local-bg);
+}
+.env-tag.remote {
+  color: var(--color-env-remote);
+  background: var(--color-env-remote-bg);
+}
 .title-input {
   font-size: 13px;
   font-weight: 500;
@@ -1150,12 +1726,91 @@ function scrollToMessageId(id: string | null) {
 .input-centered { display: flex; align-items: center; justify-content: center; }
 .input-docked { border-top: 1px solid var(--color-border-subtle); }
 .input-wrapper { position: relative; display: flex; align-items: flex-end; }
+.input-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 2px 0;
+}
+.provider-selector {
+  position: relative;
+}
+.provider-current {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border-subtle);
+  transition: all 0.12s;
+}
+.provider-current:hover {
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+}
+.provider-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 180px;
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  z-index: 100;
+  padding: 4px;
+}
+.provider-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+.provider-dropdown-item:hover {
+  background: var(--color-surface-2, rgba(255, 255, 255, 0.06));
+}
+.provider-dropdown-item.active {
+  background: var(--color-surface-2, rgba(255, 255, 255, 0.06));
+}
+.provider-dropdown-name {
+  font-size: 12px;
+  color: var(--color-text-primary);
+  flex: 1;
+}
+.provider-dropdown-tag {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  opacity: 0.7;
+}
+.provider-source-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.provider-source-dot.local {
+  background: #a78bfa;
+}
+.provider-source-dot.server {
+  background: #60a5fa;
+}
 .input-field {
   width: 100%;
   background: var(--color-surface-1);
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: 14px 48px 14px 18px;
+  padding: 14px 48px 14px 16px;
   font-size: 15px;
   color: var(--color-text-primary);
   outline: none;
@@ -1187,6 +1842,71 @@ function scrollToMessageId(id: string | null) {
 .send-btn:hover:not(:disabled) { opacity: 0.85; }
 .send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 .send-btn.stop-mode { background: var(--color-error, #ef4444); color: #fff; }
+.image-upload-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.image-upload-btn:hover:not(:disabled) { color: var(--color-text-primary); background: var(--color-surface-1); }
+.image-upload-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.image-preview-row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 0;
+  flex-wrap: wrap;
+}
+.image-preview-item {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-subtle);
+}
+.image-preview-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.image-remove-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.user-images {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.user-image-thumb {
+  width: 120px;
+  max-height: 120px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-subtle);
+}
+.user-content-body { flex: 1; min-width: 0; }
 .streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 .scroll-spacer { min-height: 60vh; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
@@ -1268,7 +1988,6 @@ function scrollToMessageId(id: string | null) {
   color: var(--color-text-muted);
 }
 .outline-toggle-btn {
-  margin-left: auto;
   background: none;
   border: none;
   color: var(--color-text-muted);
@@ -1278,4 +1997,63 @@ function scrollToMessageId(id: string | null) {
   transition: color 0.12s, background 0.12s;
 }
 .outline-toggle-btn:hover { color: var(--color-text-primary); background: var(--color-surface-1); }
+
+/* Agent status indicator */
+.agent-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.agent-status.running {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.1);
+}
+.agent-status.stopped {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
+}
+.agent-status.not_configured {
+  color: var(--color-text-muted);
+  background: var(--color-surface-1);
+}
+.agent-status.clickable {
+  cursor: pointer;
+}
+.agent-status.clickable:hover {
+  color: var(--color-accent, #6366f1);
+  text-decoration: underline;
+}
+.settings-icon-btn {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+.settings-icon-btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-1);
+}
+
+/* Source badge on tool blocks */
+.source-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.source-badge.local {
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.15);
+}
+.source-badge.remote {
+  color: #60a5fa;
+  background: rgba(96, 165, 250, 0.15);
+}
 </style>

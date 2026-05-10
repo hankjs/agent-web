@@ -23,6 +23,12 @@
 
   --color-success: oklch(0.65 0.15 145);
 
+  /* Environment tags */
+  --color-env-remote: oklch(0.7 0.12 250);
+  --color-env-remote-bg: oklch(0.7 0.12 250 / 0.15);
+  --color-env-local: oklch(0.7 0.15 310);
+  --color-env-local-bg: oklch(0.7 0.15 310 / 0.15);
+
   /* Typography */
   --font-sans: "SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: "SF Mono", "Cascadia Code", "JetBrains Mono", ui-monospace, monospace;

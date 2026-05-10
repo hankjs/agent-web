@@ -6,7 +6,7 @@ use reqwest::Client;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error};
+use tracing::{debug, error, Instrument};
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
@@ -73,7 +73,7 @@ impl LlmProvider for AnthropicProvider {
             if let Err(e) = process_sse_stream(byte_stream, &tx).await {
                 let _ = tx.send(Err(e)).await;
             }
-        });
+        }.instrument(tracing::Span::current()));
 
         Ok(Box::pin(ReceiverStream::new(rx)))
     }

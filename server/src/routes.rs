@@ -1,7 +1,6 @@
 use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
     response::IntoResponse,
     Extension, Json,
 };
@@ -11,17 +10,10 @@ use std::sync::Arc;
 use crate::auth::{self, Claims};
 use crate::config::DEFAULT_MODEL;
 use crate::provider_registry;
-
-fn internal_error(e: impl ToString) -> axum::response::Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({"error": e.to_string()})),
-    )
-        .into_response()
-}
+use crate::response::{self as R};
 
 pub async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({"status": "ok"}))
+    R::ok(serde_json::json!({"status": "ok"}))
 }
 
 #[derive(Deserialize)]
@@ -41,24 +33,24 @@ pub async fn login(
 
     let user = match state.db.get_user_by_username(&username).await {
         Ok(Some(u)) => u,
-        _ => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid credentials"}))).into_response(),
+        _ => return R::unauthorized("invalid credentials"),
     };
 
     if !bcrypt::verify(&password, &user.password_hash).unwrap_or(false) {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid credentials"}))).into_response();
+        return R::unauthorized("invalid credentials");
     }
 
     // Check scope permission
     if scope == "admin" && !user.can_login_admin {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "no admin access"}))).into_response();
+        return R::forbidden("no admin access");
     }
     if scope == "client" && !user.can_login_client {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "no client access"}))).into_response();
+        return R::forbidden("no client access");
     }
 
     match auth::create_token(&state.jwt_secret, &user.id, &user.username, user.can_login_admin, user.can_login_client) {
-        Ok(token) => (StatusCode::OK, Json(serde_json::json!({"token": token, "username": user.username, "can_admin": user.can_login_admin, "can_client": user.can_login_client}))).into_response(),
-        Err(e) => internal_error(e),
+        Ok(token) => R::ok(serde_json::json!({"token": token, "username": user.username, "can_admin": user.can_login_admin, "can_client": user.can_login_client})),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -67,6 +59,7 @@ pub struct CreateSessionRequest {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub work_dir: Option<String>,
+    pub environment: Option<String>,
 }
 
 pub async fn create_session(
@@ -78,7 +71,7 @@ pub async fn create_session(
         Some(p) => p,
         None => match provider_registry::default_provider_name(&state.db).await {
             Some(name) => name,
-            None => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "No provider configured"}))).into_response(),
+            None => return R::internal_error("No provider configured"),
         },
     };
     let model = match &body.model {
@@ -93,11 +86,11 @@ pub async fn create_session(
 
     match state
         .db
-        .create_session(&provider, &model, body.work_dir.as_deref(), Some(&claims.sub))
+        .create_session(&provider, &model, body.work_dir.as_deref(), Some(&claims.sub), body.environment.as_deref())
         .await
     {
-        Ok(session) => (StatusCode::CREATED, Json(serde_json::json!(session))).into_response(),
-        Err(e) => internal_error(e),
+        Ok(session) => R::created(serde_json::json!(session)),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -106,8 +99,8 @@ pub async fn list_sessions(
     Extension(claims): Extension<Claims>,
 ) -> impl IntoResponse {
     match state.db.list_sessions_by_user(&claims.sub).await {
-        Ok(sessions) => Json(serde_json::json!(sessions)).into_response(),
-        Err(e) => internal_error(e),
+        Ok(sessions) => R::ok(serde_json::json!(sessions)),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -116,9 +109,9 @@ pub async fn get_session(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.db.get_session(&id).await {
-        Ok(Some(session)) => Json(serde_json::json!(session)).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => internal_error(e),
+        Ok(Some(session)) => R::ok(serde_json::json!(session)),
+        Ok(None) => R::not_found("session not found"),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -127,8 +120,8 @@ pub async fn delete_session(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.db.delete_session(&id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => internal_error(e),
+        Ok(()) => R::no_content(),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -136,6 +129,8 @@ pub async fn delete_session(
 pub struct UpdateSessionRequest {
     pub title: Option<String>,
     pub work_dir: Option<String>,
+    pub local_agent: Option<String>,
+    pub local_work_dir: Option<String>,
 }
 
 pub async fn update_session(
@@ -145,18 +140,23 @@ pub async fn update_session(
 ) -> impl IntoResponse {
     if let Some(title) = &body.title {
         if let Err(e) = state.db.update_session_title(&id, title).await {
-            return internal_error(e);
+            return R::internal_error(e);
         }
     }
     if body.work_dir.is_some() {
         if let Err(e) = state.db.update_session_work_dir(&id, body.work_dir.as_deref()).await {
-            return internal_error(e);
+            return R::internal_error(e);
+        }
+    }
+    if body.local_agent.is_some() || body.local_work_dir.is_some() {
+        if let Err(e) = state.db.update_session_local_agent(&id, body.local_agent.as_deref(), body.local_work_dir.as_deref()).await {
+            return R::internal_error(e);
         }
     }
     match state.db.get_session(&id).await {
-        Ok(Some(session)) => Json(serde_json::json!(session)).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => internal_error(e),
+        Ok(Some(session)) => R::ok(serde_json::json!(session)),
+        Ok(None) => R::not_found("session not found"),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -168,22 +168,22 @@ pub async fn get_messages(
     // If leaf_id provided, return branch messages; otherwise use active_leaf or all
     if let Some(leaf_id) = &query.leaf_id {
         match state.db.get_branch_messages(&id, leaf_id).await {
-            Ok(messages) => Json(serde_json::json!(messages)).into_response(),
-            Err(e) => internal_error(e),
+            Ok(messages) => R::ok(serde_json::json!(messages)),
+            Err(e) => R::internal_error(e),
         }
     } else {
         // Try to use active_leaf_id from session
         let session = state.db.get_session(&id).await.ok().flatten();
         if let Some(leaf) = session.and_then(|s| s.active_leaf_id) {
             match state.db.get_branch_messages(&id, &leaf).await {
-                Ok(messages) => Json(serde_json::json!(messages)).into_response(),
-                Err(e) => internal_error(e),
+                Ok(messages) => R::ok(serde_json::json!(messages)),
+                Err(e) => R::internal_error(e),
             }
         } else {
             // Fallback: return all messages (legacy behavior for sessions without tree)
             match state.db.get_messages(&id).await {
-                Ok(messages) => Json(serde_json::json!(messages)).into_response(),
-                Err(e) => internal_error(e),
+                Ok(messages) => R::ok(serde_json::json!(messages)),
+                Err(e) => R::internal_error(e),
             }
         }
     }
@@ -199,8 +199,8 @@ pub async fn get_message_tree(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match state.db.get_message_tree(&id).await {
-        Ok(tree) => Json(serde_json::json!(tree)).into_response(),
-        Err(e) => internal_error(e),
+        Ok(tree) => R::ok(serde_json::json!(tree)),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -215,8 +215,41 @@ pub async fn update_active_leaf(
     Json(body): Json<UpdateActiveLeafRequest>,
 ) -> impl IntoResponse {
     match state.db.update_active_leaf(&id, &body.leaf_id).await {
-        Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),
-        Err(e) => internal_error(e),
+        Ok(()) => R::ok(serde_json::json!({"status": "ok"})),
+        Err(e) => R::internal_error(e),
+    }
+}
+
+// POST /api/sessions/{id}/messages - save a message (for local agent sessions)
+#[derive(Deserialize)]
+pub struct PostMessageRequest {
+    pub role: String,
+    pub content: serde_json::Value,
+    pub parent_id: Option<String>,
+}
+
+pub async fn post_message(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<PostMessageRequest>,
+) -> impl IntoResponse {
+    // Verify session exists
+    match state.db.get_session(&id).await {
+        Ok(None) => return R::not_found("session not found"),
+        Err(e) => return R::internal_error(e),
+        _ => {}
+    }
+
+    let now = chrono::Utc::now();
+    let parent_id = body.parent_id.as_deref();
+
+    match state.db.save_message(&id, &body.role, &body.content, now, parent_id).await {
+        Ok(msg_id) => {
+            // Update active_leaf_id to the new message
+            let _ = state.db.update_active_leaf(&id, &msg_id).await;
+            R::created(serde_json::json!({"id": msg_id}))
+        }
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -231,8 +264,8 @@ pub async fn truncate_messages(
     Json(body): Json<TruncateMessagesRequest>,
 ) -> impl IntoResponse {
     match state.db.truncate_messages(&id, body.keep_count).await {
-        Ok(deleted) => Json(serde_json::json!({"deleted": deleted})).into_response(),
-        Err(e) => internal_error(e),
+        Ok(deleted) => R::ok(serde_json::json!({"deleted": deleted})),
+        Err(e) => R::internal_error(e),
     }
 }
 
@@ -247,10 +280,10 @@ pub async fn update_settings(
 ) -> impl IntoResponse {
     for (key, value) in &body.settings {
         if let Err(e) = state.db.set_setting(key, value).await {
-            return internal_error(e);
+            return R::internal_error(e);
         }
     }
-    Json(serde_json::json!({"status": "ok"})).into_response()
+    R::ok(serde_json::json!({"status": "ok"}))
 }
 
 pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -271,7 +304,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
 
     let default_provider = providers.iter().find(|p| p.enabled).map(|p| p.name.clone()).unwrap_or_default();
 
-    Json(serde_json::json!({
+    R::ok(serde_json::json!({
         "providers": provider_list,
         "default_provider": default_provider,
     }))
@@ -299,11 +332,7 @@ pub async fn list_directory(
             canonical.starts_with(allowed_path)
         });
         if !allowed {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"error": "Path not in allowed directories"})),
-            )
-                .into_response();
+            return R::forbidden("Path not in allowed directories");
         }
     }
 
@@ -325,11 +354,7 @@ pub async fn list_directory(
     let (entries, dir_path, redirected) = match entries_result {
         Ok(tuple) => tuple,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
+            return R::bad_request(e);
         }
     };
 
@@ -368,5 +393,101 @@ pub async fn list_directory(
         ));
     }
 
-    Json(result).into_response()
+    R::ok(result)
+}
+
+// POST /api/sessions/{id}/local-events - batch upload local ACP execution events
+#[derive(Deserialize)]
+pub struct LocalEventInput {
+    pub event_type: String,
+    pub agent_type: String,
+    pub payload: serde_json::Value,
+}
+
+pub async fn post_local_events(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<Vec<LocalEventInput>>,
+) -> impl IntoResponse {
+    // Verify session exists
+    match state.db.get_session(&id).await {
+        Ok(None) => return R::not_found("session not found"),
+        Err(e) => return R::internal_error(e),
+        _ => {}
+    }
+
+    let events: Vec<hank_db::LocalEvent> = body
+        .into_iter()
+        .map(|e| hank_db::LocalEvent {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: id.clone(),
+            event_type: e.event_type,
+            agent_type: e.agent_type,
+            payload: e.payload.to_string(),
+            source: "local".to_string(),
+            created_at: chrono::Utc::now(),
+        })
+        .collect();
+
+    match state.db.insert_local_events(&events).await {
+        Ok(()) => R::created(serde_json::json!({"count": events.len()})),
+        Err(e) => R::internal_error(e),
+    }
+}
+
+// GET /api/sessions/{id}/events - returns both remote and local events with source marker
+pub async fn get_session_events(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Verify session exists
+    match state.db.get_session(&id).await {
+        Ok(None) => return R::not_found("session not found"),
+        Err(e) => return R::internal_error(e),
+        _ => {}
+    }
+
+    let remote_events = match state.db.get_session_events(&id).await {
+        Ok(events) => events,
+        Err(e) => return R::internal_error(e),
+    };
+
+    let local_events = match state.db.get_local_events(&id).await {
+        Ok(events) => events,
+        Err(e) => return R::internal_error(e),
+    };
+
+    // Merge into a unified list sorted by created_at
+    let mut unified: Vec<serde_json::Value> = Vec::new();
+
+    for e in remote_events {
+        unified.push(serde_json::json!({
+            "id": e.id,
+            "session_id": e.session_id,
+            "event_type": e.event_type,
+            "payload": e.payload,
+            "source": "remote",
+            "created_at": e.created_at,
+        }));
+    }
+
+    for e in local_events {
+        unified.push(serde_json::json!({
+            "id": e.id,
+            "session_id": e.session_id,
+            "event_type": e.event_type,
+            "agent_type": e.agent_type,
+            "payload": e.payload,
+            "source": e.source,
+            "created_at": e.created_at,
+        }));
+    }
+
+    unified.sort_by(|a, b| {
+        let ta = a["created_at"].as_str().unwrap_or("");
+        let tb = b["created_at"].as_str().unwrap_or("");
+        ta.cmp(tb)
+    });
+
+    R::ok(serde_json::json!(unified))
 }

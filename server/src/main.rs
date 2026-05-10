@@ -3,6 +3,7 @@ mod auth;
 mod chat;
 mod config;
 pub mod provider_registry;
+pub mod response;
 mod routes;
 
 use anyhow::Result;
@@ -60,16 +61,20 @@ async fn auth_middleware(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 日志：同时输出到终端和文件（按天滚动）
+    // 日志：同时输出到终端和文件（按天滚动，实时写入）
     let file_appender = tracing_appender::rolling::daily("logs", "hank.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-    let env_filter = EnvFilter::from_default_env().add_directive("hank=debug".parse()?);
+    let env_filter = EnvFilter::from_default_env()
+        .add_directive("hank_server=debug".parse()?)
+        .add_directive("hank_agent=debug".parse()?)
+        .add_directive("hank_provider=debug".parse()?)
+        .add_directive("hank_db=debug".parse()?)
+        .add_directive("hank_web_tools=debug".parse()?);
 
     tracing_subscriber::registry()
         .with(env_filter)
         .with(fmt::layer().with_writer(std::io::stdout))
-        .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
+        .with(fmt::layer().with_writer(file_appender).with_ansi(false))
         .init();
 
     let config = Config::load()?;
@@ -97,9 +102,12 @@ async fn main() -> Result<()> {
         .route("/api/sessions/{id}", delete(routes::delete_session))
         .route("/api/sessions/{id}", put(routes::update_session))
         .route("/api/sessions/{id}/messages", get(routes::get_messages))
+        .route("/api/sessions/{id}/messages", post(routes::post_message))
         .route("/api/sessions/{id}/messages/truncate", post(routes::truncate_messages))
         .route("/api/sessions/{id}/tree", get(routes::get_message_tree))
         .route("/api/sessions/{id}/active-leaf", put(routes::update_active_leaf))
+        .route("/api/sessions/{id}/local-events", post(routes::post_local_events))
+        .route("/api/sessions/{id}/events", get(routes::get_session_events))
         .route("/api/settings", put(routes::update_settings))
         .route("/api/providers", get(routes::list_providers))
         .route("/api/sessions/{id}/chat", post(chat::chat_handler))

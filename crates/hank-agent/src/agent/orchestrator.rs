@@ -26,6 +26,7 @@ pub struct OrchestratorAgent {
     think_strategy: ThinkStrategy,
     context_manager: ContextManager,
     messages: Vec<Message>,
+    consecutive_max_tokens: u32,
 }
 
 impl OrchestratorAgent {
@@ -77,6 +78,8 @@ impl OrchestratorAgent {
             }),
         });
 
+        let context_manager = ContextManager::with_provider(80_000, provider.clone(), model.clone());
+
         Self {
             provider,
             tools,
@@ -84,8 +87,9 @@ impl OrchestratorAgent {
             system_prompt,
             tool_definitions,
             think_strategy,
-            context_manager: ContextManager::new(),
+            context_manager,
             messages: Vec::new(),
+            consecutive_max_tokens: 0,
         }
     }
 
@@ -100,13 +104,13 @@ impl OrchestratorAgent {
     /// Run the orchestrator loop with Think/Act/Observe phases.
     pub async fn run(
         &mut self,
-        user_message: String,
+        user_content: Vec<ContentBlock>,
         event_tx: mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
     ) -> Result<()> {
         self.messages.push(Message {
             role: Role::User,
-            content: vec![ContentBlock::Text { text: user_message }],
+            content: user_content,
         });
 
         let mut _iterations_without_progress = 0;
@@ -120,7 +124,7 @@ impl OrchestratorAgent {
 
             // Context compression check
             if self.context_manager.needs_compression(&self.messages) {
-                self.context_manager.compress(&mut self.messages);
+                self.context_manager.compress_async(&mut self.messages).await;
             }
 
             // THINK phase (conditional)
@@ -243,7 +247,7 @@ impl OrchestratorAgent {
             system: Some(self.system_prompt.clone()),
             messages: self.messages.clone(),
             tools: self.tool_definitions.clone(),
-            max_tokens: 4096,
+            max_tokens: 16384,
         };
 
         debug!("Orchestrator ACT phase");
@@ -318,6 +322,27 @@ impl OrchestratorAgent {
             role: Role::Assistant,
             content: assistant_content.clone(),
         });
+
+        // Handle MaxTokens: continue generation instead of stopping
+        if stop_reason == StopReason::MaxTokens {
+            warn!("Orchestrator MaxTokens hit, continuing generation");
+            self.consecutive_max_tokens += 1;
+            if self.consecutive_max_tokens >= 3 {
+                warn!("3 consecutive MaxTokens without tool use, treating as done");
+                return Ok(ActResult::Done);
+            }
+            // Inject continuation prompt
+            self.messages.push(Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "[Your previous response was cut off. Continue from where you left off.]".to_string(),
+                }],
+            });
+            return Ok(ActResult::Continue);
+        }
+
+        // Reset counter on successful tool use
+        self.consecutive_max_tokens = 0;
 
         if stop_reason != StopReason::ToolUse {
             return Ok(ActResult::Done);

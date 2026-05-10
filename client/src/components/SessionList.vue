@@ -5,10 +5,28 @@ import FolderPicker from "./FolderPicker.vue";
 
 const { sessions, fetchSessions, createSession, selectSession, deleteSession } = useSession();
 
+type EnvTab = "remote" | "local";
+const activeTab = ref<EnvTab>("remote");
 const workDir = ref("");
+const localWorkDir = ref("");
+const isTauri = ref(false);
 
 async function start() {
-  await createSession(workDir.value || undefined);
+  if (activeTab.value === "remote") {
+    await createSession(workDir.value || undefined, "remote");
+  } else {
+    await createSession(localWorkDir.value || undefined, "local");
+  }
+}
+
+async function pickLocalDir() {
+  try {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({ multiple: false, directory: true, title: "Select local work directory" });
+    if (selected) {
+      localWorkDir.value = selected as string;
+    }
+  } catch { /* not in Tauri */ }
 }
 
 function relativeTime(dateStr: string): string {
@@ -28,19 +46,42 @@ function displayTitle(title: string, workDir: string | null): string {
   return "Untitled";
 }
 
-onMounted(() => {
+onMounted(async () => {
   fetchSessions();
+  // Detect Tauri environment
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("acp_get_agents");
+    isTauri.value = true;
+  } catch {
+    isTauri.value = false;
+  }
 });
 </script>
 
 <template>
   <div class="flex flex-col h-full">
+    <div class="session-header">
+      <span class="header-title">Hank</span>
+      <slot name="header-actions" />
+    </div>
     <div class="flex-1 overflow-y-auto">
       <div class="max-w-[720px] mx-auto px-6 py-10">
         <!-- New session -->
         <div class="new-session">
-          <FolderPicker v-model="workDir" />
-          <button class="start-btn" @click="start">Start</button>
+          <div class="new-session-tabs">
+            <button class="tab-btn" :class="{ active: activeTab === 'remote' }" @click="activeTab = 'remote'">Server</button>
+            <button v-if="isTauri" class="tab-btn" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本机</button>
+          </div>
+          <div class="new-session-picker">
+            <FolderPicker v-if="activeTab === 'remote'" v-model="workDir" />
+            <div v-else class="local-picker">
+              <button class="local-pick-btn" @click="pickLocalDir">
+                {{ localWorkDir || 'Select local directory...' }}
+              </button>
+            </div>
+            <button class="start-btn" @click="start">Start</button>
+          </div>
         </div>
 <!-- SESSION_LIST_PART2 -->
         <!-- Session list -->
@@ -56,6 +97,7 @@ onMounted(() => {
               <span v-if="s.work_dir" class="session-dir">{{ s.work_dir }}</span>
             </div>
             <div class="session-meta">
+              <span class="env-badge" :class="s.environment === 'local' ? 'local' : 'remote'">{{ s.environment === 'local' ? 'Local' : 'Remote' }}</span>
               <span class="session-time">{{ relativeTime(s.updated_at) }}</span>
               <button
                 class="session-delete"
@@ -73,11 +115,78 @@ onMounted(() => {
 </template>
 <!-- SESSION_LIST_STYLE -->
 <style scoped>
+.session-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.header-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
 .new-session {
+  margin-bottom: 32px;
+}
+
+.new-session-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  border-bottom: 2px solid transparent;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.tab-btn.active {
+  color: var(--color-text-primary);
+  border-bottom-color: var(--color-accent);
+}
+
+.tab-btn:hover:not(.active) {
+  color: var(--color-text-primary);
+}
+
+.new-session-picker {
   display: flex;
   gap: 10px;
   align-items: stretch;
-  margin-bottom: 32px;
+}
+
+.local-picker {
+  flex: 1;
+  display: flex;
+}
+
+.local-pick-btn {
+  flex: 1;
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color 0.12s;
+}
+
+.local-pick-btn:hover {
+  border-color: var(--color-text-muted);
 }
 
 .start-btn {
@@ -178,5 +287,23 @@ onMounted(() => {
   font-size: 14px;
   text-align: center;
   padding: 40px 0;
+}
+
+.env-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.env-badge.local {
+  color: var(--color-env-local);
+  background: var(--color-env-local-bg);
+}
+
+.env-badge.remote {
+  color: var(--color-env-remote);
+  background: var(--color-env-remote-bg);
 }
 </style>

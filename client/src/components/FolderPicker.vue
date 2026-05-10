@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { authFetch } from "../composables/useSession";
+import { apiRequest } from "../composables/useSession";
 
 const model = defineModel<string>({ default: "" });
 
@@ -18,17 +18,16 @@ async function fetchDir(path?: string) {
   redirectMessage.value = "";
   try {
     const query = path ? `?path=${encodeURIComponent(path)}` : "";
-    const res = await authFetch(`/api/fs/list${query}`);
-    const data = await res.json();
-    if (!res.ok) {
-      error.value = data.error || "Failed to list directory";
+    const result = await apiRequest<{ path: string; parent: string | null; entries: { name: string; is_dir: boolean }[]; redirected?: boolean; message?: string }>(`/api/fs/list${query}`);
+    if (!result.ok) {
+      error.value = result.msg || "Failed to list directory";
       return;
     }
-    browsePath.value = data.path;
-    parentPath.value = data.parent ?? null;
-    entries.value = data.entries;
-    if (data.redirected) {
-      redirectMessage.value = data.message;
+    browsePath.value = result.data!.path;
+    parentPath.value = result.data!.parent ?? null;
+    entries.value = result.data!.entries;
+    if (result.data!.redirected) {
+      redirectMessage.value = result.data!.message || "";
     }
   } catch (e: any) {
     error.value = e.message || "Network error";

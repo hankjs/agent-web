@@ -6,7 +6,7 @@ use reqwest::Client;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error};
+use tracing::{debug, error, Instrument};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 
@@ -79,7 +79,7 @@ impl LlmProvider for OpenAiProvider {
             if let Err(e) = process_sse_stream(byte_stream, &tx).await {
                 let _ = tx.send(Err(e)).await;
             }
-        });
+        }.instrument(tracing::Span::current()));
 
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
@@ -111,6 +111,13 @@ fn build_request_body(req: &CompletionRequest) -> serde_json::Value {
             match block {
                 crate::ContentBlock::Text { text } => {
                     parts.push(serde_json::json!({"type": "text", "text": text}));
+                }
+                crate::ContentBlock::Image { source } => {
+                    let data_url = format!("data:{};base64,{}", source.media_type, source.data);
+                    parts.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": { "url": data_url }
+                    }));
                 }
                 crate::ContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(serde_json::json!({

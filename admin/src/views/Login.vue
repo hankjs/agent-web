@@ -16,13 +16,12 @@ async function handleLogin() {
 
   try {
     const res = await api.login(username.value, password.value)
-    if (res.ok) {
-      const data = await res.json()
-      setToken(data.token)
+    const json = await res.json()
+    if (json.code === 0) {
+      setToken(json.data.token)
       router.push('/')
     } else {
-      const data = await res.json().catch(() => ({ error: 'Login failed' }))
-      error.value = data.error || 'Invalid credentials'
+      error.value = json.msg || 'Invalid credentials'
     }
   } catch {
     error.value = 'Network error'
