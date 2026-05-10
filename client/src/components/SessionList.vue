@@ -1,50 +1,17 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from "vue";
+import { onMounted, ref } from "vue";
 import { useSession } from "../composables/useSession";
-import { createChange } from "../api/changes";
 import FolderPicker from "./FolderPicker.vue";
+import NewChangeDialog from "./NewChangeDialog.vue";
 
-const { sessions, fetchSessions, createSession, selectSession, deleteSession, navigateTo } = useSession();
+const { sessions, fetchSessions, createSession, selectSession, deleteSession } = useSession();
 
 type EnvTab = "remote" | "local";
 const activeTab = ref<EnvTab>("remote");
 const workDir = ref("");
 const localWorkDir = ref("");
 const isTauri = ref(false);
-
-// New Change flow
 const showNewChange = ref(false);
-const newChangeName = ref("");
-const selectedProjectDir = ref<string | null>(null);
-
-const projectDirs = computed(() => {
-  const dirs = new Set<string>();
-  for (const s of sessions.value) {
-    if (s.work_dir) dirs.add(s.work_dir);
-  }
-  return Array.from(dirs).sort();
-});
-
-function startNewChange() {
-  showNewChange.value = true;
-  newChangeName.value = "";
-  selectedProjectDir.value = projectDirs.value.length === 1 ? projectDirs.value[0] : null;
-}
-
-async function submitNewChange() {
-  if (!newChangeName.value.trim() || !selectedProjectDir.value) return;
-  const res = await createChange(newChangeName.value.trim(), selectedProjectDir.value);
-  if (res.ok && res.data) {
-    navigateTo("change-detail", res.data.id);
-  }
-  showNewChange.value = false;
-  newChangeName.value = "";
-  selectedProjectDir.value = null;
-}
-
-function dirName(path: string): string {
-  return path.split("/").pop() || path;
-}
 
 async function start() {
   if (activeTab.value === "remote") {
@@ -98,7 +65,10 @@ onMounted(async () => {
   <div class="flex flex-col h-full">
     <div class="session-header">
       <span class="header-title">Hank</span>
-      <slot name="header-actions" />
+      <div class="header-right">
+        <button class="new-change-btn" @click="showNewChange = true">New Change</button>
+        <slot name="header-actions" />
+      </div>
     </div>
     <div class="flex-1 overflow-y-auto">
       <div class="max-w-[720px] mx-auto px-6 py-10">
@@ -118,33 +88,6 @@ onMounted(async () => {
             <button class="start-btn" @click="start">Start</button>
           </div>
         </div>
-        <!-- New Change -->
-        <div v-if="!showNewChange" class="new-change-trigger">
-          <button class="new-change-btn" @click="startNewChange">New Change</button>
-        </div>
-        <div v-else class="new-change-form">
-          <div class="new-change-title">New Change</div>
-          <div class="project-select">
-            <div class="project-label">Select project:</div>
-            <div class="project-options">
-              <div
-                v-for="dir in projectDirs" :key="dir"
-                class="project-option" :class="{ active: selectedProjectDir === dir }"
-                @click="selectedProjectDir = dir"
-              >
-                <span class="project-name">{{ dirName(dir) }}</span>
-                <span class="project-path">{{ dir }}</span>
-              </div>
-              <div v-if="projectDirs.length === 0" class="empty-inline">No projects yet. Start a session first.</div>
-            </div>
-          </div>
-          <input v-model="newChangeName" placeholder="Change name" class="change-input" @keyup.enter="submitNewChange" />
-          <div class="new-change-actions">
-            <button @click="showNewChange = false" class="cancel-btn">Cancel</button>
-            <button class="start-btn" :disabled="!newChangeName.trim() || !selectedProjectDir" @click="submitNewChange">Create</button>
-          </div>
-        </div>
-
         <!-- Session list -->
         <div v-if="sessions.length" class="session-list">
           <div
@@ -173,6 +116,7 @@ onMounted(async () => {
         <p v-else class="empty-state">No sessions yet</p>
       </div>
     </div>
+    <NewChangeDialog v-if="showNewChange" @close="showNewChange = false" />
   </div>
 </template>
 <!-- SESSION_LIST_STYLE -->
@@ -374,126 +318,25 @@ onMounted(async () => {
   background: rgba(192, 132, 252, 0.12);
 }
 
-.new-change-trigger {
-  margin-bottom: 24px;
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .new-change-btn {
-  padding: 8px 16px;
-  background: var(--color-surface-1);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text-primary);
+  padding: 5px 12px;
+  background: var(--color-accent);
+  color: var(--color-surface-0);
+  border: none;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  transition: opacity 0.15s;
 }
 
 .new-change-btn:hover {
-  background: var(--color-surface-hover);
-  border-color: var(--color-text-muted);
-}
-
-.new-change-form {
-  margin-bottom: 24px;
-  padding: 16px;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 8px;
-  background: var(--color-surface-1);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.new-change-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text-primary);
-}
-
-.project-select {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.project-label {
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-
-.project-options {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.project-option {
-  padding: 8px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  border: 1px solid var(--color-border-subtle);
-  transition: background 0.12s, border-color 0.12s;
-}
-
-.project-option:hover {
-  background: var(--color-surface-hover);
-}
-
-.project-option.active {
-  border-color: var(--color-accent);
-  background: rgba(59, 130, 246, 0.08);
-}
-
-.project-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text-primary);
-}
-
-.project-path {
-  display: block;
-  font-size: 11px;
-  color: var(--color-text-muted);
-  margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.change-input {
-  padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-surface-0);
-  color: var(--color-text-primary);
-  font-size: 13px;
-}
-
-.new-change-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.cancel-btn {
-  padding: 6px 12px;
-  background: none;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
-  font-size: 13px;
-  color: var(--color-text-muted);
-  cursor: pointer;
-}
-
-.cancel-btn:hover {
-  color: var(--color-text-primary);
-}
-
-.empty-inline {
-  font-size: 12px;
-  color: var(--color-text-muted);
-  padding: 8px;
+  opacity: 0.85;
 }
 </style>

@@ -2,7 +2,8 @@
 import { ref, computed, onMounted } from "vue";
 import { useSession } from "../composables/useSession";
 import { listSpecs, updateSpec, deleteSpec, type Spec } from "../api/specs";
-import { listChanges, createChange, type Change } from "../api/changes";
+import { listChanges, type Change } from "../api/changes";
+import NewChangeDialog from "./NewChangeDialog.vue";
 
 const { navigateTo, sessions, fetchSessions } = useSession();
 const specs = ref<Spec[]>([]);
@@ -12,7 +13,6 @@ const selectedSpec = ref<Spec | null>(null);
 const editing = ref(false);
 const editContent = ref("");
 const creatingChange = ref(false);
-const newChangeName = ref("");
 
 // Derive unique work_dirs from sessions (non-null only)
 const workDirs = computed(() => {
@@ -71,17 +71,6 @@ async function saveEdit() {
 
 function startCreateChange() {
   creatingChange.value = true;
-  newChangeName.value = "";
-}
-
-async function submitCreateChange() {
-  if (!newChangeName.value.trim() || !selectedWorkDir.value) return;
-  const res = await createChange(newChangeName.value.trim(), selectedWorkDir.value);
-  if (res.ok && res.data) {
-    navigateTo("change-detail", res.data.id);
-  }
-  creatingChange.value = false;
-  newChangeName.value = "";
 }
 
 async function removeSpec(id: string) {
@@ -142,13 +131,7 @@ onMounted(fetchAll);
           </div>
 
           <template v-if="creatingChange">
-            <div class="form">
-              <input v-model="newChangeName" placeholder="Change name" class="input" @keyup.enter="submitCreateChange" />
-              <div class="form-actions">
-                <button @click="creatingChange = false">Cancel</button>
-                <button class="primary" @click="submitCreateChange">Create</button>
-              </div>
-            </div>
+            <NewChangeDialog @close="creatingChange = false" />
           </template>
 
           <div v-else-if="workDirChanges.length" class="changes-list">

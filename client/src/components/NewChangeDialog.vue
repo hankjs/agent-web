@@ -1,0 +1,140 @@
+<script setup lang="ts">
+import { ref, computed } from "vue";
+import { useSession } from "../composables/useSession";
+
+const { sessions, createSession } = useSession();
+
+const emit = defineEmits<{ close: [] }>();
+
+const selectedProjectDir = ref<string | null>(null);
+
+interface ProjectEntry {
+  work_dir: string;
+  environment: "remote" | "local";
+  label: string;
+}
+
+const projects = computed<ProjectEntry[]>(() => {
+  const map = new Map<string, ProjectEntry>();
+  for (const s of sessions.value) {
+    if (s.work_dir && !map.has(s.work_dir)) {
+      map.set(s.work_dir, {
+        work_dir: s.work_dir,
+        environment: s.environment,
+        label: s.work_dir.split("/").pop() || s.work_dir,
+      });
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
+});
+
+if (projects.value.length === 1) {
+  selectedProjectDir.value = projects.value[0].work_dir;
+}
+
+function getEnvironment(dir: string): "remote" | "local" {
+  return projects.value.find(p => p.work_dir === dir)?.environment || "remote";
+}
+
+async function submit() {
+  if (!selectedProjectDir.value) return;
+  const env = getEnvironment(selectedProjectDir.value);
+  await createSession(selectedProjectDir.value, env, "explore");
+  emit("close");
+}
+</script>
+
+<template>
+  <div class="modal-overlay" @click.self="emit('close')">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">New Change</span>
+        <button class="close-btn" @click="emit('close')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="project-label">Select project:</div>
+        <div class="project-options">
+          <div
+            v-for="p in projects" :key="p.work_dir"
+            class="project-option" :class="{ active: selectedProjectDir === p.work_dir }"
+            @click="selectedProjectDir = p.work_dir"
+          >
+            <div class="project-top">
+              <span class="project-name">{{ p.label }}</span>
+              <span class="env-badge" :class="p.environment">{{ p.environment === 'local' ? 'Local' : 'Remote' }}</span>
+            </div>
+            <span class="project-path">{{ p.work_dir }}</span>
+          </div>
+          <div v-if="projects.length === 0" class="empty-inline">No projects yet. Start a session first.</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button @click="emit('close')" class="cancel-btn">Cancel</button>
+        <button class="submit-btn" :disabled="!selectedProjectDir" @click="submit">Start Explore</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-content {
+  background: var(--color-surface-0, #111);
+  border: 1px solid var(--color-border-subtle, #333);
+  border-radius: 12px;
+  width: 420px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border-subtle, #333);
+}
+.modal-title { font-size: 15px; font-weight: 600; color: var(--color-text-primary, #eee); }
+.close-btn { background: none; border: none; color: var(--color-text-muted, #888); font-size: 20px; cursor: pointer; padding: 0 4px; }
+.close-btn:hover { color: var(--color-text-primary, #eee); }
+.modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+.project-label { font-size: 12px; color: var(--color-text-muted, #888); margin-bottom: 8px; }
+.project-options { display: flex; flex-direction: column; gap: 6px; }
+.project-option {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid var(--color-border-subtle, #333);
+  transition: background 0.12s, border-color 0.12s;
+}
+.project-option:hover { background: var(--color-surface-hover, #1a1a1a); }
+.project-option.active { border-color: var(--color-accent, #3b82f6); background: rgba(59, 130, 246, 0.08); }
+.project-top { display: flex; align-items: center; gap: 8px; }
+.project-name { font-size: 13px; font-weight: 500; color: var(--color-text-primary, #eee); }
+.env-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; text-transform: uppercase; }
+.env-badge.local { color: var(--color-env-local, #4ade80); background: var(--color-env-local-bg, rgba(74, 222, 128, 0.12)); }
+.env-badge.remote { color: var(--color-env-remote, #60a5fa); background: var(--color-env-remote-bg, rgba(96, 165, 250, 0.12)); }
+.project-path { display: block; font-size: 11px; color: var(--color-text-muted, #888); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 12px 20px;
+  border-top: 1px solid var(--color-border-subtle, #333);
+}
+.cancel-btn { padding: 7px 14px; background: none; border: 1px solid var(--color-border-subtle, #333); border-radius: 6px; font-size: 13px; color: var(--color-text-muted, #888); cursor: pointer; }
+.cancel-btn:hover { color: var(--color-text-primary, #eee); }
+.submit-btn { padding: 7px 16px; background: var(--color-accent, #3b82f6); color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.empty-inline { font-size: 12px; color: var(--color-text-muted, #888); padding: 12px; text-align: center; }
+</style>
