@@ -6,7 +6,7 @@ const { sessions, createSession } = useSession();
 
 const emit = defineEmits<{ close: [] }>();
 
-const selectedProjectDir = ref<string | null>(null);
+const selectedKey = ref<string | null>(null);
 
 interface ProjectEntry {
   work_dir: string;
@@ -17,8 +17,9 @@ interface ProjectEntry {
 const projects = computed<ProjectEntry[]>(() => {
   const map = new Map<string, ProjectEntry>();
   for (const s of sessions.value) {
-    if (s.work_dir && !map.has(s.work_dir)) {
-      map.set(s.work_dir, {
+    const key = `${s.work_dir}::${s.environment}`;
+    if (s.work_dir && !map.has(key)) {
+      map.set(key, {
         work_dir: s.work_dir,
         environment: s.environment,
         label: s.work_dir.split("/").pop() || s.work_dir,
@@ -29,17 +30,18 @@ const projects = computed<ProjectEntry[]>(() => {
 });
 
 if (projects.value.length === 1) {
-  selectedProjectDir.value = projects.value[0].work_dir;
+  selectedKey.value = `${projects.value[0].work_dir}::${projects.value[0].environment}`;
 }
 
-function getEnvironment(dir: string): "remote" | "local" {
-  return projects.value.find(p => p.work_dir === dir)?.environment || "remote";
+function getSelected(): ProjectEntry | undefined {
+  if (!selectedKey.value) return undefined;
+  return projects.value.find(p => `${p.work_dir}::${p.environment}` === selectedKey.value);
 }
 
 async function submit() {
-  if (!selectedProjectDir.value) return;
-  const env = getEnvironment(selectedProjectDir.value);
-  await createSession(selectedProjectDir.value, env, "explore");
+  const sel = getSelected();
+  if (!sel) return;
+  await createSession(sel.work_dir, sel.environment, "explore");
   emit("close");
 }
 </script>
@@ -55,9 +57,9 @@ async function submit() {
         <div class="project-label">选择项目：</div>
         <div class="project-options">
           <div
-            v-for="p in projects" :key="p.work_dir"
-            class="project-option" :class="{ active: selectedProjectDir === p.work_dir }"
-            @click="selectedProjectDir = p.work_dir"
+            v-for="p in projects" :key="`${p.work_dir}::${p.environment}`"
+            class="project-option" :class="{ active: selectedKey === `${p.work_dir}::${p.environment}` }"
+            @click="selectedKey = `${p.work_dir}::${p.environment}`"
           >
             <div class="project-top">
               <span class="project-name">{{ p.label }}</span>
@@ -70,7 +72,7 @@ async function submit() {
       </div>
       <div class="modal-footer">
         <button @click="emit('close')" class="cancel-btn">取消</button>
-        <button class="submit-btn" :disabled="!selectedProjectDir" @click="submit">开始探索</button>
+        <button class="submit-btn" :disabled="!selectedKey" @click="submit">开始探索</button>
       </div>
     </div>
   </div>
