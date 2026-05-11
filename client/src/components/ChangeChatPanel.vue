@@ -72,13 +72,13 @@ function handleReview(change: Change) {
 }
 
 function handleView(change: Change) {
-  navigateTo("change-detail", change.id);
+  navigateTo("change-detail", { changeId: change.id });
 }
 
 function getActions(change: Change) {
-  if (!change.explore_summary) return ["Explore", "View"];
-  if (change.status === "draft") return ["Generate", "Review", "Apply", "View"];
-  return ["Apply", "View"];
+  if (!change.explore_summary) return ["探索", "查看"];
+  if (change.status === "draft") return ["生成", "审查", "应用", "查看"];
+  return ["应用", "查看"];
 }
 
 onMounted(fetchChanges);
@@ -89,15 +89,15 @@ watch(() => props.refreshKey, fetchChanges);
 <template>
   <div class="change-panel">
     <div class="panel-header">
-      <span class="panel-title">Changes</span>
+      <span class="panel-title">需求</span>
       <button class="panel-close" @click="emit('close')">&times;</button>
     </div>
 
     <div class="panel-body">
-      <div v-if="loading" class="panel-loading">Loading...</div>
+      <div v-if="loading" class="panel-loading">加载中...</div>
 
       <div v-else-if="changes.length === 0 && !showNewForm" class="panel-empty">
-        No changes for this project.
+        该项目暂无需求。
       </div>
 
       <div v-for="change in changes" :key="change.id" class="change-item">
@@ -110,7 +110,7 @@ watch(() => props.refreshKey, fetchChanges);
             v-for="action in getActions(change)"
             :key="action"
             class="action-btn"
-            @click="action === 'Explore' ? handleExplore(change) : action === 'Generate' ? handleGenerate(change) : action === 'Apply' ? handleApply(change) : action === 'Confirm' ? handleConfirm(change) : action === 'Review' ? handleReview(change) : handleView(change)"
+            @click="action === '探索' ? handleExplore(change) : action === '生成' ? handleGenerate(change) : action === '应用' ? handleApply(change) : action === '确认' ? handleConfirm(change) : action === '审查' ? handleReview(change) : handleView(change)"
           >{{ action }}</button>
         </div>
       </div>
@@ -119,18 +119,18 @@ watch(() => props.refreshKey, fetchChanges);
       <div v-if="showNewForm" class="new-change-form">
         <input
           v-model="newChangeName"
-          placeholder="Change name..."
+          placeholder="需求名称..."
           class="new-change-input"
           @keydown.enter="handleCreate"
           @keydown.escape="showNewForm = false"
         />
-        <button class="action-btn" @click="handleCreate">Create</button>
-        <button class="action-btn cancel" @click="showNewForm = false">Cancel</button>
+        <button class="action-btn" @click="handleCreate">创建</button>
+        <button class="action-btn cancel" @click="showNewForm = false">取消</button>
       </div>
     </div>
 
     <div class="panel-footer">
-      <button class="new-change-btn" @click="showNewForm = true" v-if="!showNewForm">+ New Change</button>
+      <button class="new-change-btn" @click="showNewForm = true" v-if="!showNewForm">+ 新建需求</button>
     </div>
   </div>
 </template>

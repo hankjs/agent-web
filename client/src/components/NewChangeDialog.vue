@@ -48,11 +48,11 @@ async function submit() {
   <div class="modal-overlay" @click.self="emit('close')">
     <div class="modal-content">
       <div class="modal-header">
-        <span class="modal-title">New Change</span>
+        <span class="modal-title">新建需求</span>
         <button class="close-btn" @click="emit('close')">&times;</button>
       </div>
       <div class="modal-body">
-        <div class="project-label">Select project:</div>
+        <div class="project-label">选择项目：</div>
         <div class="project-options">
           <div
             v-for="p in projects" :key="p.work_dir"
@@ -61,16 +61,16 @@ async function submit() {
           >
             <div class="project-top">
               <span class="project-name">{{ p.label }}</span>
-              <span class="env-badge" :class="p.environment">{{ p.environment === 'local' ? 'Local' : 'Remote' }}</span>
+              <span class="env-badge" :class="p.environment">{{ p.environment === 'local' ? '本地' : '远程' }}</span>
             </div>
             <span class="project-path">{{ p.work_dir }}</span>
           </div>
-          <div v-if="projects.length === 0" class="empty-inline">No projects yet. Start a session first.</div>
+          <div v-if="projects.length === 0" class="empty-inline">暂无项目，请先创建会话。</div>
         </div>
       </div>
       <div class="modal-footer">
-        <button @click="emit('close')" class="cancel-btn">Cancel</button>
-        <button class="submit-btn" :disabled="!selectedProjectDir" @click="submit">Start Explore</button>
+        <button @click="emit('close')" class="cancel-btn">取消</button>
+        <button class="submit-btn" :disabled="!selectedProjectDir" @click="submit">开始探索</button>
       </div>
     </div>
   </div>

@@ -6,28 +6,20 @@ import { useSession, authFetch, apiRequest } from "../composables/useSession";
 import { API_BASE } from "../config";
 import { useMessageTree } from "../composables/useMessageTree";
 import { useMessage } from "../composables/useMessage";
-import FolderPicker from "./FolderPicker.vue";
-import ChangeChatPanel from "./ChangeChatPanel.vue";
-import ArtifactReview from "./ArtifactReview.vue";
+import FolderPicker from "../components/FolderPicker.vue";
+import ChangeChatPanel from "../components/ChangeChatPanel.vue";
+import ArtifactReview from "../components/ArtifactReview.vue";
+import ConversationOutline from "../components/ConversationOutline.vue";
+import SpecPanel from "../components/SpecPanel.vue";
+import LocalAgentSettings from "../components/LocalAgentSettings.vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 const props = defineProps<{
   sessionId: string;
-  workDir?: string;
-  title?: string;
-  environment?: "remote" | "local";
-  sessionType?: "chat" | "explore";
-  showOutlineToggle?: boolean;
 }>();
 
-const emit = defineEmits<{
-  back: [];
-  toggleOutline: [];
-  openSettings: [];
-}>();
-
-const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir, selectSession, sessions } = useSession();
+const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir, selectSession, sessions, currentSession, goBack } = useSession();
 const { fetchTree, switchBranch, setActiveLeafId, activeLeafId, getSiblings, findLeafFromNode, hasBranching, treeNodes, scrollTargetId, clearScrollTarget } = useMessageTree();
 const { warning: showWarning } = useMessage();
 
@@ -36,6 +28,12 @@ const editTitle = ref("");
 const titleInputRef = ref<HTMLInputElement | null>(null);
 const isEditingWorkDir = ref(false);
 const editWorkDir = ref("");
+const showSettings = ref(false);
+const outlineVisible = ref(false);
+const sessionTitle = computed(() => currentSession.value?.title || "");
+const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
+
+function toggleOutline() { outlineVisible.value = !outlineVisible.value; }
 
 interface ToolCall {
   id: string;
@@ -160,7 +158,7 @@ const HEARTBEAT_TIMEOUT = 20000;
 let currentSessionStreaming = false; // tracks if we're in an active SSE session
 
 // Local ACP agent state
-const sessionEnvironment = computed(() => props.environment || "remote");
+const sessionEnvironment = computed(() => currentSession.value?.environment || "remote");
 const configuredAgents = ref<Array<{ name: string; agent_type: string; binary_path: string }>>([]);
 const serverProviders = ref<Array<{ name: string; type: string; default_model: string }>>([]);
 
@@ -307,7 +305,7 @@ function groupSummary(tools: ToolCall[]): string {
 }
 
 const displayDir = computed(() => {
-  return props.workDir || "";
+  return currentSession.value?.work_dir || "";
 });
 
 function toggleToolCall(tc: ToolCall) {
@@ -507,7 +505,7 @@ async function handleDisconnect() {
   if (!currentSessionStreaming) return;
 
   if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    blocks.value.push({ kind: "error", content: "Connection lost. Reconnection failed after multiple attempts." });
+    blocks.value.push({ kind: "error", content: "连接断开，多次重连失败。" });
     isStreaming.value = false;
     currentSessionStreaming = false;
     reconnectAttempts = 0;
@@ -640,7 +638,7 @@ function autoResize() {
 }
 
 function startEditTitle() {
-  editTitle.value = props.title || "";
+  editTitle.value = currentSession.value?.title || "";
   isEditingTitle.value = true;
   nextTick(() => titleInputRef.value?.focus());
 }
@@ -652,13 +650,13 @@ function cancelEditTitle() {
 async function confirmEditTitle() {
   const newTitle = editTitle.value.trim();
   isEditingTitle.value = false;
-  if (newTitle !== (props.title || "")) {
+  if (newTitle !== (currentSession.value?.title || "")) {
     await updateSessionTitle(props.sessionId, newTitle);
   }
 }
 
 function startEditWorkDir() {
-  editWorkDir.value = props.workDir || "";
+  editWorkDir.value = currentSession.value?.work_dir || "";
   isEditingWorkDir.value = true;
 }
 
@@ -669,7 +667,7 @@ function cancelEditWorkDir() {
 async function confirmEditWorkDir() {
   const newDir = editWorkDir.value.trim() || null;
   isEditingWorkDir.value = false;
-  if (newDir !== (props.workDir || null)) {
+  if (newDir !== (currentSession.value?.work_dir || null)) {
     await updateSessionWorkDir(props.sessionId, newDir);
   }
 }
@@ -1055,7 +1053,7 @@ function handleAcpEvent(event: any) {
 async function sendLocal() {
   if (!input.value.trim() || isStreaming.value) return;
   if (!localAgentName.value) {
-    blocks.value.push({ kind: "error", content: "Local agent not configured. Please set up an agent in Settings." });
+    blocks.value.push({ kind: "error", content: "本地 Agent 未配置，请在设置中配置 Agent。" });
     return;
   }
 
@@ -1093,7 +1091,7 @@ async function sendLocal() {
   try {
     // Start ACP session if not already running
     if (localAgentStatus.value !== "running") {
-      const workDir = props.workDir || ".";
+      const workDir = currentSession.value?.work_dir || ".";
       await invoke("acp_new_session", {
         agentName: localAgentName.value,
         workDir,
@@ -1340,10 +1338,12 @@ function scrollToMessageId(id: string | null) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <LocalAgentSettings v-if="showSettings" @close="showSettings = false" />
+  <div v-else class="flex h-full overflow-hidden">
+    <div class="flex flex-col flex-1 h-full overflow-hidden">
     <div class="context-bar">
       <div class="context-bar-left">
-        <button class="back-btn" @click="emit('back')" aria-label="Back to sessions">&larr;</button>
+        <button class="back-btn" @click="goBack()" aria-label="Back to sessions">&larr;</button>
         <template v-if="isEditingTitle">
           <input
             ref="titleInputRef"
@@ -1355,7 +1355,7 @@ function scrollToMessageId(id: string | null) {
           <button class="title-action-btn confirm" @click="confirmEditTitle" aria-label="Confirm title">&#10003;</button>
           <button class="title-action-btn cancel" @click="cancelEditTitle" aria-label="Cancel edit">&#10005;</button>
         </template>
-        <span v-else class="context-title" @click="startEditTitle">{{ title || 'Untitled' }}</span>
+        <span v-else class="context-title" @click="startEditTitle">{{ sessionTitle || 'Untitled' }}</span>
         <span class="env-tag" :class="sessionEnvironment">{{ sessionEnvironment === 'local' ? 'Local' : 'Remote' }}</span>
         <template v-if="isEditingWorkDir">
           <div class="workdir-edit">
@@ -1370,7 +1370,7 @@ function scrollToMessageId(id: string | null) {
           v-if="sessionEnvironment === 'local'"
           class="agent-status"
           :class="[localAgentStatus, { clickable: localAgentStatus === 'not_configured' }]"
-          @click="localAgentStatus === 'not_configured' && emit('openSettings')"
+          @click="localAgentStatus === 'not_configured' && (showSettings = true)"
         >
           {{ localAgentStatus === 'running' ? 'Running' : localAgentStatus === 'stopped' ? 'Stopped' : 'Not Configured' }}
         </span>
@@ -1378,16 +1378,16 @@ function scrollToMessageId(id: string | null) {
       </div>
       <div class="context-bar-right">
         <button
-          v-if="workDir"
+          v-if="sessionWorkDir"
           class="changes-toggle-btn"
           :class="{ active: changesPanelVisible }"
           @click="changesPanelVisible = !changesPanelVisible"
           aria-label="Toggle changes panel"
         >Changes</button>
         <button
-          v-if="showOutlineToggle"
+          v-if="treeNodes.length > 0"
           class="outline-toggle-btn"
-          @click="emit('toggleOutline')"
+          @click="toggleOutline()"
           aria-label="Toggle outline"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1398,7 +1398,7 @@ function scrollToMessageId(id: string | null) {
         <button
           v-if="sessionEnvironment === 'local'"
           class="settings-icon-btn"
-          @click="emit('openSettings')"
+          @click="showSettings = true"
           aria-label="Local Agent Settings"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1409,14 +1409,14 @@ function scrollToMessageId(id: string | null) {
     </div>
 
     <!-- Explore mode banner -->
-    <div v-if="props.sessionType === 'explore'" class="explore-banner">
+    <div v-if="currentSession?.session_type === 'explore'" class="explore-banner">
       Explore Mode — Describe what you want to build. The AI will ask questions and create a Change when ready.
     </div>
 
     <!-- Changes Panel Overlay -->
     <ChangeChatPanel
-      v-if="changesPanelVisible && workDir"
-      :work-dir="workDir"
+      v-if="changesPanelVisible && sessionWorkDir"
+      :work-dir="sessionWorkDir"
       :session-id="props.sessionId"
       :refresh-key="changesPanelRefreshKey"
       @close="changesPanelVisible = false"
@@ -1493,7 +1493,7 @@ function scrollToMessageId(id: string | null) {
           </div>
           <div v-else-if="item.kind === 'error'" class="error-block">
             <span class="error-message">{{ item.content }}</span>
-            <button v-if="item.content.includes('not configured')" class="retry-btn" @click="emit('openSettings')">Go to Settings</button>
+            <button v-if="item.content.includes('not configured')" class="retry-btn" @click="showSettings = true">Go to Settings</button>
             <button v-else class="retry-btn" @click="resend" :disabled="isStreaming">Retry</button>
           </div>
           <div v-else-if="item.kind === 'tool'" class="tool-block">
@@ -1552,14 +1552,14 @@ function scrollToMessageId(id: string | null) {
             <div v-if="!item.answered" class="ask-user-freetext">
               <input
                 type="text"
-                placeholder="Or type your own answer..."
+                placeholder="或输入自定义回答..."
                 class="ask-user-input"
                 :disabled="isStreaming"
                 @keydown.enter="($event) => { const el = $event.target as HTMLInputElement; if (el.value.trim()) { answerAskUser(el.value.trim(), idx); el.value = ''; } }"
               />
             </div>
             <div v-if="item.answered" class="ask-user-answered">
-              Answered: {{ item.selected }}
+              已回答: {{ item.selected }}
             </div>
           </div>
         </template>
@@ -1588,7 +1588,7 @@ function scrollToMessageId(id: string | null) {
             @input="autoResize"
             @paste="handlePaste"
             :disabled="!isConnected"
-            :placeholder="!isConnected ? 'Offline' : ''"
+            :placeholder="!isConnected ? '离线' : ''"
             class="input-field"
             rows="1"
             aria-label="Message input"
@@ -1654,6 +1654,13 @@ function scrollToMessageId(id: string | null) {
         </div>
       </div>
     </div>
+    </div>
+    <SpecPanel />
+    <ConversationOutline
+      v-if="(hasBranching || outlineVisible) && treeNodes.length > 0"
+      :session-id="props.sessionId"
+      :key="'outline-' + props.sessionId"
+    />
   </div>
 </template>
 

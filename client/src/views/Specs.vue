@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import { useSession } from "../composables/useSession";
 import { listSpecs, updateSpec, deleteSpec, type Spec } from "../api/specs";
 import { listChanges, type Change } from "../api/changes";
-import NewChangeDialog from "./NewChangeDialog.vue";
+import NewChangeDialog from "../components/NewChangeDialog.vue";
 
 const { navigateTo, sessions, fetchSessions } = useSession();
 const specs = ref<Spec[]>([]);
@@ -80,7 +80,7 @@ async function removeSpec(id: string) {
 }
 
 function openChange(id: string) {
-  navigateTo("change-detail", id);
+  navigateTo("change-detail", { changeId: id });
 }
 
 function dirName(path: string): string {
@@ -90,11 +90,11 @@ function dirName(path: string): string {
 function relativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins}分钟前`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+  if (hrs < 24) return `${hrs}小时前`;
+  return `${Math.floor(hrs / 24)}天前`;
 }
 
 onMounted(fetchAll);
@@ -103,8 +103,8 @@ onMounted(fetchAll);
 <template>
   <div class="specs-page">
     <div class="specs-header">
-      <button class="back-btn" @click="navigateTo('list')">Back</button>
-      <h2>Projects</h2>
+      <button class="back-btn" @click="navigateTo('sessions')">返回</button>
+      <h2>项目</h2>
     </div>
 
     <div class="specs-layout">
@@ -118,7 +118,7 @@ onMounted(fetchAll);
           <div class="workdir-name">{{ dirName(dir) }}</div>
           <div class="workdir-path">{{ dir }}</div>
         </div>
-        <div v-if="workDirs.length === 0" class="empty">No projects yet</div>
+        <div v-if="workDirs.length === 0" class="empty">暂无项目</div>
       </div>
 
       <!-- Right: specs + changes for selected work_dir -->
@@ -126,8 +126,8 @@ onMounted(fetchAll);
         <!-- Changes section -->
         <div class="section">
           <div class="section-header">
-            <h3>Changes</h3>
-            <button class="create-btn" @click="startCreateChange">New Change</button>
+            <h3>需求</h3>
+            <button class="create-btn" @click="startCreateChange">新建需求</button>
           </div>
 
           <template v-if="creatingChange">
@@ -145,13 +145,13 @@ onMounted(fetchAll);
               <span class="time">{{ relativeTime(c.updated_at) }}</span>
             </div>
           </div>
-          <div v-else class="empty-inline">No changes for this project</div>
+          <div v-else class="empty-inline">该项目暂无需求</div>
         </div>
 
         <!-- Specs section -->
         <div class="section">
           <div class="section-header">
-            <h3>Specs</h3>
+            <h3>规格</h3>
           </div>
 
           <div v-if="specs.length" class="specs-list-inner">
@@ -164,22 +164,22 @@ onMounted(fetchAll);
               <div class="spec-meta">{{ spec.title }} · v{{ spec.version }} · {{ relativeTime(spec.updated_at) }}</div>
             </div>
           </div>
-          <div v-else class="empty-inline">No specs yet</div>
+          <div v-else class="empty-inline">暂无规格</div>
 
           <!-- Spec detail -->
           <template v-if="selectedSpec">
             <div class="detail-header">
               <h4>{{ selectedSpec.capability }}</h4>
               <div class="detail-actions">
-                <button @click="startEdit" v-if="!editing">Edit</button>
-                <button @click="removeSpec(selectedSpec.id)" class="danger">Delete</button>
+                <button @click="startEdit" v-if="!editing">编辑</button>
+                <button @click="removeSpec(selectedSpec.id)" class="danger">删除</button>
               </div>
             </div>
             <template v-if="editing">
               <textarea v-model="editContent" class="textarea" rows="16"></textarea>
               <div class="form-actions">
-                <button @click="editing = false">Cancel</button>
-                <button class="primary" @click="saveEdit">Save</button>
+                <button @click="editing = false">取消</button>
+                <button class="primary" @click="saveEdit">保存</button>
               </div>
             </template>
             <template v-else>
@@ -188,7 +188,7 @@ onMounted(fetchAll);
           </template>
         </div>
       </div>
-      <div v-else class="workdir-detail empty">Select a project to view</div>
+      <div v-else class="workdir-detail empty">请选择一个项目查看</div>
     </div>
   </div>
 </template>

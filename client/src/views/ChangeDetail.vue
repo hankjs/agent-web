@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { useRoute } from "vue-router";
 import { useSession } from "../composables/useSession";
 import {
   getChange, listArtifacts, listTasks, updateArtifact, createArtifact,
@@ -7,7 +8,9 @@ import {
   type ChangeDetail as ChangeDetailType, type ChangeArtifact, type TaskGroup,
 } from "../api/changes";
 
-const { currentChangeId, navigateTo } = useSession();
+const route = useRoute();
+const changeId = route.params.changeId as string;
+const { navigateTo } = useSession();
 const change = ref<ChangeDetailType | null>(null);
 const artifacts = ref<ChangeArtifact[]>([]);
 const taskGroups = ref<TaskGroup[]>([]);
@@ -17,11 +20,10 @@ const editContent = ref("");
 const editingArtifactId = ref<string | null>(null);
 
 async function fetchData() {
-  if (!currentChangeId.value) return;
   const [changeRes, artifactsRes, tasksRes] = await Promise.all([
-    getChange(currentChangeId.value),
-    listArtifacts(currentChangeId.value),
-    listTasks(currentChangeId.value),
+    getChange(changeId),
+    listArtifacts(changeId),
+    listTasks(changeId),
   ]);
   if (changeRes.ok && changeRes.data) change.value = changeRes.data;
   if (artifactsRes.ok && artifactsRes.data) artifacts.value = artifactsRes.data;
@@ -40,26 +42,26 @@ function startEdit(type: string) {
 }
 
 async function saveEdit(type: string) {
-  if (!currentChangeId.value) return;
+  if (!changeId) return;
   if (editingArtifactId.value) {
-    await updateArtifact(currentChangeId.value, editingArtifactId.value, { content: editContent.value });
+    await updateArtifact(changeId, editingArtifactId.value, { content: editContent.value });
   } else {
-    await createArtifact(currentChangeId.value, { type, content: editContent.value });
+    await createArtifact(changeId, { type, content: editContent.value });
   }
   editing.value = false;
   await fetchData();
 }
 
 async function toggleTask(taskId: string, currentStatus: string) {
-  if (!currentChangeId.value) return;
+  if (!changeId) return;
   const newStatus = currentStatus === "done" ? "pending" : "done";
-  await updateTask(currentChangeId.value, taskId, { status: newStatus });
+  await updateTask(changeId, taskId, { status: newStatus });
   await fetchData();
 }
 
 async function doArchive() {
-  if (!currentChangeId.value) return;
-  const res = await archiveChange(currentChangeId.value);
+  if (!changeId) return;
+  const res = await archiveChange(changeId);
   if (res.ok) {
     navigateTo("changes");
   }

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useSession } from "../composables/useSession";
-import FolderPicker from "./FolderPicker.vue";
-import NewChangeDialog from "./NewChangeDialog.vue";
+import FolderPicker from "../components/FolderPicker.vue";
+import NewChangeDialog from "../components/NewChangeDialog.vue";
 
-const { sessions, fetchSessions, createSession, selectSession, deleteSession } = useSession();
+const { sessions, fetchSessions, createSession, selectSession, deleteSession, navigateTo, createExploreSession } = useSession();
 
 type EnvTab = "remote" | "local";
 const activeTab = ref<EnvTab>("remote");
@@ -34,18 +34,18 @@ async function pickLocalDir() {
 function relativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins}分钟前`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 24) return `${hrs}小时前`;
   const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
+  return `${days}天前`;
 }
 
 function displayTitle(title: string, workDir: string | null): string {
   if (title) return title;
   if (workDir) return workDir.split("/").pop() || workDir;
-  return "Untitled";
+  return "未命名";
 }
 
 onMounted(async () => {
@@ -66,8 +66,8 @@ onMounted(async () => {
     <div class="session-header">
       <span class="header-title">Hank</span>
       <div class="header-right">
-        <button class="new-change-btn" @click="showNewChange = true">New Change</button>
-        <slot name="header-actions" />
+        <button class="new-change-btn" @click="showNewChange = true">新建需求</button>
+        <button class="nav-btn" @click="navigateTo('specs')">规格</button>
       </div>
     </div>
     <div class="flex-1 overflow-y-auto">
@@ -75,17 +75,17 @@ onMounted(async () => {
         <!-- New session -->
         <div class="new-session">
           <div class="new-session-tabs">
-            <button class="tab-btn" :class="{ active: activeTab === 'remote' }" @click="activeTab = 'remote'">Server</button>
+            <button class="tab-btn" :class="{ active: activeTab === 'remote' }" @click="activeTab = 'remote'">服务器</button>
             <button v-if="isTauri" class="tab-btn" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本机</button>
           </div>
           <div class="new-session-picker">
             <FolderPicker v-if="activeTab === 'remote'" v-model="workDir" />
             <div v-else class="local-picker">
               <button class="local-pick-btn" @click="pickLocalDir">
-                {{ localWorkDir || 'Select local directory...' }}
+                {{ localWorkDir || '选择本地目录...' }}
               </button>
             </div>
-            <button class="start-btn" @click="start">Start</button>
+            <button class="start-btn" @click="start">开始</button>
           </div>
         </div>
         <!-- Session list -->
@@ -101,19 +101,19 @@ onMounted(async () => {
               <span v-if="s.work_dir" class="session-dir">{{ s.work_dir }}</span>
             </div>
             <div class="session-meta">
-              <span v-if="s.session_type === 'explore'" class="env-badge explore">Explore</span>
-              <span class="env-badge" :class="s.environment === 'local' ? 'local' : 'remote'">{{ s.environment === 'local' ? 'Local' : 'Remote' }}</span>
+              <span v-if="s.session_type === 'explore'" class="env-badge explore">探索</span>
+              <span class="env-badge" :class="s.environment === 'local' ? 'local' : 'remote'">{{ s.environment === 'local' ? '本地' : '远程' }}</span>
               <span class="session-time">{{ relativeTime(s.updated_at) }}</span>
               <button
                 class="session-delete"
                 @click.stop="deleteSession(s.id)"
-                aria-label="Delete session"
+                aria-label="删除会话"
               >&times;</button>
             </div>
           </div>
         </div>
 
-        <p v-else class="empty-state">No sessions yet</p>
+        <p v-else class="empty-state">暂无会话</p>
       </div>
     </div>
     <NewChangeDialog v-if="showNewChange" @close="showNewChange = false" />
@@ -338,5 +338,18 @@ onMounted(async () => {
 
 .new-change-btn:hover {
   opacity: 0.85;
+}
+.nav-btn {
+  background: none;
+  border: 1px solid var(--color-border, #333);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 5px 12px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.nav-btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-1);
 }
 </style>

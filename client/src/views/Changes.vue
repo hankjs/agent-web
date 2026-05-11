@@ -23,24 +23,24 @@ async function submitCreate() {
   if (!newName.value.trim()) return;
   const res = await createChange(newName.value.trim());
   if (res.ok && res.data) {
-    navigateTo("change-detail", res.data.id);
+    navigateTo("change-detail", { changeId: res.data.id });
   }
   showCreate.value = false;
   newName.value = "";
 }
 
 function openDetail(id: string) {
-  navigateTo("change-detail", id);
+  navigateTo("change-detail", { changeId: id });
 }
 
 function relativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins}分钟前`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
+  if (hrs < 24) return `${hrs}小时前`;
+  return `${Math.floor(hrs / 24)}天前`;
 }
 
 const statusTabs = ["all", "draft", "in_progress", "completed"];
@@ -51,9 +51,9 @@ onMounted(fetchChanges);
 <template>
   <div class="changes-page">
     <div class="changes-header">
-      <button class="back-btn" @click="navigateTo('list')">Back</button>
-      <h2>Changes</h2>
-      <button class="create-btn" @click="showCreate = true">New Change</button>
+      <button class="back-btn" @click="navigateTo('sessions')">返回</button>
+      <h2>需求</h2>
+      <button class="create-btn" @click="showCreate = true">新建需求</button>
     </div>
 
     <div class="status-tabs">
@@ -61,13 +61,13 @@ onMounted(fetchChanges);
         v-for="tab in statusTabs" :key="tab"
         :class="{ active: statusFilter === tab }"
         @click="statusFilter = tab"
-      >{{ tab === 'all' ? 'All' : tab.replace('_', ' ') }}</button>
+      >{{ tab === 'all' ? '全部' : tab === 'draft' ? '草稿' : tab === 'in_progress' ? '进行中' : '已完成' }}</button>
     </div>
 
     <div v-if="showCreate" class="create-form">
-      <input v-model="newName" placeholder="Change name" class="input" @keyup.enter="submitCreate" />
-      <button class="primary" @click="submitCreate">Create</button>
-      <button @click="showCreate = false">Cancel</button>
+      <input v-model="newName" placeholder="需求名称" class="input" @keyup.enter="submitCreate" />
+      <button class="primary" @click="submitCreate">创建</button>
+      <button @click="showCreate = false">取消</button>
     </div>
 
     <div class="changes-grid">
@@ -82,7 +82,7 @@ onMounted(fetchChanges);
           <span class="time">{{ relativeTime(change.updated_at) }}</span>
         </div>
       </div>
-      <div v-if="filteredChanges.length === 0" class="empty">No changes found</div>
+      <div v-if="filteredChanges.length === 0" class="empty">暂无需求</div>
     </div>
   </div>
 </template>

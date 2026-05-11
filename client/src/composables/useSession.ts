@@ -1,4 +1,5 @@
 import { ref, readonly } from "vue";
+import { useRouter } from "vue-router";
 import { API_BASE } from "../config";
 
 export interface Session {
@@ -14,12 +15,8 @@ export interface Session {
   updated_at: string;
 }
 
-type View = "list" | "chat" | "specs" | "changes" | "change-detail";
-
 const sessions = ref<Session[]>([]);
 const currentSession = ref<Session | null>(null);
-const view = ref<View>("list");
-const currentChangeId = ref<string | null>(null);
 const TOKEN_KEY = "hank_client_token";
 const token = ref(localStorage.getItem(TOKEN_KEY) || "");
 const isAuthenticated = ref(!!token.value);
@@ -36,28 +33,6 @@ function clearAuth() {
   localStorage.removeItem(TOKEN_KEY);
   sessions.value = [];
   currentSession.value = null;
-  view.value = "list";
-}
-
-async function login(username?: string, password?: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${API_BASE}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: username || "", password: password || "", scope: "client" }),
-  });
-  const json = await res.json().catch(() => null);
-  if (json && json.code === 0) {
-    setToken(json.data.token);
-    return { ok: true };
-  }
-  return { ok: false, error: json?.msg || "Invalid credentials" };
-}
-
-function logout() {
-  clearAuth();
-  sessions.value = [];
-  currentSession.value = null;
-  view.value = "list";
 }
 
 export async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
@@ -86,7 +61,7 @@ async function fetchSessions() {
   }
 }
 
-async function createSession(workDir?: string, environment?: "remote" | "local", sessionType?: "chat" | "explore"): Promise<Session | null> {
+async function createSession(router: ReturnType<typeof useRouter>, workDir?: string, environment?: "remote" | "local", sessionType?: "chat" | "explore"): Promise<Session | null> {
   const result = await apiRequest<Session>("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -94,47 +69,47 @@ async function createSession(workDir?: string, environment?: "remote" | "local",
   });
   if (!result.ok || !result.data) return null;
   const session = result.data;
-  if (!session.environment) {
-    session.environment = environment || "remote";
-  }
-  if (!session.session_type) {
-    session.session_type = sessionType || "chat";
-  }
+  if (!session.environment) session.environment = environment || "remote";
+  if (!session.session_type) session.session_type = sessionType || "chat";
   sessions.value.unshift(session);
   currentSession.value = session;
-  view.value = "chat";
+  router.push({ name: "chat", params: { sessionId: session.id } });
   return session;
 }
 
-async function createExploreSession(workDir?: string): Promise<Session | null> {
-  return createSession(workDir, "remote", "explore");
-}
-
-function selectSession(session: Session) {
-  currentSession.value = session;
-  view.value = "chat";
-}
-
-async function deleteSession(id: string) {
+async function deleteSession(id: string, router: ReturnType<typeof useRouter>) {
   const result = await apiRequest(`/api/sessions/${id}`, { method: "DELETE" });
   if (result.ok) {
     sessions.value = sessions.value.filter((s) => s.id !== id);
     if (currentSession.value?.id === id) {
       currentSession.value = null;
-      view.value = "list";
+      router.push({ name: "sessions" });
     }
   }
 }
 
-function goBack() {
-  currentSession.value = null;
-  view.value = "list";
-  fetchSessions();
+function selectSession(session: Session, router: ReturnType<typeof useRouter>) {
+  currentSession.value = session;
+  router.push({ name: "chat", params: { sessionId: session.id } });
 }
 
-function navigateTo(v: View, changeId?: string) {
-  view.value = v;
-  if (changeId) currentChangeId.value = changeId;
+async function login(username?: string, password?: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: username || "", password: password || "", scope: "client" }),
+  });
+  const json = await res.json().catch(() => null);
+  if (json && json.code === 0) {
+    setToken(json.data.token);
+    return { ok: true };
+  }
+  return { ok: false, error: json?.msg || "Invalid credentials" };
+}
+
+function logout(router: ReturnType<typeof useRouter>) {
+  clearAuth();
+  router.push({ name: "login" });
 }
 
 async function updateSessionTitle(id: string, title: string) {
@@ -147,9 +122,7 @@ async function updateSessionTitle(id: string, title: string) {
     const updated = result.data;
     const idx = sessions.value.findIndex((s) => s.id === id);
     if (idx !== -1) sessions.value[idx] = updated;
-    if (currentSession.value?.id === id) {
-      currentSession.value = updated;
-    }
+    if (currentSession.value?.id === id) currentSession.value = updated;
   }
 }
 
@@ -163,29 +136,27 @@ async function updateSessionWorkDir(id: string, workDir: string | null) {
     const updated = result.data;
     const idx = sessions.value.findIndex((s) => s.id === id);
     if (idx !== -1) sessions.value[idx] = updated;
-    if (currentSession.value?.id === id) {
-      currentSession.value = updated;
-    }
+    if (currentSession.value?.id === id) currentSession.value = updated;
   }
 }
 
 export function useSession() {
+  const router = useRouter();
   return {
     sessions: readonly(sessions),
     currentSession: readonly(currentSession),
-    view: readonly(view),
     token: readonly(token),
     isAuthenticated: readonly(isAuthenticated),
-    currentChangeId: readonly(currentChangeId),
     fetchSessions,
-    createSession,
-    createExploreSession,
-    selectSession,
-    deleteSession,
-    goBack,
-    navigateTo,
+    createSession: (workDir?: string, environment?: "remote" | "local", sessionType?: "chat" | "explore") =>
+      createSession(router, workDir, environment, sessionType),
+    createExploreSession: (workDir?: string) => createSession(router, workDir, "remote", "explore"),
+    selectSession: (session: Session) => selectSession(session, router),
+    deleteSession: (id: string) => deleteSession(id, router),
+    goBack: () => { currentSession.value = null; router.push({ name: "sessions" }); fetchSessions(); },
+    navigateTo: (name: string, params?: Record<string, string>) => router.push({ name, params }),
     login,
-    logout,
+    logout: () => logout(router),
     updateSessionTitle,
     updateSessionWorkDir,
   };

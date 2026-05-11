@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { useRouter } from "vue-router";
 import { useSession } from "../composables/useSession";
 
 const { login } = useSession();
+const router = useRouter();
 const username = ref("");
 const password = ref("");
 const error = ref("");
@@ -16,10 +18,12 @@ async function handleLogin() {
   try {
     const result = await login(username.value, password.value);
     if (!result.ok) {
-      error.value = result.error || "Invalid credentials";
+      error.value = result.error || "用户名或密码错误";
+    } else {
+      router.push({ name: "sessions" });
     }
   } catch {
-    error.value = "Network error";
+    error.value = "网络错误";
   } finally {
     loading.value = false;
   }
@@ -35,14 +39,14 @@ async function handleLogin() {
         <input
           v-model="username"
           type="text"
-          placeholder="Username"
+          placeholder="用户名"
           autocomplete="username"
           class="w-full bg-transparent border border-border rounded-md px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
         />
         <input
           v-model="password"
           type="password"
-          placeholder="Password"
+          placeholder="密码"
           autocomplete="current-password"
           class="w-full bg-transparent border border-border rounded-md px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
         />
@@ -50,7 +54,7 @@ async function handleLogin() {
           type="submit"
           :disabled="loading"
           class="w-full px-3.5 py-2 bg-text-primary text-surface-0 text-[13px] rounded-md hover:opacity-80 disabled:opacity-40 transition-opacity"
-        >{{ loading ? 'Signing in...' : 'Sign in' }}</button>
+        >{{ loading ? '登录中...' : '登录' }}</button>
       </form>
 
       <div v-if="error" class="mt-3 text-[12px] text-error">{{ error }}</div>
