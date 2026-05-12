@@ -35,6 +35,11 @@ const router = createRouter({
       component: () => import("../views/ChangeDetail.vue"),
       props: true,
     },
+    {
+      path: "/settings/agents",
+      name: "agent-settings",
+      component: () => import("../views/LocalAgentSettings.vue"),
+    },
   ],
 });
 

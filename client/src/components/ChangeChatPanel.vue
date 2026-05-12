@@ -10,7 +10,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  close: [];
   navigateSession: [sessionId: string];
   applyChange: [changeId: string];
   reviewChange: [changeId: string];
@@ -88,11 +87,6 @@ watch(() => props.refreshKey, fetchChanges);
 
 <template>
   <div class="change-panel">
-    <div class="panel-header">
-      <span class="panel-title">需求</span>
-      <button class="panel-close" @click="emit('close')">&times;</button>
-    </div>
-
     <div class="panel-body">
       <div v-if="loading" class="panel-loading">加载中...</div>
 
@@ -139,23 +133,11 @@ watch(() => props.refreshKey, fetchChanges);
 .change-panel {
   display: flex;
   flex-direction: column;
-  width: 300px;
-  max-height: 400px;
+  width: 100%;
+  height: 100%;
   background: var(--color-surface-1, #1a1a1a);
-  border: 1px solid var(--color-border, #333);
-  border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
 }
-.panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--color-border, #333);
-}
-.panel-title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); }
-.panel-close { background: none; border: none; color: var(--color-text-secondary); font-size: 18px; cursor: pointer; }
 .panel-body { flex: 1; overflow-y: auto; padding: 8px; }
 .panel-loading, .panel-empty { font-size: 12px; color: var(--color-text-secondary); padding: 12px; text-align: center; }
 .change-item { padding: 8px 10px; border-radius: 6px; margin-bottom: 4px; background: var(--color-surface-0, #111); }

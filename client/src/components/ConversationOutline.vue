@@ -57,9 +57,6 @@ function observeResize() {
 
 <template>
   <div class="outline-panel">
-    <div class="outline-header">
-      <span class="outline-title">Outline</span>
-    </div>
     <div class="outline-canvas-wrap">
       <canvas ref="canvasRef" class="outline-canvas"></canvas>
     </div>
@@ -71,22 +68,9 @@ function observeResize() {
   display: flex;
   flex-direction: column;
   height: 100%;
-  border-left: 1px solid var(--color-border-subtle);
   background: var(--color-surface-0, #1a1a1a);
-  width: 260px;
-  min-width: 220px;
+  width: 100%;
   overflow: hidden;
-}
-.outline-header {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-.outline-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
 }
 .outline-canvas-wrap {
   flex: 1;

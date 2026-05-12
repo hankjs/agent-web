@@ -6,13 +6,13 @@ import { useSession, authFetch, apiRequest } from "../composables/useSession";
 import { API_BASE } from "../config";
 import { useMessageTree } from "../composables/useMessageTree";
 import { useMessage } from "../composables/useMessage";
+import { useSidebarPanels } from "../composables/useSidebarPanels";
 import { listCheckpoints, rewindToCheckpoint, type Checkpoint } from "../api/checkpoints";
 import FolderPicker from "../components/FolderPicker.vue";
 import ChangeChatPanel from "../components/ChangeChatPanel.vue";
 import ArtifactReview from "../components/ArtifactReview.vue";
 import ConversationOutline from "../components/ConversationOutline.vue";
 import SpecPanel from "../components/SpecPanel.vue";
-import LocalAgentSettings from "../components/LocalAgentSettings.vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -20,7 +20,7 @@ const props = defineProps<{
   sessionId: string;
 }>();
 
-const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir, selectSession, sessions, currentSession, goBack } = useSession();
+const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir, selectSession, sessions, currentSession, goBack, navigateTo } = useSession();
 const { fetchTree, switchBranch, setActiveLeafId, activeLeafId, getSiblings, findLeafFromNode, hasBranching, treeNodes, scrollTargetId, clearScrollTarget } = useMessageTree();
 const { warning: showWarning } = useMessage();
 
@@ -29,12 +29,14 @@ const editTitle = ref("");
 const titleInputRef = ref<HTMLInputElement | null>(null);
 const isEditingWorkDir = ref(false);
 const editWorkDir = ref("");
-const showSettings = ref(false);
-const outlineVisible = ref(false);
 const sessionTitle = computed(() => currentSession.value?.title || "");
 const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
 
-function toggleOutline() { outlineVisible.value = !outlineVisible.value; }
+// Sidebar panels
+const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, registerPanel } = useSidebarPanels();
+registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
+registerPanel({ id: "specs", icon: "specs", title: "Specs", order: 2 });
+registerPanel({ id: "outline", icon: "outline", title: "Outline", order: 3 });
 
 interface ToolCall {
   id: string;
@@ -69,7 +71,6 @@ const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
-const changesPanelVisible = ref(false);
 const changesPanelRefreshKey = ref(0);
 const reviewingChangeId = ref<string | null>(null);
 const activeApplyChangeId = ref<string | null>(null);
@@ -838,7 +839,7 @@ function handleNavigateSession(sessionId: string) {
 
 async function handleApplyChange(changeId: string) {
   if (!isConnected.value || isStreaming.value) return;
-  changesPanelVisible.value = false;
+  closePanel();
   activeApplyChangeId.value = changeId;
   const content = "请根据 Change 的 specs 和 tasks 开始实施变更。";
   blocks.value.push({ kind: "user", content });
@@ -880,7 +881,7 @@ async function handleApplyChange(changeId: string) {
 
 function handleReviewChange(changeId: string) {
   reviewingChangeId.value = changeId;
-  changesPanelVisible.value = false;
+  closePanel();
 }
 
 function handleReviewConfirmed() {
@@ -1370,8 +1371,7 @@ function scrollToMessageId(id: string | null) {
 </script>
 
 <template>
-  <LocalAgentSettings v-if="showSettings" @close="showSettings = false" />
-  <div v-else class="flex h-full overflow-hidden">
+  <div class="flex h-full overflow-hidden">
     <div class="flex flex-col flex-1 h-full overflow-hidden">
     <div class="context-bar">
       <div class="context-bar-left">
@@ -1402,7 +1402,7 @@ function scrollToMessageId(id: string | null) {
           v-if="sessionEnvironment === 'local'"
           class="agent-status"
           :class="[localAgentStatus, { clickable: localAgentStatus === 'not_configured' }]"
-          @click="localAgentStatus === 'not_configured' && (showSettings = true)"
+          @click="localAgentStatus === 'not_configured' && (navigateTo('agent-settings'))"
         >
           {{ localAgentStatus === 'running' ? 'Running' : localAgentStatus === 'stopped' ? 'Stopped' : 'Not Configured' }}
         </span>
@@ -1410,27 +1410,9 @@ function scrollToMessageId(id: string | null) {
       </div>
       <div class="context-bar-right">
         <button
-          v-if="sessionWorkDir"
-          class="changes-toggle-btn"
-          :class="{ active: changesPanelVisible }"
-          @click="changesPanelVisible = !changesPanelVisible"
-          aria-label="Toggle changes panel"
-        >Changes</button>
-        <button
-          v-if="treeNodes.length > 0"
-          class="outline-toggle-btn"
-          @click="toggleOutline()"
-          aria-label="Toggle outline"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
-            <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
-          </svg>
-        </button>
-        <button
           v-if="sessionEnvironment === 'local'"
           class="settings-icon-btn"
-          @click="showSettings = true"
+          @click="navigateTo('agent-settings')"
           aria-label="Local Agent Settings"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1444,18 +1426,6 @@ function scrollToMessageId(id: string | null) {
     <div v-if="currentSession?.session_type === 'explore'" class="explore-banner">
       Explore Mode — Describe what you want to build. The AI will ask questions and create a Change when ready.
     </div>
-
-    <!-- Changes Panel Overlay -->
-    <ChangeChatPanel
-      v-if="changesPanelVisible && sessionWorkDir"
-      :work-dir="sessionWorkDir"
-      :session-id="props.sessionId"
-      :refresh-key="changesPanelRefreshKey"
-      @close="changesPanelVisible = false"
-      @navigate-session="handleNavigateSession"
-      @apply-change="handleApplyChange"
-      @review-change="handleReviewChange"
-    />
 
     <!-- Artifact Review Panel -->
     <ArtifactReview
@@ -1538,7 +1508,7 @@ function scrollToMessageId(id: string | null) {
           </div>
           <div v-else-if="item.kind === 'error'" class="error-block">
             <span class="error-message">{{ item.content }}</span>
-            <button v-if="item.content.includes('not configured')" class="retry-btn" @click="showSettings = true">Go to Settings</button>
+            <button v-if="item.content.includes('not configured')" class="retry-btn" @click="navigateTo('agent-settings')">Go to Settings</button>
             <button v-else class="retry-btn" @click="resend" :disabled="isStreaming">Retry</button>
           </div>
           <div v-else-if="item.kind === 'tool'" class="tool-block">
@@ -1700,16 +1670,145 @@ function scrollToMessageId(id: string | null) {
       </div>
     </div>
     </div>
-    <SpecPanel />
-    <ConversationOutline
-      v-if="(hasBranching || outlineVisible) && treeNodes.length > 0"
-      :session-id="props.sessionId"
-      :key="'outline-' + props.sessionId"
-    />
+
+    <!-- Sidebar Panel Content -->
+    <div v-if="activePanelId" class="sidebar-panel">
+      <div class="sidebar-panel-header">
+        <span class="sidebar-panel-title">{{ sidebarPanels.find(p => p.id === activePanelId)?.title }}</span>
+        <button class="sidebar-panel-close" @click="closePanel()">&times;</button>
+      </div>
+      <div class="sidebar-panel-body">
+        <ChangeChatPanel
+          v-if="activePanelId === 'changes' && sessionWorkDir"
+          :work-dir="sessionWorkDir"
+          :session-id="props.sessionId"
+          :refresh-key="changesPanelRefreshKey"
+          @navigate-session="handleNavigateSession"
+          @apply-change="handleApplyChange"
+          @review-change="handleReviewChange"
+        />
+        <SpecPanel v-if="activePanelId === 'specs'" />
+        <ConversationOutline
+          v-if="activePanelId === 'outline' && treeNodes.length > 0"
+          :session-id="props.sessionId"
+          :key="'outline-' + props.sessionId"
+        />
+      </div>
+    </div>
+
+    <!-- Activity Bar -->
+    <div class="activity-bar">
+      <button
+        v-for="panel in sidebarPanels"
+        :key="panel.id"
+        class="activity-bar-btn"
+        :class="{ active: activePanelId === panel.id }"
+        @click="togglePanel(panel.id)"
+        :aria-label="panel.title"
+        :title="panel.title"
+      >
+        <!-- Changes icon -->
+        <svg v-if="panel.icon === 'changes'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+        <!-- Specs icon -->
+        <svg v-else-if="panel.icon === 'specs'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/>
+        </svg>
+        <!-- Outline icon -->
+        <svg v-else-if="panel.icon === 'outline'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+          <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+        </svg>
+      </button>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* Activity Bar */
+.activity-bar {
+  width: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 8px;
+  gap: 4px;
+  background: var(--color-surface-0, #111);
+  border-left: 1px solid var(--color-border-subtle, #222);
+}
+.activity-bar-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #666);
+  border-radius: 6px;
+  cursor: pointer;
+  position: relative;
+}
+.activity-bar-btn:hover {
+  color: var(--color-text-primary, #ccc);
+  background: var(--color-surface-1, #1a1a1a);
+}
+.activity-bar-btn.active {
+  color: var(--color-text-primary, #fff);
+  background: var(--color-surface-1, #1a1a1a);
+}
+.activity-bar-btn.active::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--color-accent, #6366f1);
+  border-radius: 1px;
+}
+
+/* Sidebar Panel */
+.sidebar-panel {
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--color-border-subtle, #222);
+  background: var(--color-surface-0, #0f0f0f);
+  overflow: hidden;
+}
+.sidebar-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-subtle, #222);
+}
+.sidebar-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.sidebar-panel-close {
+  background: none;
+  border: none;
+  color: var(--color-text-muted, #666);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.sidebar-panel-close:hover {
+  color: var(--color-text-primary, #ccc);
+}
+.sidebar-panel-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
 .explore-banner {
   padding: 6px 16px;
   font-size: 12px;
@@ -2201,31 +2300,6 @@ function scrollToMessageId(id: string | null) {
   font-size: 11px;
   color: var(--color-text-muted);
 }
-.outline-toggle-btn {
-  background: none;
-  border: none;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 4px;
-  transition: color 0.12s, background 0.12s;
-}
-.outline-toggle-btn:hover { color: var(--color-text-primary); background: var(--color-surface-1); }
-
-/* Changes toggle button */
-.changes-toggle-btn {
-  background: none;
-  border: 1px solid var(--color-border, #333);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  padding: 3px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  transition: color 0.12s, background 0.12s, border-color 0.12s;
-}
-.changes-toggle-btn:hover { color: var(--color-text-primary); border-color: var(--color-accent, #6366f1); }
-.changes-toggle-btn.active { color: var(--color-accent, #6366f1); border-color: var(--color-accent, #6366f1); background: rgba(99, 102, 241, 0.08); }
 
 /* Apply change indicator */
 .apply-indicator {

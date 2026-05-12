@@ -10,7 +10,6 @@ const emit = defineEmits<{
 const changes = ref<Change[]>([]);
 const injectedChangeId = ref<string | null>(null);
 const injectedTasks = ref<TaskGroup[]>([]);
-const collapsed = ref(false);
 
 async function fetchChanges() {
   const res = await listChanges();
@@ -54,16 +53,8 @@ onMounted(fetchChanges);
 </script>
 
 <template>
-  <div class="spec-panel" :class="{ collapsed }">
-    <div class="panel-header">
-      <span class="panel-title">Changes</span>
-      <button class="toggle-btn" @click="collapsed = !collapsed">
-        {{ collapsed ? '>' : '<' }}
-      </button>
-    </div>
-
-    <template v-if="!collapsed">
-      <div v-if="injectedChangeId" class="injected-section">
+  <div class="spec-panel">
+    <div v-if="injectedChangeId" class="injected-section">
         <div class="injected-header">
           <span>{{ changes.find(c => c.id === injectedChangeId)?.name }}</span>
           <button class="dismiss-btn" @click="dismiss">Dismiss</button>
@@ -92,16 +83,11 @@ onMounted(fetchChanges);
         </div>
         <div v-if="changes.length === 0" class="empty">No changes</div>
       </div>
-    </template>
   </div>
 </template>
 
 <style scoped>
-.spec-panel { width: 280px; border-left: 1px solid var(--color-border, #333); display: flex; flex-direction: column; overflow: hidden; background: var(--color-surface-0, #0a0a0a); }
-.spec-panel.collapsed { width: 36px; }
-.panel-header { display: flex; align-items: center; padding: 8px; border-bottom: 1px solid var(--color-border, #333); }
-.panel-title { flex: 1; font-size: 12px; font-weight: 600; }
-.toggle-btn { background: none; border: none; color: var(--color-text-muted, #888); cursor: pointer; padding: 2px 6px; }
+.spec-panel { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: var(--color-surface-0, #0a0a0a); }
 .changes-list { flex: 1; overflow-y: auto; padding: 8px; }
 .change-item { padding: 8px; border-radius: 4px; cursor: pointer; margin-bottom: 4px; }
 .change-item:hover { background: var(--color-surface-1, #1a1a1a); }
