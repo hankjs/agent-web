@@ -172,6 +172,18 @@ pub struct LocalEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct Checkpoint {
+    pub id: String,
+    pub session_id: String,
+    pub message_id: String,
+    pub git_commit_sha: String,
+    pub git_branch: String,
+    pub spec_snapshot: Option<String>,
+    pub label: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Spec {
     pub id: String,
     pub capability: String,
@@ -468,6 +480,24 @@ impl Database {
                 created_at DATETIME NOT NULL DEFAULT NOW(),
                 FOREIGN KEY (spec_id) REFERENCES specs(id) ON DELETE CASCADE,
                 INDEX idx_spec_versions_spec (spec_id, version)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
+        // Checkpoints table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS checkpoints (
+                id VARCHAR(36) PRIMARY KEY,
+                session_id VARCHAR(36) NOT NULL,
+                message_id VARCHAR(36) NOT NULL,
+                git_commit_sha VARCHAR(40) NOT NULL,
+                git_branch VARCHAR(255) NOT NULL,
+                spec_snapshot JSON DEFAULT NULL,
+                label VARCHAR(255) NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+                INDEX idx_checkpoints_session (session_id, created_at)
             ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
@@ -1824,6 +1854,77 @@ impl Database {
         )?;
         let pending = total.0 - done.0 - in_progress.0;
         Ok((total.0, done.0, in_progress.0, pending))
+    }
+
+    // ─── Checkpoints ─────────────────────────────────────────────────────
+
+    pub async fn create_checkpoint(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        git_commit_sha: &str,
+        git_branch: &str,
+        spec_snapshot: Option<&str>,
+        label: &str,
+    ) -> Result<Checkpoint> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO checkpoints (id, session_id, message_id, git_commit_sha, git_branch, spec_snapshot, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&id)
+            .bind(session_id)
+            .bind(message_id)
+            .bind(git_commit_sha)
+            .bind(git_branch)
+            .bind(spec_snapshot)
+            .bind(label)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
+        Ok(Checkpoint {
+            id,
+            session_id: session_id.to_string(),
+            message_id: message_id.to_string(),
+            git_commit_sha: git_commit_sha.to_string(),
+            git_branch: git_branch.to_string(),
+            spec_snapshot: spec_snapshot.map(|s| s.to_string()),
+            label: label.to_string(),
+            created_at: now,
+        })
+    }
+
+    pub async fn list_checkpoints(&self, session_id: &str) -> Result<Vec<Checkpoint>> {
+        let checkpoints = db_retry!(
+            sqlx::query_as::<_, Checkpoint>(
+                "SELECT id, session_id, message_id, git_commit_sha, git_branch, spec_snapshot, label, created_at FROM checkpoints WHERE session_id = ? ORDER BY created_at ASC"
+            )
+            .bind(session_id)
+            .fetch_all(&self.pool)
+        )?;
+        Ok(checkpoints)
+    }
+
+    pub async fn get_checkpoint(&self, id: &str) -> Result<Option<Checkpoint>> {
+        let cp = db_retry!(
+            sqlx::query_as::<_, Checkpoint>(
+                "SELECT id, session_id, message_id, git_commit_sha, git_branch, spec_snapshot, label, created_at FROM checkpoints WHERE id = ?"
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(cp)
+    }
+
+    pub async fn delete_checkpoints_after(&self, session_id: &str, created_at: DateTime<Utc>) -> Result<()> {
+        db_retry!(
+            sqlx::query("DELETE FROM checkpoints WHERE session_id = ? AND created_at > ?")
+                .bind(session_id)
+                .bind(created_at)
+                .execute(&self.pool)
+        )?;
+        Ok(())
     }
 }
 

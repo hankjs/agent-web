@@ -1,0 +1,12 @@
+[book]
+title = "Hank Agent Web 文档"
+authors = ["Hank Team"]
+language = "zh"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "ayu"
+git-repository-url = ""

@@ -2,6 +2,7 @@ mod admin;
 mod auth;
 mod changes;
 mod chat;
+mod checkpoints;
 mod config;
 pub mod provider_registry;
 pub mod response;
@@ -153,6 +154,9 @@ async fn main() -> Result<()> {
         .route("/api/changes/{id}/tasks/{tid}", delete(changes::delete_task))
         // Context route
         .route("/api/changes/{id}/context", get(changes::get_change_context))
+        // Checkpoints routes
+        .route("/api/sessions/{id}/checkpoints", get(checkpoints::list_checkpoints_handler))
+        .route("/api/sessions/{id}/rewind/{cpid}", post(checkpoints::rewind_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Admin API routes (also protected)

@@ -118,6 +118,7 @@ pub async fn chat_handler(
 
     let session_record = state.db.get_session(&session_id).await.ok().flatten();
     let work_dir = session_record.as_ref().and_then(|s| s.work_dir.clone());
+    let work_dir_for_checkpoint = work_dir.clone();
     let session_change_id = session_record.as_ref().and_then(|s| s.change_id.clone());
     let session_type = session_record.as_ref().map(|s| s.session_type.clone()).unwrap_or_else(|| "chat".to_string());
 
@@ -233,6 +234,22 @@ pub async fn chat_handler(
     })
     .collect();
     let history_len = history.len();
+
+    // ─── Checkpoint: 在 agent 执行前创建快照 ─────────────────────────────
+    if let Some(ref wd) = work_dir_for_checkpoint {
+        let cp_state = state.clone();
+        let cp_session_id = session_id.clone();
+        let cp_message_id = parent_id_for_new_msg.clone().unwrap_or_default();
+        let cp_work_dir = wd.clone();
+        let cp_label: String = content_text.chars().take(40).collect();
+        tokio::spawn(async move {
+            if let Err(e) = crate::checkpoints::create_checkpoint_for_turn(
+                &cp_state, &cp_session_id, &cp_message_id, &cp_work_dir, &cp_label,
+            ).await {
+                tracing::warn!(session_id = %cp_session_id, "checkpoint creation failed: {e:#}");
+            }
+        });
+    }
 
     let cancel_token = CancellationToken::new();
     {

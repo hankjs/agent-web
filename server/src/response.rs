@@ -83,3 +83,7 @@ pub fn unauthorized(msg: impl ToString) -> axum::response::Response {
 pub fn forbidden(msg: impl ToString) -> axum::response::Response {
     err(StatusCode::FORBIDDEN, msg)
 }
+
+pub fn conflict(msg: impl ToString) -> axum::response::Response {
+    err(StatusCode::CONFLICT, msg)
+}

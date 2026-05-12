@@ -6,10 +6,13 @@ use axum::{
     Extension, Json,
 };
 use hank_agent::AgentEvent;
+use hank_provider::{CompletionRequest, Message, StreamEvent};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio_stream::StreamExt;
 
 use crate::auth::Claims;
+use crate::provider_registry;
 use crate::response as R;
 
 // ─── Changes ─────────────────────────────────────────────────────────
@@ -231,8 +234,14 @@ pub async fn archive_change(
             return R::internal_error(e);
         }
 
-        // Merge: append artifact content to main spec
-        let merged = format!("{}\n\n{}", spec.content, artifact.content);
+        // Merge: use LLM to intelligently merge, fallback to append
+        let merged = match llm_merge_specs(&state, &spec.content, &artifact.content, capability).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("LLM merge failed for {capability}, falling back to append: {e:#}");
+                format!("{}\n\n{}", spec.content, artifact.content)
+            }
+        };
         if let Err(e) = state.db.update_spec(&spec.id, Some(&merged), None, None).await {
             return R::internal_error(e);
         }
@@ -244,6 +253,53 @@ pub async fn archive_change(
     }
 
     R::no_content()
+}
+
+/// 使用 LLM 智能合并两段 spec 内容
+async fn llm_merge_specs(
+    state: &AppState,
+    existing: &str,
+    new_content: &str,
+    capability: &str,
+) -> anyhow::Result<String> {
+    let (record, provider) = provider_registry::resolve_default(&state.db).await
+        .ok_or_else(|| anyhow::anyhow!("No provider available for spec merge"))?;
+    let model = provider_registry::resolve_default_model(&record);
+
+    let prompt = format!(
+        "你是一个技术文档合并助手。请将以下两段 Spec 文档合并为一个完整、无重复、结构清晰的文档。\n\n\
+        ## 现有 Spec: {capability}\n\n{existing}\n\n\
+        ## 新增内容\n\n{new_content}\n\n\
+        请直接输出合并后的完整文档，不要添加额外解释。"
+    );
+
+    let req = CompletionRequest {
+        model,
+        system: None,
+        messages: vec![Message {
+            role: hank_provider::Role::User,
+            content: vec![hank_provider::ContentBlock::Text { text: prompt }],
+        }],
+        tools: vec![],
+        max_tokens: 4096,
+    };
+
+    let mut stream = provider.stream(req).await?;
+    let mut result = String::new();
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(StreamEvent::TextDelta(text)) => result.push_str(&text),
+            Ok(StreamEvent::MessageEnd { .. }) => break,
+            Err(e) => anyhow::bail!("Stream error: {e}"),
+            _ => {}
+        }
+    }
+
+    if result.is_empty() {
+        anyhow::bail!("LLM returned empty response");
+    }
+
+    Ok(result)
 }
 
 // ─── Artifacts ───────────────────────────────────────────────────────

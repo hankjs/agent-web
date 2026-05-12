@@ -6,6 +6,7 @@ import { useSession, authFetch, apiRequest } from "../composables/useSession";
 import { API_BASE } from "../config";
 import { useMessageTree } from "../composables/useMessageTree";
 import { useMessage } from "../composables/useMessage";
+import { listCheckpoints, rewindToCheckpoint, type Checkpoint } from "../api/checkpoints";
 import FolderPicker from "../components/FolderPicker.vue";
 import ChangeChatPanel from "../components/ChangeChatPanel.vue";
 import ArtifactReview from "../components/ArtifactReview.vue";
@@ -73,6 +74,36 @@ const changesPanelRefreshKey = ref(0);
 const reviewingChangeId = ref<string | null>(null);
 const activeApplyChangeId = ref<string | null>(null);
 let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+// Checkpoint state
+const checkpoints = ref<Checkpoint[]>([]);
+const rewindingTo = ref<string | null>(null);
+
+async function fetchCheckpoints() {
+  try {
+    checkpoints.value = await listCheckpoints(props.sessionId);
+  } catch { checkpoints.value = []; }
+}
+
+function getCheckpointForMessage(messageId: string): Checkpoint | undefined {
+  return checkpoints.value.find(cp => cp.message_id === messageId);
+}
+
+async function handleRewind(checkpoint: Checkpoint) {
+  if (!confirm(`回退到此消息时的状态？文件和对话都会恢复到这个时间点。`)) return;
+  rewindingTo.value = checkpoint.id;
+  try {
+    await rewindToCheckpoint(props.sessionId, checkpoint.id);
+    // 刷新页面状态
+    await fetchTree(props.sessionId);
+    await loadHistory();
+    await fetchCheckpoints();
+  } catch (e: any) {
+    alert(`回退失败: ${e.message || e}`);
+  } finally {
+    rewindingTo.value = null;
+  }
+}
 
 // Image upload state
 interface PendingImage {
@@ -1242,6 +1273,7 @@ onMounted(async () => {
   await connect();
   await loadHistory();
   await fetchTree(props.sessionId);
+  await fetchCheckpoints();
   nextTick(() => {
     messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight, behavior: "smooth" });
   });
@@ -1484,6 +1516,19 @@ function scrollToMessageId(id: string | null) {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </button>
+              <button
+                v-if="!isStreaming && item.messageId && getCheckpointForMessage(item.messageId)"
+                class="edit-btn rewind-btn"
+                :disabled="rewindingTo !== null"
+                @click="handleRewind(getCheckpointForMessage(item.messageId!)!)"
+                aria-label="Rewind to this point"
+                title="回退到此消息时的状态"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="1 4 1 10 7 10"/>
+                  <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
                 </svg>
               </button>
             </div>
@@ -2093,6 +2138,8 @@ function scrollToMessageId(id: string | null) {
 }
 .user-block:hover .edit-btn { opacity: 1; }
 .edit-btn:hover { color: var(--color-text-primary); }
+.rewind-btn:hover { color: #f59e0b; }
+.rewind-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 .edit-inline { margin-top: 4px; }
 .edit-textarea {
   width: 100%;
