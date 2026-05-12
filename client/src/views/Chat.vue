@@ -20,7 +20,7 @@ const props = defineProps<{
   sessionId: string;
 }>();
 
-const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir, selectSession, sessions, currentSession, goBack, navigateTo } = useSession();
+const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir, selectSession, sessions, currentSession, createSession, goBack, navigateTo } = useSession();
 const { fetchTree, switchBranch, setActiveLeafId, activeLeafId, getSiblings, findLeafFromNode, hasBranching, treeNodes, scrollTargetId, clearScrollTarget } = useMessageTree();
 const { warning: showWarning } = useMessage();
 
@@ -74,6 +74,7 @@ const fileInputRef = ref<HTMLInputElement | null>(null);
 const changesPanelRefreshKey = ref(0);
 const reviewingChangeId = ref<string | null>(null);
 const activeApplyChangeId = ref<string | null>(null);
+const isCreatingSession = ref(false);
 let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
 // Checkpoint state
@@ -704,6 +705,29 @@ async function confirmEditWorkDir() {
   }
 }
 
+async function startSessionFromCurrentDir() {
+  if (isCreatingSession.value) return;
+  if (blocks.value.length === 0) {
+    showWarning("当前还未开始对话");
+    return;
+  }
+  isCreatingSession.value = true;
+  try {
+    const workDir = currentSession.value?.work_dir || undefined;
+    const environment = currentSession.value?.environment || "remote";
+    const session = await createSession(workDir, environment, "chat");
+    if (session) {
+      await navigateTo("chat", { sessionId: session.id });
+    } else {
+      showWarning("新建会话失败");
+    }
+  } catch (e: any) {
+    showWarning(e?.message || "新建会话失败");
+  } finally {
+    isCreatingSession.value = false;
+  }
+}
+
 // Message editing
 function startEditMessage(item: RenderItem) {
   if (item.kind !== "user" || !item.messageId) return;
@@ -1326,6 +1350,24 @@ function closeProviderDropdown(e: MouseEvent) {
   }
 }
 
+watch(() => props.sessionId, async () => {
+  blocks.value = [];
+  checkpoints.value = [];
+  editingMessageId.value = null;
+  editingContent.value = "";
+  lastEventId = "";
+  reconnectAttempts = 0;
+  isStreaming.value = false;
+  currentSessionStreaming = false;
+  clearHeartbeatTimer();
+  await loadHistory();
+  await fetchTree(props.sessionId);
+  await fetchCheckpoints();
+  nextTick(() => {
+    messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
+  });
+});
+
 // Watch for external branch switches (from outline panel)
 let internalLeafChange = false;
 watch(activeLeafId, async (newLeaf, oldLeaf) => {
@@ -1409,6 +1451,18 @@ function scrollToMessageId(id: string | null) {
         <span v-if="activeApplyChangeId" class="apply-indicator">Applying Change</span>
       </div>
       <div class="context-bar-right">
+        <button
+          class="new-session-btn"
+          :disabled="isCreatingSession"
+          @click="startSessionFromCurrentDir"
+          title="使用当前目录新建会话"
+          aria-label="使用当前目录新建会话"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 5v14"/><path d="M5 12h14"/>
+          </svg>
+          <span>{{ isCreatingSession ? '创建中' : '新会话' }}</span>
+        </button>
         <button
           v-if="sessionEnvironment === 'local'"
           class="settings-icon-btn"
@@ -2336,6 +2390,35 @@ function scrollToMessageId(id: string | null) {
 .agent-status.clickable:hover {
   color: var(--color-accent, #6366f1);
   text-decoration: underline;
+}
+.new-session-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 5px;
+  background: var(--color-surface-1);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s, opacity 0.12s;
+}
+.new-session-btn:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+  background: var(--color-surface-hover, var(--color-surface-2));
+}
+.new-session-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.new-session-btn svg {
+  flex-shrink: 0;
 }
 .settings-icon-btn {
   background: none;
