@@ -1,23 +1,37 @@
 # Hank Agent Web
 
-远程 AI Agent 服务 + Tauri 客户端。Agent 运行在服务器上执行 shell 命令，客户端通过 WebSocket 实时展示工作状态。
+远程 AI Agent 服务 + Tauri 桌面客户端。Agent 运行在服务器上执行 shell 命令，客户端通过 SSE 实时展示工作状态。支持多 LLM 提供商、变更管理、Spec 系统、Checkpoint 回溯。
 
 ## 项目结构
 
 ```
-server/              axum HTTP/WS 服务
+server/src/              Axum HTTP/SSE 服务
+  ├── main.rs            入口，路由注册
+  ├── chat.rs            SSE 聊天处理 (chat/stop/resume)
+  ├── routes.rs          会话、消息、Provider、文件系统 API
+  ├── changes.rs         变更管理 (Artifacts, Tasks, Explore/Generate)
+  ├── specs.rs           Spec 版本化管理
+  ├── checkpoints.rs     Checkpoint 回溯系统
+  ├── admin.rs           管理后台 (用户/Provider/Prompt/Replay)
+  └── auth.rs            JWT 认证
 crates/
-  hank-provider/     LLM 多厂商抽象 (Anthropic, OpenAI 兼容)
-  hank-agent/        Agent loop (消息历史 + tool calling)
-  hank-web-tools/    服务端工具 (shell)
-  hank-db/           SQLite 持久化
-client/              Tauri v2 + Vue 3 客户端
+  ├── hank-provider/     LLM 多厂商抽象 (Anthropic, OpenAI 兼容)
+  ├── hank-agent/        Agent loop (消息历史 + tool calling)
+  ├── hank-web-tools/    服务端工具 (shell, 文件操作)
+  └── hank-db/           SQLite 持久化 (SQLx)
+client/src/              Tauri v2 + Vue 3 客户端
+  ├── views/             页面组件 (Login, SessionList, Chat, Specs, Changes, ChangeDetail)
+  ├── components/        可复用 UI 组件
+  ├── composables/       状态与逻辑 hooks
+  ├── api/index.ts       API 客户端层
+  └── router/index.ts    路由配置
+openspec/                OpenSpec 集成
 ```
 
 ## 前置要求
 
 - Rust 1.75+
-- Node.js 18+
+- Node.js 18+ / pnpm
 - 至少一个 LLM API key (Anthropic / OpenAI / 兼容服务)
 
 ## 快速开始
@@ -79,41 +93,97 @@ pnpm tauri build
 
 ## API
 
-### REST
+### 认证
+
+所有 `/api/*` 路由（除 health 和 login）需要 JWT token，通过 `Authorization: Bearer <token>` 传递。
+
+### REST 端点
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | /api/health | 健康检查 |
 | POST | /api/auth/login | 获取 JWT token |
-| GET | /api/providers | 可用 provider 和模型列表 |
+| GET | /api/providers | 可用 Provider 和模型列表 |
 | POST | /api/sessions | 创建会话 |
 | GET | /api/sessions | 会话列表 |
 | GET | /api/sessions/:id | 会话详情 |
+| PUT | /api/sessions/:id | 更新会话 (标题/工作目录/本地Agent) |
 | DELETE | /api/sessions/:id | 删除会话 |
-| GET | /api/sessions/:id/messages | 会话消息历史 |
+| GET | /api/sessions/:id/messages | 消息历史 (支持 leaf_id 分支查询) |
+| POST | /api/sessions/:id/messages | 保存消息 (本地 Agent 会话) |
+| POST | /api/sessions/:id/messages/truncate | 截断消息 |
+| GET | /api/sessions/:id/tree | 消息树结构 |
+| PUT | /api/sessions/:id/active-leaf | 切换活跃分支 |
+| POST | /api/sessions/:id/chat | SSE 聊天 |
+| POST | /api/sessions/:id/stop | 停止生成 |
+| GET | /api/sessions/:id/events/resume | 恢复事件流 |
+| POST | /api/sessions/:id/local-events | 上传本地执行事件 |
+| GET | /api/sessions/:id/events | 获取会话事件 (remote + local) |
+| GET | /api/sessions/:id/checkpoints | Checkpoint 列表 |
 | PUT | /api/settings | 更新设置 |
+| GET | /api/fs/list | 目录浏览 |
 
-### WebSocket
+### Specs API
 
-连接: `ws://localhost:3000/ws?token=<jwt>`
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/specs | Spec 列表 |
+| POST | /api/specs | 创建 Spec |
+| GET | /api/specs/:id | Spec 详情 |
+| PUT | /api/specs/:id | 更新 Spec |
+| DELETE | /api/specs/:id | 删除 Spec |
+| GET | /api/specs/:id/versions | Spec 版本历史 |
 
-发送消息：
+### Changes API
 
-```json
-{
-  "type": "send_message",
-  "content": "列出当前目录文件",
-  "session_id": "xxx",
-  "provider": "anthropic",
-  "model": "sonnet"
-}
-```
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/changes | 变更列表 |
+| POST | /api/changes | 创建变更 |
+| GET | /api/changes/:id | 变更详情 |
+| PUT | /api/changes/:id | 更新变更 |
+| DELETE | /api/changes/:id | 删除变更 |
+| POST | /api/changes/:id/explore | 启动探索 |
+| POST | /api/changes/:id/generate | 启动生成 |
+| POST | /api/changes/:id/artifacts/confirm | 确认 Artifacts |
+| POST | /api/changes/:id/archive | 归档变更 |
+| GET | /api/changes/:id/artifacts | Artifact 列表 |
+| POST | /api/changes/:id/artifacts | 创建 Artifact |
+| GET | /api/changes/:id/artifacts/:aid | Artifact 详情 |
+| PUT | /api/changes/:id/artifacts/:aid | 更新 Artifact |
+| DELETE | /api/changes/:id/artifacts/:aid | 删除 Artifact |
+| GET | /api/changes/:id/tasks | 任务列表 |
+| POST | /api/changes/:id/tasks | 批量创建任务 |
+| PUT | /api/changes/:id/tasks/:tid | 更新任务 |
+| DELETE | /api/changes/:id/tasks/:tid | 删除任务 |
+| GET | /api/changes/:id/context | 变更上下文 |
 
-`provider` 和 `model` 可选，不传则使用默认值。`model` 支持别名。
+### Admin API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /api/admin/sessions | 所有会话 |
+| GET | /api/admin/sessions/:id/replay | 会话回放 |
+| GET | /api/admin/sessions/:id/events | 会话事件 |
+| GET | /api/admin/metrics/overview | 总览指标 |
+| GET | /api/admin/metrics/by-session/:id | 会话指标 |
+| POST | /api/admin/prompt-templates | 创建 Prompt 模板 |
+| GET | /api/admin/prompt-templates | Prompt 模板列表 |
+| DELETE | /api/admin/prompt-templates/:id | 删除 Prompt 模板 |
+| POST | /api/admin/chat/generate | 生成对话 |
+| POST | /api/admin/replay | Prompt 回放 |
+| GET | /api/admin/users | 用户列表 |
+| POST | /api/admin/users | 创建用户 |
+| PUT | /api/admin/users/:id | 更新用户 |
+| DELETE | /api/admin/users/:id | 删除用户 |
+| GET | /api/admin/providers | Provider 列表 |
+| POST | /api/admin/providers | 创建 Provider |
+| PUT | /api/admin/providers/:id | 更新 Provider |
+| DELETE | /api/admin/providers/:id | 删除 Provider |
 
 ## 多 Provider 配置
 
-支持同时配置多个 provider，每个有独立的 base_url、api_key 和默认模型：
+支持同时配置多个 Provider，每个有独立的 base_url、api_key 和默认模型：
 
 ```toml
 [[providers]]
@@ -129,3 +199,13 @@ reasoner = "deepseek-reasoner"
 ```
 
 `type = "openai"` 兼容所有 OpenAI 格式的 API（DeepSeek、Groq 等）。
+
+## 核心功能
+
+- **多 LLM 提供商**: 同时配置 Anthropic、OpenAI 兼容服务，运行时切换
+- **消息树**: 支持对话分支、回溯到任意节点继续对话
+- **Checkpoint 系统**: 保存/恢复对话状态快照
+- **变更管理**: 结构化的 Explore → Generate → Confirm → Archive 工作流
+- **Spec 系统**: 版本化的项目规格文档管理
+- **本地 Agent**: 支持本地 ACP 执行，事件同步到服务端
+- **Admin 后台**: 用户管理、Provider 管理、Prompt Playground、会话回放
