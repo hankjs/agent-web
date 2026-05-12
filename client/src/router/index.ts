@@ -36,6 +36,11 @@ const router = createRouter({
       props: true,
     },
     {
+      path: "/skills",
+      name: "skills",
+      component: () => import("../views/Skills.vue"),
+    },
+    {
       path: "/settings/agents",
       name: "agent-settings",
       component: () => import("../views/LocalAgentSettings.vue"),

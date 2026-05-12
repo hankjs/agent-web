@@ -781,6 +781,7 @@ dependencies = [
  "hank-provider",
  "hank-web-tools",
  "jsonwebtoken",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

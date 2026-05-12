@@ -7,6 +7,7 @@ mod config;
 pub mod provider_registry;
 pub mod response;
 mod routes;
+mod skills;
 mod specs;
 
 use anyhow::Result;
@@ -157,6 +158,10 @@ async fn main() -> Result<()> {
         // Checkpoints routes
         .route("/api/sessions/{id}/checkpoints", get(checkpoints::list_checkpoints_handler))
         .route("/api/sessions/{id}/rewind/{cpid}", post(checkpoints::rewind_handler))
+        // Skills routes
+        .route("/api/skills", get(skills::list_skills))
+        .route("/api/skills/install", post(skills::install_skill))
+        .route("/api/skills/{name}", delete(skills::uninstall_skill))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Admin API routes (also protected)

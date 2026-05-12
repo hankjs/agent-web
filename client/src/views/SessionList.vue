@@ -67,6 +67,7 @@ onMounted(async () => {
       <span class="header-title">Hank</span>
       <div class="header-right">
         <button class="new-change-btn" @click="showNewChange = true">新建需求</button>
+        <button class="nav-btn" @click="navigateTo('skills')">Skills</button>
         <button class="nav-btn" @click="navigateTo('specs')">规格</button>
       </div>
     </div>
