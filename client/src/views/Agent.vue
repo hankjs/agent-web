@@ -3,7 +3,7 @@ import { ref, computed, nextTick, onMounted, watch } from "vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { useSession, authFetch } from "../composables/useSession";
-import { useExploreAgent, type ExplorePhase } from "../composables/useExploreAgent";
+import { useExploreAgent, type ExplorePhase } from "../agents/ExploreAgent";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 

@@ -2,7 +2,8 @@
 import { ref, onMounted, watch } from "vue";
 import { listChanges, createChange, startExplore, triggerGenerate, confirmArtifacts, type Change } from "../api/changes";
 import { useSession } from "../composables/useSession";
-import { buildExploreContinuePrompt, buildGeneratePrompt } from "../prompts";
+import { buildExploreContinuePrompt } from "../agents/ExploreAgent";
+import { buildGeneratePrompt } from "../agents/ChangeAgent";
 
 const props = defineProps<{
   workDir: string;

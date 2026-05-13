@@ -9,7 +9,7 @@ import { useMessage } from "../composables/useMessage";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
 import { listCheckpoints, rewindToCheckpoint, type Checkpoint } from "../api/checkpoints";
 import { getApplyContext } from "../api/changes";
-import { buildApplyPrompt } from "../prompts";
+import { buildApplyPrompt } from "../agents/ChangeAgent";
 import FolderPicker from "../components/FolderPicker.vue";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 import ArtifactReview from "../components/ArtifactReview.vue";

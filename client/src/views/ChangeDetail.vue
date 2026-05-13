@@ -2,7 +2,7 @@
 import { ref, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { useSession } from "../composables/useSession";
-import { buildExploreContinuePrompt } from "../prompts";
+import { buildExploreContinuePrompt } from "../agents/ExploreAgent";
 import {
   getChange, listArtifacts, listTasks, updateTask, archiveChange, startExplore,
   type ChangeDetail as ChangeDetailType, type ChangeArtifact, type TaskGroup,
