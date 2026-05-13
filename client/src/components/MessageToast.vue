@@ -39,7 +39,7 @@ const { messages } = useMessage();
   border-radius: 6px;
   font-size: 13px;
   line-height: 1.4;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--color-border-subtle);
   pointer-events: auto;
 }
 .message-item.info {

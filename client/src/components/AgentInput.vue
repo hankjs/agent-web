@@ -262,7 +262,7 @@ defineExpose({ clearImages, getImages, textareaRef });
 .provider-source-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .provider-source-dot.local { background: var(--color-success); }
 .provider-source-dot.server { background: var(--color-info); }
-.provider-dropdown { position: absolute; bottom: 100%; left: 0; margin-bottom: 4px; background: var(--color-surface-2); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-md, 6px); padding: var(--space-1, 4px); min-width: 180px; z-index: 20; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+.provider-dropdown { position: absolute; bottom: 100%; left: 0; margin-bottom: 4px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: var(--radius-md, 6px); padding: var(--space-1, 4px); min-width: 180px; z-index: 20; }
 .provider-dropdown-item { display: flex; align-items: center; gap: var(--space-2, 8px); width: 100%; padding: var(--space-2, 8px) var(--space-2, 8px); border: none; background: transparent; color: var(--color-text-secondary); font-size: 12px; border-radius: var(--radius-sm, 4px); cursor: pointer; text-align: left; }
 .provider-dropdown-item:hover { background: var(--color-surface-hover); }
 .provider-dropdown-item.active { background: var(--color-surface-hover); color: var(--color-text-primary); }

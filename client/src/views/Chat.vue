@@ -1703,7 +1703,7 @@ function scrollToMessageId(id: string | null) {
             <!-- Normal display -->
             <div v-else class="user-content-row">
               <div class="user-content-body">
-                <pre v-if="item.content" class="whitespace-pre-wrap text-[15px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ item.content }}</pre>
+                <pre v-if="item.content" class="whitespace-pre-wrap text-[13px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ item.content }}</pre>
                 <div v-if="item.images && item.images.length > 0" class="user-images">
                   <img v-for="(img, imgIdx) in item.images" :key="imgIdx" :src="`data:${img.media_type};base64,${img.data}`" alt="User uploaded image" class="user-image-thumb" />
                 </div>
@@ -2065,8 +2065,8 @@ function scrollToMessageId(id: string | null) {
   border-radius: 4px;
   transition: color 0.12s;
 }
-.title-action-btn.confirm { color: var(--color-success, #22c55e); }
-.title-action-btn.cancel { color: var(--color-error, #ef4444); }
+.title-action-btn.confirm { color: var(--color-success); }
+.title-action-btn.cancel { color: var(--color-error); }
 .title-action-btn:hover { opacity: 0.7; }
 .user-block {
   padding-top: 8px;
@@ -2107,7 +2107,7 @@ function scrollToMessageId(id: string | null) {
 }
 .markdown-body :deep(pre code) { background: none; padding: 0; font-size: 12px; line-height: 1.5; }
 .markdown-body :deep(hr) { border: none; border-top: 1px solid var(--color-border); margin: 1.5em 0; }
-.markdown-body :deep(a) { color: var(--color-accent, #3b82f6); text-decoration: none; }
+.markdown-body :deep(a) { color: var(--color-accent); text-decoration: none; }
 .markdown-body :deep(a:hover) { text-decoration: underline; }
 .tool-block { margin: 4px 0; }
 .tool-header {
@@ -2156,14 +2156,14 @@ function scrollToMessageId(id: string | null) {
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  background: color-mix(in srgb, var(--color-error, #ef4444) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-error, #ef4444) 25%, transparent);
+  background: var(--color-error-surface);
+  border: 1px solid color-mix(in oklch, var(--color-error) 25%, transparent);
   border-radius: 6px;
   margin: 4px 0;
 }
 .error-message {
   font-size: 13px;
-  color: var(--color-error, #ef4444);
+  color: var(--color-error);
   flex: 1;
 }
 .retry-btn {
@@ -2215,10 +2215,9 @@ function scrollToMessageId(id: string | null) {
   bottom: calc(100% + 6px);
   left: 0;
   min-width: 180px;
-  background: var(--color-surface-1);
+  background: var(--color-surface-2);
   border: 1px solid var(--color-border);
   border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   z-index: 100;
   padding: 4px;
 }
@@ -2258,10 +2257,10 @@ function scrollToMessageId(id: string | null) {
   flex-shrink: 0;
 }
 .provider-source-dot.local {
-  background: #a78bfa;
+  background: var(--color-env-local);
 }
 .provider-source-dot.server {
-  background: #60a5fa;
+  background: var(--color-env-remote);
 }
 .input-field {
   width: 100%;
@@ -2269,16 +2268,16 @@ function scrollToMessageId(id: string | null) {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 14px 48px 14px 16px;
-  font-size: 15px;
+  font-size: 13px;
   color: var(--color-text-primary);
   outline: none;
-  transition: border-color 0.2s ease-out, box-shadow 0.2s ease-out;
+  transition: border-color var(--duration-fast) var(--ease-out-expo);
   resize: none;
   overflow-y: auto;
   line-height: 1.5;
   font-family: inherit;
 }
-.input-field:focus { border-color: var(--color-accent-dim); box-shadow: 0 0 0 3px oklch(0.72 0.14 55 / 0.08); }
+.input-field:focus { border-color: var(--color-accent-dim); }
 .input-field:disabled { opacity: 0.4; cursor: not-allowed; }
 .input-field::placeholder { color: var(--color-text-muted); }
 .send-btn {
@@ -2290,7 +2289,7 @@ function scrollToMessageId(id: string | null) {
   border-radius: 50%;
   border: none;
   background: var(--color-text-primary);
-  color: var(--color-surface-0, #1a1a1a);
+  color: var(--color-surface-0);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2299,7 +2298,7 @@ function scrollToMessageId(id: string | null) {
 }
 .send-btn:hover:not(:disabled) { opacity: 0.85; }
 .send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-.send-btn.stop-mode { background: var(--color-error, #ef4444); color: #fff; }
+.send-btn.stop-mode { background: var(--color-error); color: var(--color-surface-0); }
 .image-upload-btn {
   width: 28px;
   height: 28px;
@@ -2342,8 +2341,8 @@ function scrollToMessageId(id: string | null) {
   height: 18px;
   border-radius: 50%;
   border: none;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
+  background: oklch(0.13 0.008 220 / 0.7);
+  color: var(--color-text-primary);
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
@@ -2384,7 +2383,7 @@ function scrollToMessageId(id: string | null) {
 }
 .user-block:hover .edit-btn { opacity: 1; }
 .edit-btn:hover { color: var(--color-text-primary); }
-.rewind-btn:hover { color: #f59e0b; }
+.rewind-btn:hover { color: var(--color-warning); }
 .rewind-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 .edit-inline { margin-top: 4px; }
 .edit-textarea {
@@ -2409,7 +2408,7 @@ function scrollToMessageId(id: string | null) {
   border: none;
   border-radius: 4px;
   background: var(--color-text-primary);
-  color: var(--color-surface-0, #1a1a1a);
+  color: var(--color-surface-0);
   cursor: pointer;
 }
 .edit-submit:hover { opacity: 0.85; }
@@ -2452,26 +2451,26 @@ function scrollToMessageId(id: string | null) {
 .apply-indicator {
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   font-weight: 500;
-  color: #818cf8;
-  background: rgba(129, 140, 248, 0.1);
+  color: var(--color-info);
+  background: var(--color-info-surface);
 }
 
 /* Agent status indicator */
 .agent-status {
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   font-weight: 500;
 }
 .agent-status.running {
-  color: #4ade80;
-  background: rgba(74, 222, 128, 0.1);
+  color: var(--color-success);
+  background: var(--color-success-surface);
 }
 .agent-status.stopped {
-  color: #f87171;
-  background: rgba(248, 113, 113, 0.1);
+  color: var(--color-error);
+  background: var(--color-error-surface);
 }
 .agent-status.not_configured {
   color: var(--color-text-muted);
@@ -2481,7 +2480,7 @@ function scrollToMessageId(id: string | null) {
   cursor: pointer;
 }
 .agent-status.clickable:hover {
-  color: var(--color-accent, #6366f1);
+  color: var(--color-accent);
   text-decoration: underline;
 }
 .new-session-btn {
@@ -2538,12 +2537,12 @@ function scrollToMessageId(id: string | null) {
   letter-spacing: 0.5px;
 }
 .source-badge.local {
-  color: #a78bfa;
-  background: rgba(167, 139, 250, 0.15);
+  color: var(--color-env-local);
+  background: var(--color-env-local-bg);
 }
 .source-badge.remote {
-  color: #60a5fa;
-  background: rgba(96, 165, 250, 0.15);
+  color: var(--color-env-remote);
+  background: var(--color-env-remote-bg);
 }
 
 /* Ask User Card */
@@ -2695,7 +2694,7 @@ function scrollToMessageId(id: string | null) {
 .structured-card {
   margin: 10px 0;
   border: 1px solid color-mix(in oklch, var(--color-accent) 30%, transparent);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--color-surface-1);
   overflow: hidden;
 }

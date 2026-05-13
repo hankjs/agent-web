@@ -139,7 +139,7 @@ watch(() => currentSession.value, (s) => {
       <div class="agent-messages-inner">
         <template v-for="(block, idx) in blocks" :key="idx">
           <div v-if="block.kind === 'user'" class="user-block">
-            <pre class="whitespace-pre-wrap text-[15px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ block.content }}</pre>
+            <pre class="whitespace-pre-wrap text-[13px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ block.content }}</pre>
           </div>
           <div v-else-if="block.kind === 'text'" class="agent-block">
             <div class="markdown-body" v-html="renderMarkdown(block.content)"></div>
@@ -232,26 +232,26 @@ watch(() => currentSession.value, (s) => {
 </template>
 
 <style scoped>
-.explore-chip { padding: 2px 8px; border-radius: 4px; background: oklch(0.25 0.04 315 / 0.6); font-size: 11px; color: oklch(0.85 0.06 315); }
+.explore-chip { padding: 2px 8px; border-radius: var(--radius-sm); background: var(--color-env-local-bg); font-size: 11px; color: var(--color-env-local); }
 
 .agent-messages { flex: 1; overflow-y: auto; }
 .agent-messages-inner { max-width: 720px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
 
 .user-block { padding: 12px 16px; border-radius: 8px; background: var(--color-surface-1); }
 .agent-block { padding: 4px 0; }
-.error-block { padding: 8px 12px; border-radius: 6px; background: oklch(0.25 0.06 25 / 0.5); color: oklch(0.85 0.1 25); font-size: 13px; }
+.error-block { padding: 8px 12px; border-radius: 6px; background: var(--color-error-surface); color: var(--color-error); font-size: 13px; }
 
 .tool-block { padding: 6px 10px; border-radius: 6px; background: var(--color-surface-1); cursor: pointer; font-size: 12px; }
 .tool-header { display: flex; align-items: center; gap: 8px; }
 .tool-indicator { width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-muted); }
-.tool-indicator.running { background: oklch(0.75 0.15 145); animation: pulse 1s infinite; }
-.tool-indicator.error { background: oklch(0.7 0.15 25); }
+.tool-indicator.running { background: var(--color-success); animation: pulse 1s infinite; }
+.tool-indicator.error { background: var(--color-error); }
 .tool-name { font-weight: 500; color: var(--color-text-secondary); }
 .tool-running { color: var(--color-text-muted); font-size: 11px; }
 .tool-detail { margin-top: 8px; }
 .tool-input, .tool-result { font-size: 11px; padding: 6px 8px; border-radius: 4px; background: var(--color-surface-2); overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
 .tool-result { margin-top: 4px; }
-.tool-error { color: oklch(0.8 0.1 25); }
+.tool-error { color: var(--color-error); }
 
 .ask-card { padding: 16px; border-radius: 8px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); }
 .ask-question { margin-bottom: 12px; }
@@ -260,11 +260,11 @@ watch(() => currentSession.value, (s) => {
 .ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
 .ask-option { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-2); color: var(--color-text-secondary); font-size: 13px; cursor: pointer; transition: all 0.15s; }
 .ask-option:hover:not(:disabled) { border-color: var(--color-accent); color: var(--color-text-primary); }
-.ask-option.selected { border-color: var(--color-accent); background: oklch(0.3 0.05 260 / 0.3); color: var(--color-text-primary); }
+.ask-option.selected { border-color: var(--color-accent); background: var(--color-accent-surface); color: var(--color-text-primary); }
 .ask-option:disabled { opacity: 0.5; cursor: default; }
 .ask-custom-input { width: 100%; margin-top: 8px; padding: 8px; border-radius: 6px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-2); color: var(--color-text-primary); font-size: 13px; resize: vertical; }
 .ask-footer { margin-top: 12px; display: flex; justify-content: flex-end; }
-.ask-submit { padding: 6px 16px; border-radius: 6px; border: none; background: var(--color-accent); color: #fff; font-size: 13px; font-weight: 500; cursor: pointer; }
+.ask-submit { padding: 6px 16px; border-radius: 6px; border: none; background: var(--color-accent); color: var(--color-surface-0); font-size: 13px; font-weight: 500; cursor: pointer; }
 .ask-submit:disabled { opacity: 0.4; cursor: default; }
 .ask-answered { font-size: 12px; color: var(--color-text-muted); }
 

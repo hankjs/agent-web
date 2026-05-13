@@ -179,10 +179,9 @@ function closeBrowser() {
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  background: var(--color-surface-1);
+  background: var(--color-surface-2);
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   z-index: 100;
   display: flex;
   flex-direction: column;
