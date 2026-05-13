@@ -36,6 +36,11 @@ export function useSidebarPanels() {
     activePanelId.value = null;
   }
 
+  function reset() {
+    registeredPanels.value = [];
+    activePanelId.value = null;
+  }
+
   return {
     panels: sortedPanels,
     activePanelId,
@@ -43,5 +48,6 @@ export function useSidebarPanels() {
     unregisterPanel,
     togglePanel,
     closePanel,
+    reset,
   };
 }

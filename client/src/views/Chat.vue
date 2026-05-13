@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted, computed, watch } from "vue";
+import { ref, nextTick, onMounted, onUnmounted, onDeactivated, computed, watch } from "vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { useSession, authFetch, apiRequest } from "../composables/useSession";
@@ -11,10 +11,10 @@ import { listCheckpoints, rewindToCheckpoint, type Checkpoint } from "../api/che
 import { getApplyContext } from "../api/changes";
 import { buildApplyPrompt } from "../prompts";
 import FolderPicker from "../components/FolderPicker.vue";
-import ChangeChatPanel from "../components/ChangeChatPanel.vue";
+import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 import ArtifactReview from "../components/ArtifactReview.vue";
 import ConversationOutline from "../components/ConversationOutline.vue";
-import SpecPanel from "../components/SpecPanel.vue";
+import SpecPanel from "../panels/SpecPanel.vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
@@ -36,7 +36,7 @@ const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
 const isExploreSession = computed(() => currentSession.value?.session_type === "explore");
 
 // Sidebar panels
-const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, registerPanel } = useSidebarPanels();
+const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, registerPanel, reset: resetPanels } = useSidebarPanels();
 registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
 registerPanel({ id: "specs", icon: "specs", title: "Specs", order: 2 });
 registerPanel({ id: "outline", icon: "outline", title: "Outline", order: 3 });
@@ -1418,6 +1418,11 @@ onUnmounted(() => {
     acpUnlisten = null;
   }
   document.removeEventListener("click", closeProviderDropdown);
+  resetPanels();
+});
+
+onDeactivated(() => {
+  resetPanels();
 });
 
 function closeProviderDropdown(e: MouseEvent) {
@@ -1436,6 +1441,7 @@ watch(() => props.sessionId, async () => {
   reconnectAttempts = 0;
   isStreaming.value = false;
   currentSessionStreaming = false;
+  closePanel();
   clearHeartbeatTimer();
   await loadHistory();
   await fetchTree(props.sessionId);
