@@ -9,7 +9,28 @@ import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 
 const props = defineProps<{ sessionId: string }>();
 
-const { currentSession, sessions, goBack, updateSessionTitle } = useSession();
+const { currentSession, sessions, goBack, updateSessionTitle, updateSessionWorkDir } = useSession();
+
+// Title editing
+const isEditingTitle = ref(false);
+const editTitle = ref("");
+const titleInputRef = ref<HTMLInputElement | null>(null);
+const sessionTitle = computed(() => currentSession.value?.title || "");
+const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
+
+function startEditTitle() {
+  editTitle.value = currentSession.value?.title || "";
+  isEditingTitle.value = true;
+  nextTick(() => titleInputRef.value?.focus());
+}
+function cancelEditTitle() { isEditingTitle.value = false; }
+async function confirmEditTitle() {
+  const newTitle = editTitle.value.trim();
+  isEditingTitle.value = false;
+  if (newTitle !== (currentSession.value?.title || "")) {
+    await updateSessionTitle(props.sessionId, newTitle);
+  }
+}
 
 // Sidebar
 const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, registerPanel, reset: resetPanels } = useSidebarPanels();
@@ -128,17 +149,24 @@ watch(() => currentSession.value, (s) => {
       <button class="back-btn" @click="goBack" aria-label="Back">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 12L6 8L10 4"/></svg>
       </button>
-      <span class="agent-title">{{ currentSession?.title || 'Explore' }}</span>
-    </div>
-
-    <!-- Explore banner -->
-    <div class="explore-banner">
-      <span>Explore</span>
-      <template v-if="currentSession?.metadata">
+      <template v-if="isEditingTitle">
+        <input
+          ref="titleInputRef"
+          v-model="editTitle"
+          class="title-input"
+          @keydown.enter="confirmEditTitle"
+          @keydown.escape="cancelEditTitle"
+        />
+        <button class="title-action-btn confirm" @click="confirmEditTitle" aria-label="Confirm">&#10003;</button>
+        <button class="title-action-btn cancel" @click="cancelEditTitle" aria-label="Cancel">&#10005;</button>
+      </template>
+      <span v-else class="agent-title" @click="startEditTitle">{{ sessionTitle || 'Explore' }}</span>
+      <template v-if="currentSession?.metadata && !isEditingTitle">
         <span class="explore-chip">{{ currentSession.metadata.depth === 'quick' ? '快速' : currentSession.metadata.depth === 'deep' ? '深入' : '标准' }}</span>
         <span class="explore-chip">{{ currentSession.metadata.questionStyle === 'open' ? '开放追问' : '选项优先' }}</span>
         <span class="explore-chip" v-if="currentSession.metadata.focusAreas?.length">{{ currentSession.metadata.focusAreas.join('、') }}</span>
       </template>
+      <span v-if="sessionWorkDir && !isEditingTitle" class="agent-workdir">{{ sessionWorkDir }}</span>
     </div>
 
     <!-- Messages area -->
@@ -262,10 +290,16 @@ watch(() => currentSession.value, (s) => {
 .agent-header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--color-border-subtle); }
 .back-btn { background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 4px; border-radius: 4px; }
 .back-btn:hover { color: var(--color-text-primary); background: var(--color-surface-1); }
-.agent-title { font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
+.agent-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: background 0.12s; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
+.agent-title:hover { background: var(--color-surface-1); }
+.agent-workdir { font-family: var(--font-mono); font-size: 12px; color: var(--color-text-muted); padding: 2px 6px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
+.title-input { font-size: 13px; font-weight: 500; color: var(--color-text-primary); background: var(--color-surface-1); border: 1px solid var(--color-border); border-radius: 4px; padding: 2px 8px; outline: none; min-width: 120px; max-width: 300px; }
+.title-input:focus { border-color: var(--color-accent-dim); }
+.title-action-btn { background: none; border: none; font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+.title-action-btn.confirm { color: var(--color-success, #22c55e); }
+.title-action-btn.cancel { color: var(--color-error, #ef4444); }
+.title-action-btn:hover { opacity: 0.7; }
 
-.explore-banner { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 7px 16px; font-size: 12px; color: oklch(0.82 0.08 315); background: oklch(0.2 0.035 315 / 0.42); border-bottom: 1px solid oklch(0.55 0.09 315 / 0.28); }
-.explore-banner span:first-child { font-weight: 700; color: oklch(0.88 0.08 315); }
 .explore-chip { padding: 2px 8px; border-radius: 4px; background: oklch(0.25 0.04 315 / 0.6); font-size: 11px; color: oklch(0.85 0.06 315); }
 
 .agent-messages { flex: 1; overflow-y: auto; }

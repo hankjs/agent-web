@@ -108,6 +108,14 @@ async function createSession(
   parseSessionMetadata(session);
   sessions.value.unshift(session);
   currentSession.value = session;
+
+  // Set default title for explore sessions: [目录名]探索
+  if (sessionType === "explore" && !session.title && workDir) {
+    const dirName = workDir.split("/").pop() || workDir;
+    const defaultTitle = `[${dirName}]探索`;
+    updateSessionTitle(session.id, defaultTitle);
+    session.title = defaultTitle;
+  }
   if (options?.initialPrompt) {
     queueSessionInitialPrompt(session.id, options.initialPrompt, options.autoSendInitialPrompt ?? false);
   }
