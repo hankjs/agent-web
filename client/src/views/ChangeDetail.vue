@@ -2,22 +2,19 @@
 import { ref, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { useSession } from "../composables/useSession";
+import { buildExploreContinuePrompt } from "../prompts";
 import {
-  getChange, listArtifacts, listTasks, updateArtifact, createArtifact,
-  updateTask, archiveChange,
+  getChange, listArtifacts, listTasks, updateTask, archiveChange, startExplore,
   type ChangeDetail as ChangeDetailType, type ChangeArtifact, type TaskGroup,
 } from "../api/changes";
 
 const route = useRoute();
 const changeId = route.params.changeId as string;
-const { navigateTo } = useSession();
+const { navigateTo, queueSessionInitialPrompt } = useSession();
 const change = ref<ChangeDetailType | null>(null);
 const artifacts = ref<ChangeArtifact[]>([]);
 const taskGroups = ref<TaskGroup[]>([]);
-const activeTab = ref<"proposal" | "design" | "specs" | "tasks">("proposal");
-const editing = ref(false);
-const editContent = ref("");
-const editingArtifactId = ref<string | null>(null);
+const activeTab = ref<"explore" | "spec" | "task">("explore");
 
 async function fetchData() {
   const [changeRes, artifactsRes, tasksRes] = await Promise.all([
@@ -34,22 +31,8 @@ function getArtifact(type: string) {
   return artifacts.value.find(a => a.type === type);
 }
 
-function startEdit(type: string) {
-  const art = getArtifact(type);
-  editContent.value = art?.content || "";
-  editingArtifactId.value = art?.id || null;
-  editing.value = true;
-}
-
-async function saveEdit(type: string) {
-  if (!changeId) return;
-  if (editingArtifactId.value) {
-    await updateArtifact(changeId, editingArtifactId.value, { content: editContent.value });
-  } else {
-    await createArtifact(changeId, { type, content: editContent.value });
-  }
-  editing.value = false;
-  await fetchData();
+function getSpecArtifacts() {
+  return artifacts.value.filter(a => a.type === "spec");
 }
 
 async function toggleTask(taskId: string, currentStatus: string) {
@@ -67,6 +50,19 @@ async function doArchive() {
   }
 }
 
+async function continueExplore() {
+  if (!changeId) return;
+  const res = await startExplore(changeId);
+  if (res.ok && res.data) {
+    queueSessionInitialPrompt(res.data.session_id, buildExploreContinuePrompt({
+      changeName: change.value?.name || "",
+      workDir: change.value?.work_dir || "",
+      exploreSummary: change.value?.explore_summary || "",
+    }));
+    navigateTo("chat", { sessionId: res.data.session_id });
+  }
+}
+
 const allTasksDone = () => {
   if (!change.value) return false;
   return change.value.task_counts.total > 0 && change.value.task_counts.done === change.value.task_counts.total;
@@ -81,70 +77,40 @@ onMounted(fetchData);
       <button @click="navigateTo('changes')">Back</button>
       <h2>{{ change?.name || "Loading..." }}</h2>
       <span v-if="change" class="status-badge" :class="change.status">{{ change.status.replace('_', ' ') }}</span>
+      <button v-if="change" @click="continueExplore">Continue Explore</button>
       <button v-if="allTasksDone()" class="primary" @click="doArchive">Archive</button>
     </div>
 
     <div class="tabs">
-      <button :class="{ active: activeTab === 'proposal' }" @click="activeTab = 'proposal'">Proposal</button>
-      <button :class="{ active: activeTab === 'design' }" @click="activeTab = 'design'">Design</button>
-      <button :class="{ active: activeTab === 'specs' }" @click="activeTab = 'specs'">Specs</button>
-      <button :class="{ active: activeTab === 'tasks' }" @click="activeTab = 'tasks'">Tasks</button>
+      <button :class="{ active: activeTab === 'explore' }" @click="activeTab = 'explore'">Explore</button>
+      <button :class="{ active: activeTab === 'spec' }" @click="activeTab = 'spec'">Spec</button>
+      <button :class="{ active: activeTab === 'task' }" @click="activeTab = 'task'">Task</button>
     </div>
 
     <div class="tab-content">
-      <!-- Proposal Tab -->
-      <template v-if="activeTab === 'proposal'">
-        <template v-if="editing">
-          <textarea v-model="editContent" class="textarea" rows="16"></textarea>
-          <div class="form-actions">
-            <button @click="editing = false">Cancel</button>
-            <button class="primary" @click="saveEdit('proposal')">Save</button>
-          </div>
-        </template>
-        <template v-else>
-          <div v-if="getArtifact('proposal')">
-            <button class="edit-btn" @click="startEdit('proposal')">Edit</button>
-            <pre class="content">{{ getArtifact('proposal')!.content }}</pre>
-          </div>
-          <div v-else class="empty">
-            <button class="primary" @click="startEdit('proposal')">Create Proposal</button>
-          </div>
-        </template>
+      <!-- Explore Tab -->
+      <template v-if="activeTab === 'explore'">
+        <div v-if="change?.explore_summary" class="explore-summary">
+          <pre class="content">{{ change.explore_summary }}</pre>
+        </div>
+        <div v-else class="empty">
+          <button class="primary" @click="continueExplore">Start Explore</button>
+        </div>
       </template>
 
-      <!-- Design Tab -->
-      <template v-if="activeTab === 'design'">
-        <template v-if="editing">
-          <textarea v-model="editContent" class="textarea" rows="16"></textarea>
-          <div class="form-actions">
-            <button @click="editing = false">Cancel</button>
-            <button class="primary" @click="saveEdit('design')">Save</button>
-          </div>
-        </template>
-        <template v-else>
-          <div v-if="getArtifact('design')">
-            <button class="edit-btn" @click="startEdit('design')">Edit</button>
-            <pre class="content">{{ getArtifact('design')!.content }}</pre>
-          </div>
-          <div v-else class="empty">
-            <button class="primary" @click="startEdit('design')">Create Design</button>
-          </div>
-        </template>
-      </template>
-
-      <!-- Specs Tab -->
-      <template v-if="activeTab === 'specs'">
-        <div v-for="art in artifacts.filter(a => a.type === 'spec')" :key="art.id" class="spec-section">
+      <!-- Spec Tab -->
+      <template v-if="activeTab === 'spec'">
+        <div v-for="art in getSpecArtifacts()" :key="art.id" class="spec-section">
           <details>
             <summary>{{ art.capability || 'Unnamed' }}</summary>
             <pre class="content">{{ art.content }}</pre>
           </details>
         </div>
-        <div v-if="artifacts.filter(a => a.type === 'spec').length === 0" class="empty">No spec artifacts</div>
+        <div v-if="getSpecArtifacts().length === 0" class="empty">No spec artifacts</div>
       </template>
 
-      <!-- Tasks Tab -->
-      <template v-if="activeTab === 'tasks'">
+      <!-- Task Tab -->
+      <template v-if="activeTab === 'task'">
         <div v-for="group in taskGroups" :key="group.group_name" class="task-group">
           <div class="group-header">
             <span class="group-name">{{ group.group_name }}</span>
@@ -160,7 +126,8 @@ onMounted(fetchData);
             <span class="task-status-badge" :class="task.status">{{ task.status }}</span>
           </div>
         </div>
-        <div v-if="taskGroups.length === 0" class="empty">No tasks</div>
+        <pre v-if="taskGroups.length === 0 && getArtifact('tasks')" class="content">{{ getArtifact('tasks')!.content }}</pre>
+        <div v-if="taskGroups.length === 0 && !getArtifact('tasks')" class="empty">No tasks</div>
       </template>
     </div>
   </div>
@@ -174,6 +141,10 @@ onMounted(fetchData);
 .tabs button { padding: 6px 12px; border-radius: 4px 4px 0 0; border: 1px solid transparent; background: transparent; color: var(--color-text-muted, #888); cursor: pointer; }
 .tabs button.active { border-color: var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); color: var(--color-text-primary, #eee); }
 .tab-content { flex: 1; overflow-y: auto; }
+.explore-summary {
+  max-width: 860px;
+  padding: 12px 0;
+}
 .content { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
 .textarea { width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); color: inherit; font-family: monospace; font-size: 13px; resize: vertical; }
 .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }

@@ -8,6 +8,8 @@ import { useMessageTree } from "../composables/useMessageTree";
 import { useMessage } from "../composables/useMessage";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
 import { listCheckpoints, rewindToCheckpoint, type Checkpoint } from "../api/checkpoints";
+import { getApplyContext } from "../api/changes";
+import { buildApplyPrompt } from "../prompts";
 import FolderPicker from "../components/FolderPicker.vue";
 import ChangeChatPanel from "../components/ChangeChatPanel.vue";
 import ArtifactReview from "../components/ArtifactReview.vue";
@@ -31,6 +33,7 @@ const isEditingWorkDir = ref(false);
 const editWorkDir = ref("");
 const sessionTitle = computed(() => currentSession.value?.title || "");
 const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
+const isExploreSession = computed(() => currentSession.value?.session_type === "explore");
 
 // Sidebar panels
 const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, registerPanel } = useSidebarPanels();
@@ -54,7 +57,7 @@ type Block =
   | { kind: "text"; content: string }
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall }
-  | { kind: "ask_user"; question: string; options: string[]; answered: boolean; selected?: string };
+  | { kind: "ask_user"; question: string; options: string[]; answered: boolean; selected?: string; customMode?: boolean; customAnswer?: string };
 
 type RenderItem =
   | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
@@ -62,7 +65,7 @@ type RenderItem =
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall }
   | { kind: "tool-group"; tools: ToolCall[] }
-  | { kind: "ask_user"; question: string; options: string[]; answered: boolean; selected?: string };
+  | { kind: "ask_user"; question: string; options: string[]; answered: boolean; selected?: string; customMode?: boolean; customAnswer?: string };
 
 const blocks = ref<Block[]>([]);
 const input = ref("");
@@ -257,6 +260,11 @@ const editingMessageId = ref<string | null>(null);
 const editingContent = ref("");
 
 const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
+const exploreStarters = [
+  "从代码库现状开始，帮我找出这个需求还缺哪些关键信息。",
+  "先用选项问题确认用户目标、范围边界和验收标准。",
+  "按快速探索模式推进，只确认能进入 Spec 和 Task 的最小信息。",
+];
 
 const groupExpanded = ref<Record<number, boolean>>({});
 
@@ -363,6 +371,41 @@ function toolSummary(tc: ToolCall): string {
 function renderMarkdown(text: string): string {
   const raw = marked.parse(text, { async: false }) as string;
   return DOMPurify.sanitize(raw);
+}
+
+function applyExploreStarter(starter: string) {
+  input.value = starter;
+  nextTick(autoResize);
+}
+
+async function restoreInitialPrompt() {
+  const key = `hank_initial_prompt:${props.sessionId}`;
+  const raw = sessionStorage.getItem(key);
+  if (!raw) return;
+  if (blocks.value.length > 0 || input.value.trim()) {
+    sessionStorage.removeItem(key);
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as { content?: string; autoSend?: boolean };
+    if (parsed.autoSend && (!isConnected.value || isStreaming.value)) {
+      // Connection not ready yet — leave in sessionStorage for retry on next tick
+      return;
+    }
+    sessionStorage.removeItem(key);
+    input.value = parsed.content || "";
+    await nextTick();
+    autoResize();
+    if (parsed.autoSend && input.value.trim()) {
+      await send();
+    }
+  } catch {
+    sessionStorage.removeItem(key);
+    input.value = raw;
+    await nextTick();
+    autoResize();
+  }
 }
 
 async function connect() {
@@ -488,6 +531,9 @@ function handleServerEvent(event: any) {
         question: event.question,
         options: event.options || [],
         answered: false,
+        selected: undefined,
+        customMode: false,
+        customAnswer: "",
       });
       break;
     case "explore_complete":
@@ -842,13 +888,35 @@ async function send(parentIdOverride?: string) {
   }
 }
 
-async function answerAskUser(answer: string, blockIndex: number) {
+function selectAskUserOption(item: Extract<RenderItem, { kind: "ask_user" }>, answer: string) {
+  if (item.answered || isStreaming.value) return;
+  item.selected = answer;
+  item.customMode = false;
+  item.customAnswer = "";
+}
+
+function startCustomAskUser(item: Extract<RenderItem, { kind: "ask_user" }>) {
+  if (item.answered || isStreaming.value) return;
+  item.selected = "";
+  item.customMode = true;
+  item.customAnswer = "";
+  nextTick(() => {
+    const inputs = document.querySelectorAll<HTMLInputElement>(".ask-card-custom-input");
+    inputs[inputs.length - 1]?.focus();
+  });
+}
+
+async function submitAskUser(item: Extract<RenderItem, { kind: "ask_user" }>) {
+  const answer = item.customMode ? (item.customAnswer || "").trim() : (item.selected || "").trim();
+  if (!answer || item.answered || isStreaming.value) return;
+  await answerAskUser(item, answer);
+}
+
+async function answerAskUser(item: Extract<RenderItem, { kind: "ask_user" }>, answer: string) {
   // Mark the ask_user block as answered
-  const block = blocks.value[blockIndex];
-  if (block && block.kind === "ask_user") {
-    block.answered = true;
-    block.selected = answer;
-  }
+  item.answered = true;
+  item.selected = answer;
+  item.customMode = false;
   // Send the answer as a regular chat message (server detects pending_ask_user)
   input.value = answer;
   await send();
@@ -865,7 +933,14 @@ async function handleApplyChange(changeId: string) {
   if (!isConnected.value || isStreaming.value) return;
   closePanel();
   activeApplyChangeId.value = changeId;
-  const content = "请根据 Change 的 specs 和 tasks 开始实施变更。";
+
+  const ctxResult = await getApplyContext(changeId);
+  if (!ctxResult.ok || !ctxResult.data) {
+    showWarning(ctxResult.msg || "获取 Change 上下文失败");
+    return;
+  }
+
+  const content = buildApplyPrompt({ changeContext: ctxResult.data.context });
   blocks.value.push({ kind: "user", content });
   isStreaming.value = true;
   currentSessionStreaming = true;
@@ -1322,6 +1397,8 @@ onMounted(async () => {
     }
   } catch { /* offline or not available */ }
 
+  await restoreInitialPrompt();
+
   // Listen for ACP events from Tauri backend
   try {
     acpUnlisten = await listen<{ session_id: string; event: any }>("acp-event", (ev) => {
@@ -1363,9 +1440,15 @@ watch(() => props.sessionId, async () => {
   await loadHistory();
   await fetchTree(props.sessionId);
   await fetchCheckpoints();
+  await restoreInitialPrompt();
   nextTick(() => {
     messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight });
   });
+});
+
+// Retry restoreInitialPrompt when connection becomes ready
+watch(isConnected, async (connected) => {
+  if (connected) await restoreInitialPrompt();
 });
 
 // Watch for external branch switches (from outline panel)
@@ -1477,8 +1560,9 @@ function scrollToMessageId(id: string | null) {
     </div>
 
     <!-- Explore mode banner -->
-    <div v-if="currentSession?.session_type === 'explore'" class="explore-banner">
-      Explore Mode — Describe what you want to build. The AI will ask questions and create a Change when ready.
+    <div v-if="isExploreSession" class="explore-banner">
+      <span>Explore</span>
+      <span>先确认问题，再沉淀为 Spec / Task 输入</span>
     </div>
 
     <!-- Artifact Review Panel -->
@@ -1606,34 +1690,73 @@ function scrollToMessageId(id: string | null) {
             </div>
           </div>
           <!-- Ask User Options -->
-          <div v-else-if="item.kind === 'ask_user'" class="ask-user-block">
-            <div class="ask-user-question">{{ item.question }}</div>
-            <div class="ask-user-options">
+          <div v-else-if="item.kind === 'ask_user'" class="ask-card">
+            <div class="ask-card-tabs">
+              <button class="ask-card-tab active" type="button">问题 1</button>
+            </div>
+            <div class="ask-card-body">
+              <div class="ask-card-question">{{ item.question }}</div>
+              <div class="ask-card-options">
+                <button
+                  v-for="(opt, oi) in item.options"
+                  :key="oi"
+                  type="button"
+                  class="ask-card-option"
+                  :class="{ selected: item.selected === opt && !item.customMode }"
+                  :disabled="item.answered || isStreaming"
+                  @click="selectAskUserOption(item, opt)"
+                >{{ opt }}</button>
+                <div class="ask-card-custom">
+                  <input
+                    v-if="item.customMode && !item.answered"
+                    v-model="item.customAnswer"
+                    type="text"
+                    class="ask-card-custom-input"
+                    placeholder="输入自己的答案..."
+                    :disabled="isStreaming"
+                    @keydown.enter.prevent="submitAskUser(item)"
+                    @keydown.escape="item.customMode = false"
+                  />
+                  <button
+                    v-else
+                    type="button"
+                    class="ask-card-option"
+                    :class="{ selected: item.customMode || (!!item.selected && !item.options.includes(item.selected)) }"
+                    :disabled="item.answered || isStreaming"
+                    @click="startCustomAskUser(item)"
+                  >{{ item.answered && item.selected && !item.options.includes(item.selected) ? item.selected : '自定义答案' }}</button>
+                </div>
+              </div>
+            </div>
+            <div class="ask-card-footer">
+              <div v-if="item.answered" class="ask-card-answered">已提交：{{ item.selected }}</div>
+              <div v-else class="ask-card-spacer"></div>
               <button
-                v-for="(opt, oi) in item.options"
-                :key="oi"
-                class="ask-user-option"
-                :class="{ selected: item.selected === opt, disabled: item.answered }"
-                :disabled="item.answered || isStreaming"
-                @click="answerAskUser(opt, idx)"
-              >{{ opt }}</button>
-            </div>
-            <div v-if="!item.answered" class="ask-user-freetext">
-              <input
-                type="text"
-                placeholder="或输入自定义回答..."
-                class="ask-user-input"
-                :disabled="isStreaming"
-                @keydown.enter="($event) => { const el = $event.target as HTMLInputElement; if (el.value.trim()) { answerAskUser(el.value.trim(), idx); el.value = ''; } }"
-              />
-            </div>
-            <div v-if="item.answered" class="ask-user-answered">
-              已回答: {{ item.selected }}
+                type="button"
+                class="ask-card-submit"
+                :disabled="item.answered || isStreaming || !(item.customMode ? item.customAnswer?.trim() : item.selected)"
+                @click="submitAskUser(item)"
+              >提交</button>
             </div>
           </div>
         </template>
         <div v-if="isStreaming && blocks.length === 0" class="streaming-dot"></div>
         <div class="scroll-spacer"></div>
+      </div>
+    </div>
+
+    <div v-else-if="isExploreSession" class="flex-1 explore-empty">
+      <div class="explore-empty-panel">
+        <div class="explore-empty-title">Explore -> Spec -> Task</div>
+        <div class="explore-empty-copy">选择一个起手式，或直接描述你想构建的能力。</div>
+        <div class="explore-starters">
+          <button
+            v-for="starter in exploreStarters"
+            :key="starter"
+            class="explore-starter"
+            @click="applyExploreStarter(starter)"
+          >{{ starter }}</button>
+        </div>
       </div>
     </div>
 
@@ -1657,7 +1780,7 @@ function scrollToMessageId(id: string | null) {
             @input="autoResize"
             @paste="handlePaste"
             :disabled="!isConnected"
-            :placeholder="!isConnected ? '离线' : ''"
+            :placeholder="!isConnected ? '离线' : isExploreSession ? '描述需求，或让模型先阅读代码并追问...' : ''"
             class="input-field"
             rows="1"
             aria-label="Message input"
@@ -1864,12 +1987,67 @@ function scrollToMessageId(id: string | null) {
 }
 
 .explore-banner {
-  padding: 6px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 7px 16px;
   font-size: 12px;
-  color: #c084fc;
-  background: rgba(192, 132, 252, 0.08);
-  border-bottom: 1px solid rgba(192, 132, 252, 0.2);
-  text-align: center;
+  color: oklch(0.82 0.08 315);
+  background: oklch(0.2 0.035 315 / 0.42);
+  border-bottom: 1px solid oklch(0.55 0.09 315 / 0.28);
+}
+.explore-banner span:first-child {
+  font-weight: 700;
+  color: oklch(0.88 0.08 315);
+}
+.explore-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+}
+.explore-empty-panel {
+  width: min(720px, 100%);
+}
+.explore-empty-title {
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--color-text-primary);
+  margin-bottom: 6px;
+}
+.explore-empty-copy {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  margin-bottom: 16px;
+}
+.explore-starters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.explore-starter {
+  min-height: 76px;
+  padding: 11px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-1);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.explore-starter:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-accent);
+  color: var(--color-text-primary);
+}
+@media (max-width: 760px) {
+  .explore-starters {
+    grid-template-columns: 1fr;
+  }
 }
 .context-bar {
   display: flex;
@@ -2453,70 +2631,128 @@ function scrollToMessageId(id: string | null) {
   background: rgba(96, 165, 250, 0.15);
 }
 
-/* Ask User Options */
-.ask-user-block {
-  padding: 14px 16px;
-  background: color-mix(in srgb, var(--color-accent, #6366f1) 6%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-accent, #6366f1) 20%, transparent);
+/* Ask User Card */
+.ask-card {
+  margin: 10px 0;
+  border: 1px solid color-mix(in oklch, var(--color-accent) 30%, transparent);
   border-radius: 8px;
-  margin: 8px 0;
+  background: var(--color-surface-1);
+  overflow: hidden;
 }
-.ask-user-question {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--color-text-primary);
-  margin-bottom: 10px;
-}
-.ask-user-options {
+.ask-card-tabs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 8px;
+  min-height: 38px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-0);
+  overflow-x: auto;
 }
-.ask-user-option {
-  padding: 6px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--color-accent, #6366f1) 40%, transparent);
-  background: color-mix(in srgb, var(--color-accent, #6366f1) 8%, transparent);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.ask-user-option:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-accent, #6366f1) 18%, transparent);
-  border-color: var(--color-accent, #6366f1);
-}
-.ask-user-option.selected {
-  background: var(--color-accent, #6366f1);
-  color: white;
-  border-color: var(--color-accent, #6366f1);
-}
-.ask-user-option.disabled {
-  opacity: 0.5;
+.ask-card-tab {
+  min-width: 96px;
+  padding: 9px 14px;
+  border: 0;
+  border-right: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 600;
   cursor: default;
+  white-space: nowrap;
 }
-.ask-user-freetext {
-  margin-top: 6px;
-}
-.ask-user-input {
-  width: 100%;
-  padding: 7px 12px;
-  font-size: 13px;
-  border-radius: 6px;
-  border: 1px solid var(--color-border, #333);
-  background: var(--color-surface-1, #1a1a1a);
+.ask-card-tab.active {
   color: var(--color-text-primary);
+  background: color-mix(in oklch, var(--color-accent) 12%, var(--color-surface-1));
+}
+.ask-card-body {
+  padding: 14px 16px;
+}
+.ask-card-question {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.55;
+  margin-bottom: 12px;
+}
+.ask-card-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ask-card-option {
+  width: 100%;
+  min-height: 38px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-0);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.ask-card-option:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  border-color: var(--color-accent);
+  background: var(--color-surface-2);
+}
+.ask-card-option.selected {
+  color: var(--color-text-primary);
+  border-color: var(--color-accent);
+  background: color-mix(in oklch, var(--color-accent) 16%, var(--color-surface-1));
+}
+.ask-card-option:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+.ask-card-custom {
+  min-height: 38px;
+}
+.ask-card-custom-input {
+  width: 100%;
+  min-height: 38px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--color-accent);
+  background: var(--color-surface-0);
+  color: var(--color-text-primary);
+  font-size: 13px;
   outline: none;
 }
-.ask-user-input:focus {
-  border-color: var(--color-accent, #6366f1);
+.ask-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--color-border-subtle);
+  background: color-mix(in oklch, var(--color-surface-0) 75%, transparent);
 }
-.ask-user-answered {
+.ask-card-spacer {
+  flex: 1;
+}
+.ask-card-answered {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-muted);
   font-size: 12px;
-  color: var(--color-text-secondary);
-  margin-top: 6px;
-  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ask-card-submit {
+  min-width: 82px;
+  padding: 7px 16px;
+  border: 1px solid var(--color-accent);
+  border-radius: 6px;
+  background: var(--color-accent);
+  color: var(--color-surface-0);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.ask-card-submit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 </style>

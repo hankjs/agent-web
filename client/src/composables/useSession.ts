@@ -15,11 +15,23 @@ export interface Session {
   updated_at: string;
 }
 
+interface NewSessionOptions {
+  initialPrompt?: string;
+  autoSendInitialPrompt?: boolean;
+}
+
 const sessions = ref<Session[]>([]);
 const currentSession = ref<Session | null>(null);
 const TOKEN_KEY = "hank_client_token";
 const token = ref(localStorage.getItem(TOKEN_KEY) || "");
 const isAuthenticated = ref(!!token.value);
+
+export function queueSessionInitialPrompt(sessionId: string, content: string, autoSend = true) {
+  sessionStorage.setItem(`hank_initial_prompt:${sessionId}`, JSON.stringify({
+    content,
+    autoSend,
+  }));
+}
 
 function setToken(t: string) {
   token.value = t;
@@ -61,7 +73,13 @@ async function fetchSessions() {
   }
 }
 
-async function createSession(router: ReturnType<typeof useRouter>, workDir?: string, environment?: "remote" | "local", sessionType?: "chat" | "explore"): Promise<Session | null> {
+async function createSession(
+  router: ReturnType<typeof useRouter>,
+  workDir?: string,
+  environment?: "remote" | "local",
+  sessionType?: "chat" | "explore",
+  options?: NewSessionOptions,
+): Promise<Session | null> {
   const result = await apiRequest<Session>("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -73,6 +91,9 @@ async function createSession(router: ReturnType<typeof useRouter>, workDir?: str
   if (!session.session_type) session.session_type = sessionType || "chat";
   sessions.value.unshift(session);
   currentSession.value = session;
+  if (options?.initialPrompt) {
+    queueSessionInitialPrompt(session.id, options.initialPrompt, options.autoSendInitialPrompt ?? false);
+  }
   router.push({ name: "chat", params: { sessionId: session.id } });
   return session;
 }
@@ -148,9 +169,10 @@ export function useSession() {
     token: readonly(token),
     isAuthenticated: readonly(isAuthenticated),
     fetchSessions,
-    createSession: (workDir?: string, environment?: "remote" | "local", sessionType?: "chat" | "explore") =>
-      createSession(router, workDir, environment, sessionType),
-    createExploreSession: (workDir?: string) => createSession(router, workDir, "remote", "explore"),
+    createSession: (workDir?: string, environment?: "remote" | "local", sessionType?: "chat" | "explore", options?: NewSessionOptions) =>
+      createSession(router, workDir, environment, sessionType, options),
+    createExploreSession: (workDir?: string, options?: NewSessionOptions) => createSession(router, workDir, "remote", "explore", options),
+    queueSessionInitialPrompt,
     selectSession: (session: Session) => selectSession(session, router),
     deleteSession: (id: string) => deleteSession(id, router),
     goBack: () => { currentSession.value = null; router.push({ name: "sessions" }); fetchSessions(); },

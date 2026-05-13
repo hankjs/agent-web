@@ -17,7 +17,8 @@ const activeTab = ref(0);
 const editing = ref(false);
 const editContent = ref("");
 
-const draftArtifacts = computed(() => artifacts.value.filter(a => a.status === "draft"));
+const phaseArtifacts = computed(() => artifacts.value.filter(a => a.type === "spec" || a.type === "tasks"));
+const draftArtifacts = computed(() => phaseArtifacts.value.filter(a => a.status === "draft"));
 
 async function fetchArtifacts() {
   loading.value = true;
@@ -48,6 +49,12 @@ function cancelEdit() {
   editing.value = false;
 }
 
+function artifactLabel(art: ChangeArtifact): string {
+  if (art.type === "spec") return art.capability || "Spec";
+  if (art.type === "tasks") return "Task";
+  return art.capability || art.type;
+}
+
 async function handleConfirm() {
   await confirmArtifacts(props.changeId);
   emit("confirmed");
@@ -59,7 +66,7 @@ onMounted(fetchArtifacts);
 <template>
   <div class="artifact-review">
     <div class="review-header">
-      <span class="review-title">Review Artifacts</span>
+      <span class="review-title">Review Spec / Task</span>
       <div class="review-actions">
         <button class="confirm-btn" @click="handleConfirm" :disabled="draftArtifacts.length === 0">Confirm All</button>
         <button class="close-btn" @click="emit('close')">&times;</button>
@@ -76,7 +83,7 @@ onMounted(fetchArtifacts);
           class="tab-btn"
           :class="{ active: activeTab === i }"
           @click="activeTab = i; editing = false"
-        >{{ art.capability || art.type }}</button>
+        >{{ artifactLabel(art) }}</button>
       </div>
 
       <div class="tab-content">

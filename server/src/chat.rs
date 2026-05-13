@@ -314,58 +314,9 @@ pub async fn chat_handler(
         let max_attempts = fallback_list.len().min(3);
         let mut last_error = String::new();
 
-        // Build system prompt based on context
-        let system_prompt = if session_type == "explore" {
-            // Explore session — use explore prompt
-            let change_ctx = if let Some(ref cid) = session_change_id {
-                format!("\nChange ID: {}", cid)
-            } else {
-                String::new()
-            };
-            format!(
-                "You are exploring a project to understand requirements for a change.\n\
-                 Use the ask_user tool to present questions with options to the user.\n\
-                 Read project files to understand the codebase, then ask clarifying questions.\n\
-                 Keep asking until you have enough context to generate a complete proposal.\n\
-                 When ready, use the finalize_explore tool with a comprehensive summary and a short name for the change.{}",
-                change_ctx
-            )
-        } else if let Some(ref apply_cid) = apply_change_id {
-            // Apply mode — fetch change context and augment prompt
-            let ctx = match db.list_artifacts(apply_cid).await {
-                Ok(artifacts) => {
-                    let tasks = db.list_tasks(apply_cid).await.unwrap_or_default();
-                    let change = db.get_change(apply_cid).await.ok().flatten();
-                    let name = change.map(|c| c.name).unwrap_or_default();
-                    let mut ctx = format!("# Change: {}\n\n", name);
-                    if let Some(proposal) = artifacts.iter().find(|a| a.artifact_type == "proposal") {
-                        ctx.push_str("## Proposal\n\n");
-                        ctx.push_str(&proposal.content);
-                        ctx.push_str("\n\n");
-                    }
-                    if let Some(design) = artifacts.iter().find(|a| a.artifact_type == "design") {
-                        ctx.push_str("## Design\n\n");
-                        ctx.push_str(&design.content);
-                        ctx.push_str("\n\n");
-                    }
-                    if !tasks.is_empty() {
-                        ctx.push_str("## Tasks\n\n");
-                        for task in &tasks {
-                            let marker = if task.status == "done" { "x" } else { " " };
-                            ctx.push_str(&format!("- [{}] {}\n", marker, task.title));
-                        }
-                    }
-                    ctx
-                }
-                Err(_) => String::new(),
-            };
-            format!(
-                "You are a helpful AI assistant implementing a change. Execute the pending tasks sequentially.\n\
-                 Use update_task_status to mark tasks as done when complete.\n\n{}", ctx
-            )
-        } else {
-            "You are a helpful AI assistant with access to shell commands. Execute tasks the user requests.".to_string()
-        };
+        // Business prompts are assembled by the client. The server keeps a
+        // neutral fallback prompt while it forwards requests and records logs.
+        let system_prompt = "You are a helpful AI assistant. Follow the user's message exactly.".to_string();
 
         // If apply_change_id provided, bind session to change
         if let Some(ref apply_cid) = apply_change_id {

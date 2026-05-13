@@ -557,20 +557,6 @@ pub async fn get_change_context(
     // Assemble context markdown
     let mut ctx = format!("# Change: {}\n\n", change.name);
 
-    // Proposal
-    if let Some(proposal) = artifacts.iter().find(|a| a.artifact_type == "proposal") {
-        ctx.push_str("## Proposal\n\n");
-        ctx.push_str(&proposal.content);
-        ctx.push_str("\n\n");
-    }
-
-    // Design
-    if let Some(design) = artifacts.iter().find(|a| a.artifact_type == "design") {
-        ctx.push_str("## Design\n\n");
-        ctx.push_str(&design.content);
-        ctx.push_str("\n\n");
-    }
-
     // Specs
     let spec_artifacts: Vec<_> = artifacts.iter().filter(|a| a.artifact_type == "spec").collect();
     if !spec_artifacts.is_empty() {

@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import { useSession } from "../composables/useSession";
+import { buildExplorePrompt } from "../prompts";
 
 const { sessions, createSession } = useSession();
 
 const emit = defineEmits<{ close: [] }>();
 
 const selectedKey = ref<string | null>(null);
+const depth = ref<"quick" | "standard" | "deep">("standard");
+const questionStyle = ref<"guided" | "open">("guided");
+const focusAreas = ref<string[]>(["用户目标", "核心流程", "边界条件", "交付标准"]);
+
+const focusOptions = ["用户目标", "核心流程", "数据与接口", "界面体验", "边界条件", "迁移兼容", "交付标准"];
 
 interface ProjectEntry {
   work_dir: string;
@@ -38,10 +44,34 @@ function getSelected(): ProjectEntry | undefined {
   return projects.value.find(p => `${p.work_dir}::${p.environment}` === selectedKey.value);
 }
 
+function toggleFocus(area: string) {
+  if (focusAreas.value.includes(area)) {
+    focusAreas.value = focusAreas.value.filter(a => a !== area);
+  } else {
+    focusAreas.value.push(area);
+  }
+}
+
+function buildInitialExplorePrompt(sel: ProjectEntry): string {
+  const depthText = depth.value === "quick" ? "快速探索，优先确认最小可实施范围" : depth.value === "deep" ? "深入探索，覆盖实现风险、验收标准和任务拆分" : "标准探索，先澄清需求再形成可生成 Spec 和 Task 的摘要";
+  const styleText = questionStyle.value === "guided" ? "优先用 ask_user 给出 2 到 3 个互斥选项，并保留自定义回答空间" : "可以用开放问题深入追问，但每轮问题要聚焦";
+
+  return buildExplorePrompt({
+    projectLabel: sel.label,
+    workDir: sel.work_dir,
+    depth: depthText,
+    questionStyle: styleText,
+    focusAreas: focusAreas.value.join("、") || "由你根据代码库判断",
+  });
+}
+
 async function submit() {
   const sel = getSelected();
   if (!sel) return;
-  await createSession(sel.work_dir, sel.environment, "explore");
+  await createSession(sel.work_dir, sel.environment, "explore", {
+    initialPrompt: buildInitialExplorePrompt(sel),
+    autoSendInitialPrompt: true,
+  });
   emit("close");
 }
 </script>
@@ -54,7 +84,31 @@ async function submit() {
         <button class="close-btn" @click="emit('close')">&times;</button>
       </div>
       <div class="modal-body">
-        <div class="project-label">选择项目：</div>
+        <div class="field-label">探索深度</div>
+        <div class="segmented">
+          <button :class="{ active: depth === 'quick' }" @click="depth = 'quick'">快速</button>
+          <button :class="{ active: depth === 'standard' }" @click="depth = 'standard'">标准</button>
+          <button :class="{ active: depth === 'deep' }" @click="depth = 'deep'">深入</button>
+        </div>
+
+        <div class="field-label">提问方式</div>
+        <div class="segmented">
+          <button :class="{ active: questionStyle === 'guided' }" @click="questionStyle = 'guided'">选项优先</button>
+          <button :class="{ active: questionStyle === 'open' }" @click="questionStyle = 'open'">开放追问</button>
+        </div>
+
+        <div class="field-label">关注范围</div>
+        <div class="focus-grid">
+          <button
+            v-for="area in focusOptions"
+            :key="area"
+            class="focus-chip"
+            :class="{ active: focusAreas.includes(area) }"
+            @click="toggleFocus(area)"
+          >{{ area }}</button>
+        </div>
+
+        <div class="project-label">选择项目</div>
         <div class="project-options">
           <div
             v-for="p in projects" :key="`${p.work_dir}::${p.environment}`"
@@ -91,8 +145,8 @@ async function submit() {
 .modal-content {
   background: var(--color-surface-0, #111);
   border: 1px solid var(--color-border-subtle, #333);
-  border-radius: 12px;
-  width: 420px;
+  border-radius: 8px;
+  width: 520px;
   max-width: 90vw;
   max-height: 80vh;
   display: flex;
@@ -110,17 +164,64 @@ async function submit() {
 .close-btn { background: none; border: none; color: var(--color-text-muted, #888); font-size: 20px; cursor: pointer; padding: 0 4px; }
 .close-btn:hover { color: var(--color-text-primary, #eee); }
 .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
-.project-label { font-size: 12px; color: var(--color-text-muted, #888); margin-bottom: 8px; }
+.field-label, .project-label { display: block; font-size: 12px; color: var(--color-text-muted, #888); margin-bottom: 8px; }
+.project-label { margin-top: 16px; }
+.segmented {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 7px;
+  background: var(--color-surface-1, #1a1a1a);
+  border: 1px solid var(--color-border-subtle, #333);
+  margin-bottom: 14px;
+}
+.segmented button {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-muted, #888);
+  font-size: 12px;
+  padding: 7px 8px;
+  cursor: pointer;
+}
+.segmented button.active {
+  background: var(--color-surface-3, #333);
+  color: var(--color-text-primary, #eee);
+}
+.focus-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.focus-chip {
+  min-height: 32px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-subtle, #333);
+  background: transparent;
+  color: var(--color-text-secondary, #aaa);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.focus-chip.active {
+  border-color: var(--color-accent, #3b82f6);
+  background: color-mix(in oklch, var(--color-accent, #3b82f6) 14%, transparent);
+  color: var(--color-text-primary, #eee);
+}
 .project-options { display: flex; flex-direction: column; gap: 6px; }
 .project-option {
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
   border: 1px solid var(--color-border-subtle, #333);
   transition: background 0.12s, border-color 0.12s;
 }
 .project-option:hover { background: var(--color-surface-hover, #1a1a1a); }
-.project-option.active { border-color: var(--color-accent, #3b82f6); background: rgba(59, 130, 246, 0.08); }
+.project-option.active { border-color: var(--color-accent, #3b82f6); background: color-mix(in oklch, var(--color-accent, #3b82f6) 12%, transparent); }
 .project-top { display: flex; align-items: center; gap: 8px; }
 .project-name { font-size: 13px; font-weight: 500; color: var(--color-text-primary, #eee); }
 .env-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; text-transform: uppercase; }

@@ -3,7 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-/// Tool that stores generated artifacts (proposal, design, specs, tasks) as drafts.
+/// Tool that stores generated spec and task artifacts as drafts.
 pub struct GenerateArtifactsTool {
     base_url: String,
     token: String,
@@ -23,21 +23,13 @@ impl Tool for GenerateArtifactsTool {
     }
 
     fn description(&self) -> &str {
-        "Generate all change artifacts at once. Provide proposal, design, specs, and tasks as structured output. All artifacts are saved as drafts for user review."
+        "Generate change artifacts for the Spec and Task phases. Provide specs and tasks as structured output. All artifacts are saved as drafts for user review."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "proposal": {
-                    "type": "string",
-                    "description": "The proposal markdown content"
-                },
-                "design": {
-                    "type": "string",
-                    "description": "The design document markdown content"
-                },
                 "specs": {
                     "type": "array",
                     "items": {
@@ -55,7 +47,7 @@ impl Tool for GenerateArtifactsTool {
                     "description": "The tasks markdown content (task list with groups)"
                 }
             },
-            "required": ["proposal", "design", "specs", "tasks"]
+            "required": ["specs", "tasks"]
         })
     }
 
@@ -64,7 +56,7 @@ impl Tool for GenerateArtifactsTool {
         let mut count = 0u32;
 
         // Helper to create an artifact
-let create = |atype: &str, capability: Option<&str>, content: &str| {
+        let create = |atype: &str, capability: Option<&str>, content: &str| {
             let mut body = json!({
                 "type": atype,
                 "content": content,
@@ -78,22 +70,6 @@ let create = |atype: &str, capability: Option<&str>, content: &str| {
                 .json(&body)
                 .send()
         };
-
-        // Create proposal
-        if let Some(proposal) = input["proposal"].as_str() {
-            if !proposal.is_empty() {
-                let resp = create("proposal", None, proposal).await?;
-                if resp.status().is_success() { count += 1; }
-            }
-        }
-
-        // Create design
-        if let Some(design) = input["design"].as_str() {
-            if !design.is_empty() {
-                let resp = create("design", None, design).await?;
-                if resp.status().is_success() { count += 1; }
-            }
-        }
 
         // Create specs
         if let Some(specs) = input["specs"].as_array() {

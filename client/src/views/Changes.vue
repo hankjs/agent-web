@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useSession } from "../composables/useSession";
-import { listChanges, createChange, type Change } from "../api/changes";
+import { listChanges, type Change } from "../api/changes";
+import NewChangeDialog from "../components/NewChangeDialog.vue";
 
 const { navigateTo } = useSession();
 const changes = ref<Change[]>([]);
 const statusFilter = ref("all");
 const showCreate = ref(false);
-const newName = ref("");
 
 const filteredChanges = computed(() => {
   if (statusFilter.value === "all") return changes.value;
@@ -17,16 +17,6 @@ const filteredChanges = computed(() => {
 async function fetchChanges() {
   const res = await listChanges();
   if (res.ok && res.data) changes.value = res.data;
-}
-
-async function submitCreate() {
-  if (!newName.value.trim()) return;
-  const res = await createChange(newName.value.trim());
-  if (res.ok && res.data) {
-    navigateTo("change-detail", { changeId: res.data.id });
-  }
-  showCreate.value = false;
-  newName.value = "";
 }
 
 function openDetail(id: string) {
@@ -64,12 +54,6 @@ onMounted(fetchChanges);
       >{{ tab === 'all' ? '全部' : tab === 'draft' ? '草稿' : tab === 'in_progress' ? '进行中' : '已完成' }}</button>
     </div>
 
-    <div v-if="showCreate" class="create-form">
-      <input v-model="newName" placeholder="需求名称" class="input" @keyup.enter="submitCreate" />
-      <button class="primary" @click="submitCreate">创建</button>
-      <button @click="showCreate = false">取消</button>
-    </div>
-
     <div class="changes-grid">
       <div
         v-for="change in filteredChanges" :key="change.id"
@@ -84,6 +68,8 @@ onMounted(fetchChanges);
       </div>
       <div v-if="filteredChanges.length === 0" class="empty">暂无需求</div>
     </div>
+
+    <NewChangeDialog v-if="showCreate" @close="showCreate = false; fetchChanges()" />
   </div>
 </template>
 
@@ -94,7 +80,6 @@ onMounted(fetchChanges);
 .status-tabs { display: flex; gap: 4px; }
 .status-tabs button { padding: 4px 10px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: transparent; color: var(--color-text-muted, #888); cursor: pointer; font-size: 12px; text-transform: capitalize; }
 .status-tabs button.active { background: var(--color-surface-2, #252525); color: var(--color-text-primary, #eee); }
-.create-form { display: flex; gap: 8px; align-items: center; }
 .input { padding: 8px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); color: inherit; flex: 1; }
 .changes-grid { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1; }
 .change-card { padding: 12px; border-radius: 8px; border: 1px solid var(--color-border, #333); cursor: pointer; }

@@ -2,6 +2,7 @@
 import { ref, onMounted, watch } from "vue";
 import { listChanges, createChange, startExplore, triggerGenerate, confirmArtifacts, type Change } from "../api/changes";
 import { useSession } from "../composables/useSession";
+import { buildExploreContinuePrompt, buildGeneratePrompt } from "../prompts";
 
 const props = defineProps<{
   workDir: string;
@@ -15,7 +16,7 @@ const emit = defineEmits<{
   reviewChange: [changeId: string];
 }>();
 
-const { navigateTo } = useSession();
+const { navigateTo, queueSessionInitialPrompt } = useSession();
 
 const changes = ref<Change[]>([]);
 const loading = ref(false);
@@ -44,6 +45,11 @@ async function handleCreate() {
 async function handleExplore(change: Change) {
   const result = await startExplore(change.id);
   if (result.ok && result.data) {
+    queueSessionInitialPrompt(result.data.session_id, buildExploreContinuePrompt({
+      changeName: change.name,
+      workDir: change.work_dir || props.workDir,
+      exploreSummary: change.explore_summary || "",
+    }));
     emit("navigateSession", result.data.session_id);
   }
 }
@@ -51,6 +57,11 @@ async function handleExplore(change: Change) {
 async function handleGenerate(change: Change) {
   const result = await triggerGenerate(change.id);
   if (result.ok && result.data) {
+    queueSessionInitialPrompt(result.data.session_id, buildGeneratePrompt({
+      changeName: change.name,
+      workDir: change.work_dir || props.workDir,
+      exploreSummary: change.explore_summary || "",
+    }));
     emit("navigateSession", result.data.session_id);
   }
 }
