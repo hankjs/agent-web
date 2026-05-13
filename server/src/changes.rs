@@ -608,7 +608,7 @@ pub async fn start_explore(
 
     // Create a dedicated session for explore
     let work_dir = change.work_dir.as_deref();
-    let session = match state.db.create_session("", "", work_dir, Some(&claims.sub), None, Some("explore")).await {
+    let session = match state.db.create_session("", "", work_dir, Some(&claims.sub), None, Some("explore"), None).await {
         Ok(s) => s,
         Err(e) => return R::internal_error(e),
     };

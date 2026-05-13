@@ -61,6 +61,7 @@ pub struct CreateSessionRequest {
     pub work_dir: Option<String>,
     pub environment: Option<String>,
     pub session_type: Option<String>,
+    pub metadata: Option<String>,
 }
 
 pub async fn create_session(
@@ -87,7 +88,7 @@ pub async fn create_session(
 
     match state
         .db
-        .create_session(&provider, &model, body.work_dir.as_deref(), Some(&claims.sub), body.environment.as_deref(), body.session_type.as_deref())
+        .create_session(&provider, &model, body.work_dir.as_deref(), Some(&claims.sub), body.environment.as_deref(), body.session_type.as_deref(), body.metadata.as_deref())
         .await
     {
         Ok(session) => R::created(serde_json::json!(session)),
@@ -133,6 +134,7 @@ pub struct UpdateSessionRequest {
     pub local_agent: Option<String>,
     pub local_work_dir: Option<String>,
     pub change_id: Option<String>,
+    pub metadata: Option<String>,
 }
 
 pub async fn update_session(
@@ -157,6 +159,11 @@ pub async fn update_session(
     }
     if let Some(ref change_id) = body.change_id {
         if let Err(e) = state.db.set_session_change_id(&id, change_id).await {
+            return R::internal_error(e);
+        }
+    }
+    if let Some(ref metadata) = body.metadata {
+        if let Err(e) = state.db.update_session_metadata(&id, metadata).await {
             return R::internal_error(e);
         }
     }
@@ -241,14 +248,16 @@ pub async fn post_message(
     Json(body): Json<PostMessageRequest>,
 ) -> impl IntoResponse {
     // Verify session exists
-    match state.db.get_session(&id).await {
+    let session = match state.db.get_session(&id).await {
+        Ok(Some(s)) => s,
         Ok(None) => return R::not_found("session not found"),
         Err(e) => return R::internal_error(e),
-        _ => {}
-    }
+    };
 
     let now = chrono::Utc::now();
-    let parent_id = body.parent_id.as_deref();
+    // If parent_id not provided, fall back to session's active_leaf_id to prevent broken chains
+    let parent_id = body.parent_id.as_deref()
+        .or(session.active_leaf_id.as_deref());
 
     match state.db.save_message(&id, &body.role, &body.content, now, parent_id).await {
         Ok(msg_id) => {

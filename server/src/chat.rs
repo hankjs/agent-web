@@ -391,7 +391,9 @@ pub async fn chat_handler(
 
                         let error_content = serde_json::json!([{"type": "error", "text": format!("{e:#}")}]);
                         let ts = chrono::Utc::now();
-                        let _ = db.save_message(&sid, "assistant", &error_content, ts, parent_for_chain.as_deref()).await;
+                        if let Ok(err_id) = db.save_message(&sid, "assistant", &error_content, ts, parent_for_chain.as_deref()).await {
+                            let _ = db.update_active_leaf(&sid, &err_id).await;
+                        }
                         let _ = db.touch_session(&sid).await;
                         break;
                     }

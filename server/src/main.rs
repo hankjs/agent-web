@@ -4,6 +4,7 @@ mod changes;
 mod chat;
 mod checkpoints;
 mod config;
+mod llm;
 pub mod provider_registry;
 pub mod response;
 mod routes;
@@ -124,6 +125,8 @@ async fn main() -> Result<()> {
         .route("/api/sessions/{id}/chat", post(chat::chat_handler))
         .route("/api/sessions/{id}/stop", post(chat::stop_handler))
         .route("/api/sessions/{id}/events/resume", get(chat::resume_handler))
+        .route("/api/llm/completion", post(llm::completion_handler))
+        .route("/api/llm/tool-exec", post(llm::tool_exec_handler))
         .route("/api/fs/list", get(routes::list_directory))
         // Specs routes
         .route("/api/specs", get(specs::list_specs))

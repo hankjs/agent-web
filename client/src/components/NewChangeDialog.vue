@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
 import { useSession } from "../composables/useSession";
-import { buildExplorePrompt } from "../prompts";
 
 const { sessions, createSession } = useSession();
 
@@ -52,25 +51,15 @@ function toggleFocus(area: string) {
   }
 }
 
-function buildInitialExplorePrompt(sel: ProjectEntry): string {
-  const depthText = depth.value === "quick" ? "快速探索，优先确认最小可实施范围" : depth.value === "deep" ? "深入探索，覆盖实现风险、验收标准和任务拆分" : "标准探索，先澄清需求再形成可生成 Spec 和 Task 的摘要";
-  const styleText = questionStyle.value === "guided" ? "优先用 ask_user 给出 2 到 3 个互斥选项，并保留自定义回答空间" : "可以用开放问题深入追问，但每轮问题要聚焦";
-
-  return buildExplorePrompt({
-    projectLabel: sel.label,
-    workDir: sel.work_dir,
-    depth: depthText,
-    questionStyle: styleText,
-    focusAreas: focusAreas.value.join("、") || "由你根据代码库判断",
-  });
-}
-
 async function submit() {
   const sel = getSelected();
   if (!sel) return;
   await createSession(sel.work_dir, sel.environment, "explore", {
-    initialPrompt: buildInitialExplorePrompt(sel),
-    autoSendInitialPrompt: true,
+    metadata: {
+      depth: depth.value,
+      questionStyle: questionStyle.value,
+      focusAreas: focusAreas.value,
+    },
   });
   emit("close");
 }

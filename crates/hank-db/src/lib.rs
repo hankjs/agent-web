@@ -63,6 +63,7 @@ pub struct Session {
     pub change_id: Option<String>,
     pub pending_ask_user: Option<String>,
     pub active_leaf_id: Option<String>,
+    pub metadata: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -286,6 +287,7 @@ impl Database {
                 change_id VARCHAR(36) DEFAULT NULL,
                 pending_ask_user JSON DEFAULT NULL,
                 active_leaf_id VARCHAR(36) DEFAULT NULL,
+                metadata TEXT DEFAULT NULL,
                 created_at DATETIME NOT NULL DEFAULT NOW(),
                 updated_at DATETIME NOT NULL DEFAULT NOW(),
                 INDEX idx_sessions_user (user_id),
@@ -565,14 +567,14 @@ impl Database {
     }
 
     // Sessions
-    pub async fn create_session(&self, provider: &str, model: &str, work_dir: Option<&str>, user_id: Option<&str>, environment: Option<&str>, session_type: Option<&str>) -> Result<Session> {
+    pub async fn create_session(&self, provider: &str, model: &str, work_dir: Option<&str>, user_id: Option<&str>, environment: Option<&str>, session_type: Option<&str>, metadata: Option<&str>) -> Result<Session> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         let env = environment.unwrap_or("remote");
         let s_type = session_type.unwrap_or("chat");
         db_retry!(
             sqlx::query(
-                "INSERT INTO sessions (id, user_id, title, provider, model, work_dir, environment, session_type, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO sessions (id, user_id, title, provider, model, work_dir, environment, session_type, metadata, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&id)
             .bind(user_id)
@@ -581,6 +583,7 @@ impl Database {
             .bind(work_dir)
             .bind(env)
             .bind(s_type)
+            .bind(metadata)
             .bind(now)
             .bind(now)
             .execute(&self.pool)
@@ -600,6 +603,7 @@ impl Database {
             change_id: None,
             pending_ask_user: None,
             active_leaf_id: None,
+            metadata: metadata.map(|s| s.to_string()),
             created_at: now,
             updated_at: now,
         })
@@ -608,7 +612,7 @@ impl Database {
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
         let sessions = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, metadata, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
             )
             .fetch_all(&self.pool)
         )?;
@@ -618,7 +622,7 @@ impl Database {
     pub async fn list_sessions_by_user(&self, user_id: &str) -> Result<Vec<Session>> {
         let sessions = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, created_at, updated_at FROM sessions WHERE user_id = ? ORDER BY updated_at DESC"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, metadata, created_at, updated_at FROM sessions WHERE user_id = ? ORDER BY updated_at DESC"
             )
             .bind(user_id)
             .fetch_all(&self.pool)
@@ -629,7 +633,7 @@ impl Database {
     pub async fn get_session(&self, id: &str) -> Result<Option<Session>> {
         let session = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, created_at, updated_at FROM sessions WHERE id = ?"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, metadata, created_at, updated_at FROM sessions WHERE id = ?"
             )
             .bind(id)
             .fetch_optional(&self.pool)
@@ -660,6 +664,16 @@ impl Database {
         db_retry!(
             sqlx::query("UPDATE sessions SET work_dir = ?, updated_at = NOW() WHERE id = ?")
                 .bind(work_dir)
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn update_session_metadata(&self, id: &str, metadata: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("UPDATE sessions SET metadata = ?, updated_at = NOW() WHERE id = ?")
+                .bind(metadata)
                 .bind(id)
                 .execute(&self.pool)
         )?;
@@ -1629,7 +1643,7 @@ impl Database {
     pub async fn get_session_by_change_id(&self, change_id: &str) -> Result<Option<Session>> {
         let session = db_retry!(
             sqlx::query_as::<_, Session>(
-                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, created_at, updated_at FROM sessions WHERE change_id = ? ORDER BY updated_at DESC LIMIT 1"
+                "SELECT id, user_id, title, provider, model, work_dir, local_agent, local_work_dir, environment, session_type, change_id, pending_ask_user, active_leaf_id, metadata, created_at, updated_at FROM sessions WHERE change_id = ? ORDER BY updated_at DESC LIMIT 1"
             )
             .bind(change_id)
             .fetch_optional(&self.pool)
