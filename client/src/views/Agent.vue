@@ -5,31 +5,20 @@ import DOMPurify from "dompurify";
 import { useSession, authFetch } from "../composables/useSession";
 import { useExploreAgent, type ExplorePhase } from "../agents/ExploreAgent";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
+import AgentLayout from "../components/AgentLayout.vue";
+import AgentHeader from "../components/AgentHeader.vue";
+import AgentInput from "../components/AgentInput.vue";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 
 const props = defineProps<{ sessionId: string }>();
 
 const { currentSession, sessions, goBack, updateSessionTitle, updateSessionWorkDir } = useSession();
 
-// Title editing
-const isEditingTitle = ref(false);
-const editTitle = ref("");
-const titleInputRef = ref<HTMLInputElement | null>(null);
 const sessionTitle = computed(() => currentSession.value?.title || "");
 const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
 
-function startEditTitle() {
-  editTitle.value = currentSession.value?.title || "";
-  isEditingTitle.value = true;
-  nextTick(() => titleInputRef.value?.focus());
-}
-function cancelEditTitle() { isEditingTitle.value = false; }
-async function confirmEditTitle() {
-  const newTitle = editTitle.value.trim();
-  isEditingTitle.value = false;
-  if (newTitle !== (currentSession.value?.title || "")) {
-    await updateSessionTitle(props.sessionId, newTitle);
-  }
+async function handleUpdateTitle(newTitle: string) {
+  await updateSessionTitle(props.sessionId, newTitle);
 }
 
 // Sidebar
@@ -49,7 +38,6 @@ const blocks = ref<Block[]>([]);
 const input = ref("");
 const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
-const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const changesPanelRefreshKey = ref(0);
 
 // Explore agent
@@ -81,25 +69,10 @@ function scrollToBottom() {
   }
 }
 
-function autoResize() {
-  const el = textareaRef.value;
-  if (!el) return;
-  el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, 200) + "px";
-}
-
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    send();
-  }
-}
-
 async function send() {
   if (!input.value.trim() || isStreaming.value) return;
   const content = input.value.trim();
   input.value = "";
-  nextTick(() => { if (textareaRef.value) textareaRef.value.style.height = "auto"; });
   await exploreAgent.handleUserInput(content);
 }
 
@@ -143,31 +116,23 @@ watch(() => currentSession.value, (s) => {
 </script>
 
 <template>
-  <div class="agent-page">
-    <!-- Header -->
-    <div class="agent-header">
-      <button class="back-btn" @click="goBack" aria-label="Back">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 12L6 8L10 4"/></svg>
-      </button>
-      <template v-if="isEditingTitle">
-        <input
-          ref="titleInputRef"
-          v-model="editTitle"
-          class="title-input"
-          @keydown.enter="confirmEditTitle"
-          @keydown.escape="cancelEditTitle"
-        />
-        <button class="title-action-btn confirm" @click="confirmEditTitle" aria-label="Confirm">&#10003;</button>
-        <button class="title-action-btn cancel" @click="cancelEditTitle" aria-label="Cancel">&#10005;</button>
-      </template>
-      <span v-else class="agent-title" @click="startEditTitle">{{ sessionTitle || 'Explore' }}</span>
-      <template v-if="currentSession?.metadata && !isEditingTitle">
-        <span class="explore-chip">{{ currentSession.metadata.depth === 'quick' ? '快速' : currentSession.metadata.depth === 'deep' ? '深入' : '标准' }}</span>
-        <span class="explore-chip">{{ currentSession.metadata.questionStyle === 'open' ? '开放追问' : '选项优先' }}</span>
-        <span class="explore-chip" v-if="currentSession.metadata.focusAreas?.length">{{ currentSession.metadata.focusAreas.join('、') }}</span>
-      </template>
-      <span v-if="sessionWorkDir && !isEditingTitle" class="agent-workdir">{{ sessionWorkDir }}</span>
-    </div>
+  <AgentLayout :active-panel-id="activePanelId">
+    <template #header>
+      <AgentHeader
+        :title="sessionTitle || 'Explore'"
+        :work-dir="sessionWorkDir"
+        @back="goBack"
+        @update:title="handleUpdateTitle"
+      >
+        <template #badges>
+          <template v-if="currentSession?.metadata">
+            <span class="explore-chip">{{ currentSession.metadata.depth === 'quick' ? '快速' : currentSession.metadata.depth === 'deep' ? '深入' : '标准' }}</span>
+            <span class="explore-chip">{{ currentSession.metadata.questionStyle === 'open' ? '开放追问' : '选项优先' }}</span>
+            <span class="explore-chip" v-if="currentSession.metadata.focusAreas?.length">{{ currentSession.metadata.focusAreas.join('、') }}</span>
+          </template>
+        </template>
+      </AgentHeader>
+    </template>
 
     <!-- Messages area -->
     <div v-if="blocks.length > 0 || isStreaming" ref="messagesEl" class="agent-messages">
@@ -241,65 +206,39 @@ watch(() => currentSession.value, (s) => {
         <div class="agent-empty-title">Explore -> Spec -> Task</div>
         <div class="agent-empty-copy">选择一个起手式，或直接描述你想构建的能力。</div>
         <div class="agent-starters">
-          <button v-for="s in starters" :key="s" class="agent-starter" @click="input = s; nextTick(autoResize)">{{ s }}</button>
+          <button v-for="s in starters" :key="s" class="agent-starter" @click="input = s">{{ s }}</button>
         </div>
       </div>
     </div>
 
-    <!-- Input -->
-    <div class="agent-input-area" :class="blocks.length === 0 && !isStreaming ? 'input-centered' : 'input-docked'">
-      <div class="agent-input-wrapper">
-        <textarea
-          ref="textareaRef"
-          v-model="input"
-          @keydown="handleKeydown"
-          @input="autoResize"
-          placeholder="描述需求，或让模型先阅读代码并追问..."
-          class="agent-input-field"
-          rows="1"
-          aria-label="Message input"
-        ></textarea>
-        <button
-          class="agent-send-btn"
-          :class="{ 'stop-mode': isStreaming }"
-          @click="isStreaming ? stop() : send()"
-          :disabled="!isStreaming && !input.trim()"
-          :aria-label="isStreaming ? 'Stop' : 'Send'"
-        >
-          <svg v-if="!isStreaming" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 14V3M8 3L3 8M8 3L13 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="12" height="12" rx="2" fill="currentColor"/></svg>
-        </button>
-      </div>
-    </div>
+    <template #input>
+      <AgentInput
+        v-model="input"
+        :is-streaming="isStreaming"
+        :is-connected="true"
+        :is-empty="isEmpty"
+        placeholder="描述需求，或让模型先阅读代码并追问..."
+        :show-image-upload="false"
+        @send="send"
+        @stop="stop"
+      />
+    </template>
 
-    <!-- Sidebar -->
-    <div v-if="activePanelId" class="agent-sidebar">
-      <div class="sidebar-panel-header">
-        <span>{{ sidebarPanels.find(p => p.id === activePanelId)?.title }}</span>
-        <button class="sidebar-panel-close" @click="closePanel">&times;</button>
+    <template #sidebar>
+      <div v-if="activePanelId" class="agent-sidebar">
+        <div class="sidebar-panel-header">
+          <span>{{ sidebarPanels.find(p => p.id === activePanelId)?.title }}</span>
+          <button class="sidebar-panel-close" @click="closePanel">&times;</button>
+        </div>
+        <div class="sidebar-panel-body">
+          <ChangeChatPanel v-if="activePanelId === 'changes'" :session-id="sessionId" :work-dir="currentSession?.work_dir || ''" :key="changesPanelRefreshKey" />
+        </div>
       </div>
-      <div class="sidebar-panel-body">
-        <ChangeChatPanel v-if="activePanelId === 'changes'" :session-id="sessionId" :work-dir="currentSession?.work_dir || ''" :key="changesPanelRefreshKey" />
-      </div>
-    </div>
-  </div>
+    </template>
+  </AgentLayout>
 </template>
 
 <style scoped>
-.agent-page { display: flex; flex-direction: column; height: 100vh; background: var(--color-bg); position: relative; }
-.agent-header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--color-border-subtle); }
-.back-btn { background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 4px; border-radius: 4px; }
-.back-btn:hover { color: var(--color-text-primary); background: var(--color-surface-1); }
-.agent-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: background 0.12s; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
-.agent-title:hover { background: var(--color-surface-1); }
-.agent-workdir { font-family: var(--font-mono); font-size: 12px; color: var(--color-text-muted); padding: 2px 6px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
-.title-input { font-size: 13px; font-weight: 500; color: var(--color-text-primary); background: var(--color-surface-1); border: 1px solid var(--color-border); border-radius: 4px; padding: 2px 8px; outline: none; min-width: 120px; max-width: 300px; }
-.title-input:focus { border-color: var(--color-accent-dim); }
-.title-action-btn { background: none; border: none; font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
-.title-action-btn.confirm { color: var(--color-success, #22c55e); }
-.title-action-btn.cancel { color: var(--color-error, #ef4444); }
-.title-action-btn:hover { opacity: 0.7; }
-
 .explore-chip { padding: 2px 8px; border-radius: 4px; background: oklch(0.25 0.04 315 / 0.6); font-size: 11px; color: oklch(0.85 0.06 315); }
 
 .agent-messages { flex: 1; overflow-y: auto; }
@@ -343,15 +282,6 @@ watch(() => currentSession.value, (s) => {
 .agent-starters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .agent-starter { min-height: 76px; padding: 11px 12px; border-radius: 7px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; text-align: left; cursor: pointer; transition: background 0.15s, border-color 0.15s, color 0.15s; }
 .agent-starter:hover { background: var(--color-surface-2); border-color: var(--color-accent); color: var(--color-text-primary); }
-
-.agent-input-area { padding: 16px 24px; border-top: 1px solid var(--color-border-subtle); }
-.agent-input-area.input-centered { position: absolute; bottom: 0; left: 0; right: 0; }
-.agent-input-wrapper { max-width: 720px; margin: 0 auto; display: flex; align-items: flex-end; gap: 8px; }
-.agent-input-field { flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); color: var(--color-text-primary); font-size: 14px; resize: none; outline: none; line-height: 1.5; }
-.agent-input-field:focus { border-color: var(--color-accent); }
-.agent-send-btn { width: 36px; height: 36px; border-radius: 8px; border: none; background: var(--color-accent); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.agent-send-btn:disabled { opacity: 0.4; cursor: default; }
-.agent-send-btn.stop-mode { background: oklch(0.55 0.15 25); }
 
 .agent-sidebar { position: absolute; top: 0; right: 0; bottom: 0; width: 360px; background: var(--color-bg); border-left: 1px solid var(--color-border-subtle); display: flex; flex-direction: column; z-index: 10; }
 .sidebar-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--color-border-subtle); font-size: 13px; font-weight: 600; }

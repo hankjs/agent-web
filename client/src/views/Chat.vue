@@ -10,6 +10,8 @@ import { useSidebarPanels } from "../composables/useSidebarPanels";
 import { listCheckpoints, rewindToCheckpoint, type Checkpoint } from "../api/checkpoints";
 import { getApplyContext } from "../api/changes";
 import { buildApplyPrompt } from "../agents/ChangeAgent";
+import AgentHeader from "../components/AgentHeader.vue";
+import AgentInput from "../components/AgentInput.vue";
 import FolderPicker from "../components/FolderPicker.vue";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 import ArtifactReview from "../components/ArtifactReview.vue";
@@ -26,9 +28,6 @@ const { login, token: sessionToken, updateSessionTitle, updateSessionWorkDir, se
 const { fetchTree, switchBranch, setActiveLeafId, activeLeafId, getSiblings, findLeafFromNode, hasBranching, treeNodes, scrollTargetId, clearScrollTarget } = useMessageTree();
 const { warning: showWarning } = useMessage();
 
-const isEditingTitle = ref(false);
-const editTitle = ref("");
-const titleInputRef = ref<HTMLInputElement | null>(null);
 const isEditingWorkDir = ref(false);
 const editWorkDir = ref("");
 const sessionTitle = computed(() => currentSession.value?.title || "");
@@ -74,8 +73,7 @@ const input = ref("");
 const isConnected = ref(false);
 const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
-const textareaRef = ref<HTMLTextAreaElement | null>(null);
-const fileInputRef = ref<HTMLInputElement | null>(null);
+const agentInputRef = ref<InstanceType<typeof AgentInput> | null>(null);
 const changesPanelRefreshKey = ref(0);
 const reviewingChangeId = ref<string | null>(null);
 const activeApplyChangeId = ref<string | null>(null);
@@ -112,78 +110,12 @@ async function handleRewind(checkpoint: Checkpoint) {
   }
 }
 
-// Image upload state
-interface PendingImage {
-  file: File;
-  preview: string;
-  media_type: string;
-  data: string;
-}
+// Image state is managed by AgentInput component
+import type { PendingImage } from "../components/AgentInput.vue";
 const pendingImages = ref<PendingImage[]>([]);
 
-function triggerImagePicker() {
-  fileInputRef.value?.click();
-}
-
-function handleImageSelect(e: Event) {
-  const files = (e.target as HTMLInputElement).files;
-  if (!files) return;
-  let hasInvalid = false;
-  for (const file of Array.from(files)) {
-    if (!file.type.startsWith("image/")) {
-      hasInvalid = true;
-      continue;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const base64 = dataUrl.split(",")[1];
-      pendingImages.value.push({
-        file,
-        preview: dataUrl,
-        media_type: file.type,
-        data: base64,
-      });
-    };
-    reader.readAsDataURL(file);
-  }
-  if (hasInvalid) {
-    showWarning("仅支持图片文件");
-  }
-  // Reset input so same file can be re-selected
-  (e.target as HTMLInputElement).value = "";
-}
-
-function removeImage(index: number) {
-  pendingImages.value.splice(index, 1);
-}
-
-function handlePaste(e: ClipboardEvent) {
-  const items = e.clipboardData?.items;
-  if (!items) return;
-  const imageFiles: File[] = [];
-  for (const item of Array.from(items)) {
-    if (item.type.startsWith("image/")) {
-      const file = item.getAsFile();
-      if (file) imageFiles.push(file);
-    }
-  }
-  if (imageFiles.length === 0) return;
-  e.preventDefault();
-  for (const file of imageFiles) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const base64 = dataUrl.split(",")[1];
-      pendingImages.value.push({
-        file,
-        preview: dataUrl,
-        media_type: file.type,
-        data: base64,
-      });
-    };
-    reader.readAsDataURL(file);
-  }
+function handleImagesChange(images: PendingImage[]) {
+  pendingImages.value = images;
 }
 
 // SSE reconnection state
@@ -200,11 +132,7 @@ const sessionEnvironment = computed(() => currentSession.value?.environment || "
 const configuredAgents = ref<Array<{ name: string; agent_type: string; binary_path: string }>>([]);
 const serverProviders = ref<Array<{ name: string; type: string; default_model: string }>>([]);
 
-interface ProviderOption {
-  name: string;
-  key: string;
-  source: "local" | "server";
-}
+import type { ProviderOption } from "../components/AgentInput.vue";
 
 const providerOptions = computed<ProviderOption[]>(() => {
   const opts: ProviderOption[] = [];
@@ -805,49 +733,12 @@ async function readSSEStream(reader: ReadableStreamDefaultReader<Uint8Array>) {
   }
 }
 
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-    e.preventDefault();
-    send();
-  }
-  // Ctrl+J inserts newline (Shift+Enter is default textarea behavior)
-  if (e.key === "j" && e.ctrlKey) {
-    e.preventDefault();
-    const ta = textareaRef.value;
-    if (!ta) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    input.value = input.value.substring(0, start) + "\n" + input.value.substring(end);
-    nextTick(() => {
-      ta.selectionStart = ta.selectionEnd = start + 1;
-      autoResize();
-    });
-  }
-}
-
 function autoResize() {
-  const ta = textareaRef.value;
-  if (!ta) return;
-  ta.style.height = "auto";
-  ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
+  // Delegated to AgentInput component
 }
 
-function startEditTitle() {
-  editTitle.value = currentSession.value?.title || "";
-  isEditingTitle.value = true;
-  nextTick(() => titleInputRef.value?.focus());
-}
-
-function cancelEditTitle() {
-  isEditingTitle.value = false;
-}
-
-async function confirmEditTitle() {
-  const newTitle = editTitle.value.trim();
-  isEditingTitle.value = false;
-  if (newTitle !== (currentSession.value?.title || "")) {
-    await updateSessionTitle(props.sessionId, newTitle);
-  }
+async function handleUpdateTitle(newTitle: string) {
+  await updateSessionTitle(props.sessionId, newTitle);
 }
 
 function startEditWorkDir() {
@@ -951,8 +842,8 @@ async function send(parentIdOverride?: string) {
   blocks.value.push({ kind: "user", content, images });
   input.value = "";
   pendingImages.value = [];
+  agentInputRef.value?.clearImages();
   nextTick(() => {
-    if (textareaRef.value) textareaRef.value.style.height = "auto";
     scrollToLastUserMessage();
   });
   isStreaming.value = true;
@@ -1403,7 +1294,6 @@ async function sendLocal() {
   blocks.value.push({ kind: "user", content });
   input.value = "";
   nextTick(() => {
-    if (textareaRef.value) textareaRef.value.style.height = "auto";
     scrollToLastUserMessage();
   });
   isStreaming.value = true;
@@ -1639,11 +1529,8 @@ onDeactivated(() => {
   resetPanels();
 });
 
-function closeProviderDropdown(e: MouseEvent) {
-  const target = e.target as HTMLElement;
-  if (!target.closest(".provider-selector")) {
-    showProviderDropdown.value = false;
-  }
+function closeProviderDropdown(_e: MouseEvent) {
+  // Provider dropdown is now managed by AgentInput
 }
 
 watch(() => props.sessionId, async () => {
@@ -1718,21 +1605,14 @@ function scrollToMessageId(id: string | null) {
 <template>
   <div class="flex h-full overflow-hidden">
     <div class="flex flex-col flex-1 h-full overflow-hidden">
-    <div class="context-bar">
-      <div class="context-bar-left">
-        <button class="back-btn" @click="goBack()" aria-label="Back to sessions">&larr;</button>
-        <template v-if="isEditingTitle">
-          <input
-            ref="titleInputRef"
-            v-model="editTitle"
-            class="title-input"
-            @keydown.enter="confirmEditTitle"
-            @keydown.escape="cancelEditTitle"
-          />
-          <button class="title-action-btn confirm" @click="confirmEditTitle" aria-label="Confirm title">&#10003;</button>
-          <button class="title-action-btn cancel" @click="cancelEditTitle" aria-label="Cancel edit">&#10005;</button>
-        </template>
-        <span v-else class="context-title" @click="startEditTitle">{{ sessionTitle || 'Untitled' }}</span>
+    <AgentHeader
+      :title="sessionTitle"
+      :work-dir="sessionWorkDir"
+      :show-work-dir="false"
+      @back="goBack()"
+      @update:title="handleUpdateTitle"
+    >
+      <template #badges>
         <span class="env-tag" :class="sessionEnvironment">{{ sessionEnvironment === 'local' ? 'Local' : 'Remote' }}</span>
         <template v-if="isEditingWorkDir">
           <div class="workdir-edit">
@@ -1741,8 +1621,7 @@ function scrollToMessageId(id: string | null) {
             <button class="title-action-btn cancel" @click="cancelEditWorkDir" aria-label="Cancel edit">&#10005;</button>
           </div>
         </template>
-        <span v-else-if="displayDir && !isEditingTitle" class="context-dir" @click="startEditWorkDir">{{ displayDir }}</span>
-        <!-- Local agent status indicator -->
+        <span v-else-if="displayDir" class="context-dir" @click="startEditWorkDir">{{ displayDir }}</span>
         <span
           v-if="sessionEnvironment === 'local'"
           class="agent-status"
@@ -1752,8 +1631,8 @@ function scrollToMessageId(id: string | null) {
           {{ localAgentStatus === 'running' ? 'Running' : localAgentStatus === 'stopped' ? 'Stopped' : 'Not Configured' }}
         </span>
         <span v-if="activeApplyChangeId" class="apply-indicator">Applying Change</span>
-      </div>
-      <div class="context-bar-right">
+      </template>
+      <template #actions>
         <button
           class="new-session-btn"
           :disabled="isCreatingSession"
@@ -1776,8 +1655,8 @@ function scrollToMessageId(id: string | null) {
             <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
           </svg>
         </button>
-      </div>
-    </div>
+      </template>
+    </AgentHeader>
 
     <!-- Artifact Review Panel -->
     <ArtifactReview
@@ -2046,90 +1925,21 @@ function scrollToMessageId(id: string | null) {
 
     <div v-else class="flex-1"></div>
 
-    <div class="input-area" :class="isEmpty ? 'input-centered' : 'input-docked'">
-      <div class="max-w-[720px] mx-auto w-full px-6">
-        <div class="input-wrapper">
-          <input
-            ref="fileInputRef"
-            type="file"
-            accept="image/*"
-            multiple
-            style="display: none"
-            @change="handleImageSelect"
-          />
-          <textarea
-            ref="textareaRef"
-            v-model="input"
-            @keydown="handleKeydown"
-            @input="autoResize"
-            @paste="handlePaste"
-            :disabled="!isConnected"
-            :placeholder="!isConnected ? '离线' : ''"
-            class="input-field"
-            rows="1"
-            aria-label="Message input"
-          ></textarea>
-          <button
-            class="send-btn"
-            :class="{ 'stop-mode': isStreaming }"
-            @click="isStreaming ? stop() : send()"
-            :disabled="!isConnected || (!isStreaming && !input.trim() && pendingImages.length === 0)"
-            :aria-label="isStreaming ? 'Stop generation' : 'Send message'"
-          >
-            <svg v-if="!isStreaming" width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M8 14V3M8 3L3 8M8 3L13 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <rect x="1" y="1" width="12" height="12" rx="2" fill="currentColor"/>
-            </svg>
-          </button>
-        </div>
-        <!-- Image previews -->
-        <div v-if="pendingImages.length > 0" class="image-preview-row">
-          <div v-for="(img, idx) in pendingImages" :key="idx" class="image-preview-item">
-            <img :src="img.preview" alt="Upload preview" />
-            <button class="image-remove-btn" @click="removeImage(idx)" aria-label="Remove image">&times;</button>
-          </div>
-        </div>
-        <div class="input-meta">
-          <div class="provider-selector" v-if="providerOptions.length > 0">
-            <button class="provider-current" @click="showProviderDropdown = !showProviderDropdown">
-              <span class="provider-source-dot" :class="selectedProviderSource"></span>
-              <span>{{ selectedProviderName || 'Select provider' }}</span>
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M2.5 4L5 6.5L7.5 4"/>
-              </svg>
-            </button>
-            <div v-if="showProviderDropdown" class="provider-dropdown">
-              <button
-                v-for="p in providerOptions"
-                :key="p.key"
-                class="provider-dropdown-item"
-                :class="{ active: selectedProvider === p.key }"
-                @click="selectedProvider = p.key; showProviderDropdown = false"
-              >
-                <span class="provider-source-dot" :class="p.source"></span>
-                <span class="provider-dropdown-name">{{ p.name }}</span>
-                <span class="provider-dropdown-tag">{{ p.source === 'local' ? 'Local' : 'Server' }}</span>
-              </button>
-            </div>
-          </div>
-          <button
-            class="image-upload-btn"
-            @click="triggerImagePicker"
-            :disabled="!isConnected || isStreaming || (sessionEnvironment === 'local' && selectedProviderSource === 'local')"
-            :title="sessionEnvironment === 'local' && selectedProviderSource === 'local' ? 'Images not supported with local agent' : 'Attach image'"
-            aria-label="Attach image"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-              <circle cx="8.5" cy="8.5" r="1.5"/>
-              <polyline points="21 15 16 10 5 21"/>
-            </svg>
-          </button>
-        </div>
-      </div>
-    </div>
+    <AgentInput
+      ref="agentInputRef"
+      v-model="input"
+      :is-streaming="isStreaming"
+      :is-connected="isConnected"
+      :is-empty="isEmpty"
+      :provider-options="providerOptions"
+      :selected-provider="selectedProvider"
+      :show-image-upload="true"
+      :disable-image-upload="sessionEnvironment === 'local' && selectedProviderSource === 'local'"
+      @update:selected-provider="selectedProvider = $event"
+      @send="send()"
+      @stop="stop()"
+      @images-change="handleImagesChange"
+    />
     </div>
 
     <!-- Sidebar Panel Content -->
