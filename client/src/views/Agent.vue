@@ -22,7 +22,7 @@ async function handleUpdateTitle(newTitle: string) {
 }
 
 // Sidebar
-const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, registerPanel, reset: resetPanels } = useSidebarPanels();
+const { activePanelId, registerPanel, reset: resetPanels } = useSidebarPanels();
 registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
 
 // Block types
@@ -224,17 +224,10 @@ watch(() => currentSession.value, (s) => {
       />
     </template>
 
-    <template #sidebar>
-      <div v-if="activePanelId" class="agent-sidebar">
-        <div class="sidebar-panel-header">
-          <span>{{ sidebarPanels.find(p => p.id === activePanelId)?.title }}</span>
-          <button class="sidebar-panel-close" @click="closePanel">&times;</button>
-        </div>
-        <div class="sidebar-panel-body">
-          <ChangeChatPanel v-if="activePanelId === 'changes'" :session-id="sessionId" :work-dir="currentSession?.work_dir || ''" :key="changesPanelRefreshKey" />
-        </div>
-      </div>
-    </template>
+    <!-- Panel content teleported to AppShell right panel -->
+    <Teleport to="#shell-panel-content" v-if="activePanelId">
+      <ChangeChatPanel v-if="activePanelId === 'changes'" :session-id="sessionId" :work-dir="currentSession?.work_dir || ''" :key="changesPanelRefreshKey" />
+    </Teleport>
   </AgentLayout>
 </template>
 
@@ -282,11 +275,6 @@ watch(() => currentSession.value, (s) => {
 .agent-starters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .agent-starter { min-height: 76px; padding: 11px 12px; border-radius: 7px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; text-align: left; cursor: pointer; transition: background 0.15s, border-color 0.15s, color 0.15s; }
 .agent-starter:hover { background: var(--color-surface-2); border-color: var(--color-accent); color: var(--color-text-primary); }
-
-.agent-sidebar { position: absolute; top: 0; right: 0; bottom: 0; width: 360px; background: var(--color-bg); border-left: 1px solid var(--color-border-subtle); display: flex; flex-direction: column; z-index: 10; }
-.sidebar-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--color-border-subtle); font-size: 13px; font-weight: 600; }
-.sidebar-panel-close { background: none; border: none; color: var(--color-text-muted); font-size: 16px; cursor: pointer; }
-.sidebar-panel-body { flex: 1; overflow-y: auto; }
 
 .streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1s infinite; }
 .scroll-spacer { height: 40px; }

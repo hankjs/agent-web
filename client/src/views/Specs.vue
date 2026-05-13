@@ -14,7 +14,6 @@ const editing = ref(false);
 const editContent = ref("");
 const creatingChange = ref(false);
 
-// Derive unique work_dirs from sessions (non-null only)
 const workDirs = computed(() => {
   const dirs = new Set<string>();
   for (const s of sessions.value) {
@@ -23,7 +22,6 @@ const workDirs = computed(() => {
   return Array.from(dirs).sort();
 });
 
-// Changes for selected work_dir
 const workDirChanges = computed(() => {
   if (!selectedWorkDir.value) return [];
   return changes.value.filter(c => c.work_dir === selectedWorkDir.value);
@@ -34,7 +32,6 @@ async function fetchAll() {
   const [specRes, changeRes] = await Promise.all([listSpecs(), listChanges()]);
   if (specRes.ok && specRes.data) specs.value = specRes.data;
   if (changeRes.ok && changeRes.data) changes.value = changeRes.data;
-  // Auto-select first work_dir if none selected
   if (!selectedWorkDir.value && workDirs.value.length > 0) {
     selectedWorkDir.value = workDirs.value[0];
   }
@@ -46,7 +43,7 @@ function selectWorkDir(dir: string) {
   editing.value = false;
   creatingChange.value = false;
 }
-// SPECS_VUE_PART2
+
 function selectSpec(spec: Spec) {
   selectedSpec.value = spec;
   editing.value = false;
@@ -67,10 +64,6 @@ async function saveEdit() {
     if (idx !== -1) specs.value[idx] = res.data;
   }
   editing.value = false;
-}
-
-function startCreateChange() {
-  creatingChange.value = true;
 }
 
 async function removeSpec(id: string) {
@@ -101,142 +94,353 @@ onMounted(fetchAll);
 </script>
 
 <template>
-  <div class="specs-page">
-    <div class="specs-header">
-      <button class="back-btn" @click="navigateTo('sessions')">返回</button>
-      <h2>项目</h2>
-    </div>
+  <div class="specs-view">
+    <header class="view-header">
+      <span class="view-title">规格</span>
+      <button class="action-btn primary" @click="creatingChange = true">新建需求</button>
+    </header>
 
-    <div class="specs-layout">
-      <!-- Left: work_dir list -->
-      <div class="workdir-list">
+    <div class="specs-body">
+      <!-- Project sidebar -->
+      <div class="project-list">
         <div
           v-for="dir in workDirs" :key="dir"
-          class="workdir-item" :class="{ active: selectedWorkDir === dir }"
+          class="project-item"
+          :class="{ active: selectedWorkDir === dir }"
           @click="selectWorkDir(dir)"
         >
-          <div class="workdir-name">{{ dirName(dir) }}</div>
-          <div class="workdir-path">{{ dir }}</div>
+          <span class="project-name">{{ dirName(dir) }}</span>
+          <span class="project-path">{{ dir }}</span>
         </div>
-        <div v-if="workDirs.length === 0" class="empty">暂无项目</div>
+        <div v-if="workDirs.length === 0" class="empty-inline">暂无项目</div>
       </div>
 
-      <!-- Right: specs + changes for selected work_dir -->
-      <div class="workdir-detail" v-if="selectedWorkDir">
-        <!-- Changes section -->
-        <div class="section">
-          <div class="section-header">
-            <h3>需求</h3>
-            <button class="create-btn" @click="startCreateChange">新建需求</button>
-          </div>
-
-          <template v-if="creatingChange">
-            <NewChangeDialog @close="creatingChange = false" />
-          </template>
-
-          <div v-else-if="workDirChanges.length" class="changes-list">
+      <!-- Detail area -->
+      <div class="detail-area" v-if="selectedWorkDir">
+        <!-- Changes -->
+        <section class="detail-section">
+          <h3 class="section-title">需求</h3>
+          <div v-if="workDirChanges.length" class="item-list">
             <div
               v-for="c in workDirChanges" :key="c.id"
-              class="change-row"
+              class="item-row"
               @click="openChange(c.id)"
             >
-              <span class="change-name">{{ c.name }}</span>
-              <span class="status-badge" :class="c.status">{{ c.status.replace('_', ' ') }}</span>
-              <span class="time">{{ relativeTime(c.updated_at) }}</span>
+              <span class="item-name">{{ c.name }}</span>
+              <span class="status-badge" :class="c.status">{{ c.status === 'draft' ? '草稿' : c.status === 'in_progress' ? '进行中' : '已完成' }}</span>
+              <span class="item-time">{{ relativeTime(c.updated_at) }}</span>
             </div>
           </div>
-          <div v-else class="empty-inline">该项目暂无需求</div>
-        </div>
+          <p v-else class="empty-inline">暂无需求</p>
+        </section>
 
-        <!-- Specs section -->
-        <div class="section">
-          <div class="section-header">
-            <h3>规格</h3>
-          </div>
-
-          <div v-if="specs.length" class="specs-list-inner">
+        <!-- Specs -->
+        <section class="detail-section">
+          <h3 class="section-title">规格文件</h3>
+          <div v-if="specs.length" class="item-list">
             <div
               v-for="spec in specs" :key="spec.id"
-              class="spec-item" :class="{ active: selectedSpec?.id === spec.id }"
+              class="item-row"
+              :class="{ active: selectedSpec?.id === spec.id }"
               @click="selectSpec(spec)"
             >
-              <div class="spec-cap">{{ spec.capability }}</div>
-              <div class="spec-meta">{{ spec.title }} · v{{ spec.version }} · {{ relativeTime(spec.updated_at) }}</div>
+              <span class="item-name">{{ spec.capability }}</span>
+              <span class="item-meta">v{{ spec.version }}</span>
+              <span class="item-time">{{ relativeTime(spec.updated_at) }}</span>
             </div>
           </div>
-          <div v-else class="empty-inline">暂无规格</div>
+          <p v-else class="empty-inline">暂无规格</p>
 
-          <!-- Spec detail -->
-          <template v-if="selectedSpec">
-            <div class="detail-header">
-              <h4>{{ selectedSpec.capability }}</h4>
-              <div class="detail-actions">
-                <button @click="startEdit" v-if="!editing">编辑</button>
-                <button @click="removeSpec(selectedSpec.id)" class="danger">删除</button>
+          <!-- Spec content -->
+          <div v-if="selectedSpec" class="spec-detail">
+            <div class="spec-detail-header">
+              <span class="spec-detail-title">{{ selectedSpec.capability }}</span>
+              <div class="spec-detail-actions">
+                <button v-if="!editing" class="action-btn" @click="startEdit">编辑</button>
+                <button class="action-btn danger" @click="removeSpec(selectedSpec.id)">删除</button>
               </div>
             </div>
-            <template v-if="editing">
-              <textarea v-model="editContent" class="textarea" rows="16"></textarea>
-              <div class="form-actions">
-                <button @click="editing = false">取消</button>
-                <button class="primary" @click="saveEdit">保存</button>
+            <div v-if="editing" class="edit-area">
+              <textarea v-model="editContent" class="edit-textarea" rows="16"></textarea>
+              <div class="edit-actions">
+                <button class="action-btn" @click="editing = false">取消</button>
+                <button class="action-btn primary" @click="saveEdit">保存</button>
               </div>
-            </template>
-            <template v-else>
-              <pre class="spec-content">{{ selectedSpec.content }}</pre>
-            </template>
-          </template>
-        </div>
+            </div>
+            <pre v-else class="spec-content">{{ selectedSpec.content }}</pre>
+          </div>
+        </section>
       </div>
-      <div v-else class="workdir-detail empty">请选择一个项目查看</div>
+      <div v-else class="detail-area empty-inline">选择项目查看</div>
     </div>
+
+    <NewChangeDialog v-if="creatingChange" @close="creatingChange = false" />
   </div>
 </template>
 
 <style scoped>
-.specs-page { display: flex; flex-direction: column; height: 100%; padding: 16px; gap: 12px; }
-.specs-header { display: flex; align-items: center; gap: 12px; }
-.specs-header h2 { flex: 1; margin: 0; font-size: 18px; }
-.specs-layout { display: flex; flex: 1; gap: 16px; overflow: hidden; }
-.workdir-list { width: 240px; overflow-y: auto; border-right: 1px solid var(--color-border, #333); padding-right: 12px; }
-.workdir-item { padding: 8px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; }
-.workdir-item:hover { background: var(--color-surface-1, #1a1a1a); }
-.workdir-item.active { background: var(--color-surface-2, #252525); }
-.workdir-name { font-weight: 600; font-size: 13px; }
-.workdir-path { font-size: 11px; color: var(--color-text-muted, #888); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workdir-detail { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
-.section { }
-.section-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.section-header h3 { flex: 1; margin: 0; font-size: 15px; }
-.changes-list { display: flex; flex-direction: column; gap: 4px; }
-.change-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; }
-.change-row:hover { background: var(--color-surface-1, #1a1a1a); }
-.change-name { flex: 1; font-weight: 500; }
-.status-badge { padding: 2px 6px; border-radius: 3px; font-size: 11px; text-transform: capitalize; }
-.status-badge.draft { background: #374151; color: #9ca3af; }
-.status-badge.in_progress { background: #1e3a5f; color: #60a5fa; }
-.status-badge.completed { background: #14532d; color: #4ade80; }
-.time { color: var(--color-text-muted, #888); font-size: 11px; }
-.specs-list-inner { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
-.spec-item { padding: 8px; border-radius: 6px; cursor: pointer; }
-.spec-item:hover { background: var(--color-surface-1, #1a1a1a); }
-.spec-item.active { background: var(--color-surface-2, #252525); }
-.spec-cap { font-weight: 600; font-size: 13px; }
-.spec-meta { font-size: 11px; color: var(--color-text-muted, #888); margin-top: 2px; }
-.detail-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; margin-top: 12px; }
-.detail-header h4 { flex: 1; margin: 0; font-size: 14px; }
-.detail-actions { display: flex; gap: 6px; }
-.spec-content { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
-.form { display: flex; flex-direction: column; gap: 8px; }
-.input { padding: 8px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); color: inherit; }
-.textarea { padding: 8px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); color: inherit; font-family: monospace; font-size: 13px; resize: vertical; }
-.form-actions { display: flex; gap: 8px; justify-content: flex-end; }
-button { padding: 6px 12px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); color: inherit; cursor: pointer; }
-button:hover { background: var(--color-surface-2, #252525); }
-button.primary { background: var(--color-accent, #3b82f6); border-color: var(--color-accent, #3b82f6); color: white; }
-button.danger { color: #ef4444; }
-.back-btn { font-size: 13px; }
-.create-btn { font-size: 13px; }
-.empty { color: var(--color-text-muted, #888); padding: 24px; text-align: center; }
-.empty-inline { color: var(--color-text-muted, #888); font-size: 13px; padding: 8px; }
+.specs-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-4);
+  height: var(--header-height);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.view-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.specs-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.project-list {
+  width: 180px;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-border-subtle);
+  padding: var(--space-2);
+  flex-shrink: 0;
+}
+
+.project-item {
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  margin-bottom: 2px;
+  transition: background var(--duration-fast);
+}
+
+.project-item:hover {
+  background: var(--color-surface-hover);
+}
+
+.project-item.active {
+  background: var(--color-surface-2);
+}
+
+.project-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.project-path {
+  display: block;
+  font-size: 10px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
+.detail-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.detail-section {}
+
+.section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 var(--space-2) 0;
+}
+
+.item-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.item-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast);
+  font-size: 12px;
+}
+
+.item-row:hover {
+  background: var(--color-surface-hover);
+}
+
+.item-row.active {
+  background: var(--color-surface-2);
+}
+
+.item-name {
+  flex: 1;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-meta {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+}
+
+.item-time {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.status-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.status-badge.draft {
+  color: var(--color-text-muted);
+  background: var(--color-surface-2);
+}
+
+.status-badge.in_progress {
+  color: var(--color-info);
+  background: var(--color-info-surface);
+}
+
+.status-badge.completed {
+  color: var(--color-success);
+  background: var(--color-success-surface);
+}
+
+.spec-detail {
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: var(--space-3);
+}
+
+.spec-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.spec-detail-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.spec-detail-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.spec-content {
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: var(--font-mono);
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.edit-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.edit-textarea {
+  width: 100%;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-0);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+}
+
+.edit-textarea:focus {
+  border-color: var(--color-accent);
+}
+
+.edit-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.action-btn {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--color-text-secondary);
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+
+.action-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.action-btn.primary {
+  background: var(--color-accent);
+  color: var(--color-surface-0);
+  border-color: transparent;
+}
+
+.action-btn.primary:hover {
+  background: var(--color-accent-hover);
+}
+
+.action-btn.danger {
+  color: var(--color-error);
+  border-color: var(--color-error);
+  opacity: 0.7;
+}
+
+.action-btn.danger:hover {
+  opacity: 1;
+}
+
+.empty-inline {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  padding: var(--space-2) 0;
+}
 </style>

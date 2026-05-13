@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import { useSession } from "../composables/useSession";
 import { listSkills, installSkill, uninstallSkill, type SkillInfo } from "../api/skills";
 
-const { sessions, fetchSessions, navigateTo } = useSession();
+const { sessions, fetchSessions } = useSession();
 const skills = ref<SkillInfo[]>([]);
 const loading = ref(false);
 const showInstall = ref(false);
@@ -27,7 +27,6 @@ const scopeLabel = computed(() => {
   return projectDir.value.split("/").pop() || "项目";
 });
 
-// 从 sessions 中提取项目列表
 const projects = computed(() => {
   const map = new Map<string, { work_dir: string; label: string }>();
   for (const s of sessions.value) {
@@ -40,10 +39,6 @@ const projects = computed(() => {
   }
   return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
 });
-
-function openScopePicker() {
-  showScopePicker.value = true;
-}
 
 function selectGlobal() {
   scope.value = "global";
@@ -107,117 +102,298 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="skills-page">
-    <div class="skills-header">
-      <button class="back-btn" @click="navigateTo('sessions')">返回</button>
-      <h2>Skills</h2>
-      <button class="scope-tag" @click="openScopePicker">{{ scopeLabel }}</button>
-      <button class="create-btn" @click="showInstall = true">安装 Skill</button>
-    </div>
-<!-- PLACEHOLDER_TEMPLATE_REST -->
-    <div v-if="!effectiveDir" class="empty">请先在会话中设置工作目录</div>
+  <div class="skills-view">
+    <header class="view-header">
+      <span class="view-title">Skills</span>
+      <div class="header-actions">
+        <button class="scope-btn" @click="showScopePicker = !showScopePicker">{{ scopeLabel }}</button>
+        <button class="action-btn primary" @click="showInstall = !showInstall">安装</button>
+      </div>
+    </header>
 
-    <template v-else>
+    <div class="view-body">
+      <!-- Install form (inline, not modal) -->
       <div v-if="showInstall" class="install-form">
-        <input v-model="installSource" placeholder="GitHub source (owner/repo)" class="input" />
-        <input v-model="installName" placeholder="Skill 名称" class="input" />
-        <input v-model="installPath" placeholder="路径 (默认 skill/SKILL.md)" class="input" />
-        <div class="form-actions">
-          <button class="primary" @click="submitInstall" :disabled="loading">安装</button>
-          <button @click="showInstall = false">取消</button>
+        <input v-model="installSource" placeholder="GitHub source (owner/repo)" class="form-input" />
+        <input v-model="installName" placeholder="Skill 名称" class="form-input" />
+        <input v-model="installPath" placeholder="路径 (默认 skill/SKILL.md)" class="form-input" />
+        <div class="form-row">
+          <button class="action-btn" @click="showInstall = false">取消</button>
+          <button class="action-btn primary" @click="submitInstall" :disabled="loading">安装</button>
         </div>
       </div>
 
-      <div class="skills-grid">
-        <div v-for="skill in skills" :key="skill.name" class="skill-card">
-          <div class="card-top">
-            <div class="card-name">{{ skill.name }}</div>
-            <button class="uninstall-btn" @click.stop="handleUninstall(skill.name)">卸载</button>
-          </div>
-          <div class="card-desc">{{ skill.description || '无描述' }}</div>
-          <div class="card-meta">
-            <span class="source">{{ skill.source || 'local' }}</span>
-          </div>
+      <!-- Scope picker (inline dropdown) -->
+      <div v-if="showScopePicker" class="scope-picker">
+        <div
+          class="scope-option"
+          :class="{ active: scope === 'global' }"
+          @click="selectGlobal"
+        >
+          <span class="scope-name">全局</span>
+          <span class="scope-path">~/.agents/skills/</span>
         </div>
-        <div v-if="skills.length === 0 && !loading" class="empty">暂无已安装的 Skills</div>
+        <div
+          v-for="p in projects" :key="p.work_dir"
+          class="scope-option"
+          :class="{ active: scope === 'project' && projectDir === p.work_dir }"
+          @click="selectProject(p.work_dir)"
+        >
+          <span class="scope-name">{{ p.label }}</span>
+          <span class="scope-path">{{ p.work_dir }}</span>
+        </div>
+        <div v-if="projects.length === 0" class="empty-inline">暂无项目</div>
       </div>
-    </template>
 
-    <!-- Scope picker dialog -->
-    <div v-if="showScopePicker" class="modal-overlay" @click.self="showScopePicker = false">
-      <div class="modal-content">
-        <div class="modal-header">
-          <span class="modal-title">选择 Skills 范围</span>
-          <button class="close-btn" @click="showScopePicker = false">&times;</button>
-        </div>
-        <div class="modal-body">
-          <div class="project-options">
-            <div
-              class="project-option" :class="{ active: scope === 'global' }"
-              @click="selectGlobal"
-            >
-              <div class="project-top">
-                <span class="project-name">全局</span>
-              </div>
-              <span class="project-path">~/.agents/skills/</span>
-            </div>
-            <div
-              v-for="p in projects" :key="p.work_dir"
-              class="project-option" :class="{ active: scope === 'project' && projectDir === p.work_dir }"
-              @click="selectProject(p.work_dir)"
-            >
-              <div class="project-top">
-                <span class="project-name">{{ p.label }}</span>
-              </div>
-              <span class="project-path">{{ p.work_dir }}</span>
-            </div>
-            <div v-if="projects.length === 0" class="empty-inline">暂无项目，请先创建会话。</div>
-          </div>
-        </div>
-      </div>
+      <!-- Skills list -->
+      <div v-if="!effectiveDir" class="empty">请先在会话中设置工作目录</div>
+      <table v-else-if="skills.length" class="skills-table">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>描述</th>
+            <th class="col-source">来源</th>
+            <th class="col-action"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="skill in skills" :key="skill.name">
+            <td class="cell-name">{{ skill.name }}</td>
+            <td class="cell-desc">{{ skill.description || '—' }}</td>
+            <td class="cell-source">{{ skill.source || 'local' }}</td>
+            <td class="cell-action">
+              <button class="uninstall-btn" @click="handleUninstall(skill.name)">卸载</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else-if="!loading" class="empty">暂无已安装的 Skills</p>
     </div>
   </div>
 </template>
 
 <style scoped>
-.skills-page { display: flex; flex-direction: column; height: 100%; padding: 16px; gap: 12px; }
-.skills-header { display: flex; align-items: center; gap: 12px; }
-.skills-header h2 { margin: 0; font-size: 18px; }
-.scope-tag { font-size: 11px; padding: 2px 8px; border-radius: 3px; background: #1e3a5f; color: #60a5fa; border: 1px solid #2563eb33; cursor: pointer; white-space: nowrap; }
-.scope-tag:hover { background: #1e40af33; }
-.create-btn { font-size: 13px; margin-left: auto; }
-.install-form { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; border: 1px solid var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); }
-.form-actions { display: flex; gap: 8px; }
-.input { padding: 8px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-0, #111); color: inherit; }
-.skills-grid { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1; }
-.skill-card { padding: 12px; border-radius: 8px; border: 1px solid var(--color-border, #333); }
-.skill-card:hover { background: var(--color-surface-1, #1a1a1a); }
-.card-top { display: flex; align-items: center; justify-content: space-between; }
-.card-name { font-weight: 600; font-size: 14px; }
-.card-desc { font-size: 13px; color: var(--color-text-muted, #888); margin-top: 4px; }
-.card-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 6px; }
-.source { color: var(--color-text-muted, #888); font-family: monospace; font-size: 11px; }
-button { padding: 6px 12px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); color: inherit; cursor: pointer; }
-button:hover { background: var(--color-surface-2, #252525); }
-button.primary { background: var(--color-accent, #3b82f6); border-color: var(--color-accent, #3b82f6); color: white; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-.uninstall-btn { font-size: 12px; padding: 3px 8px; color: #f87171; border-color: #7f1d1d; }
-.uninstall-btn:hover { background: #7f1d1d; }
-.back-btn { font-size: 13px; }
-.empty { color: var(--color-text-muted, #888); padding: 24px; text-align: center; }
-.modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal-content { background: var(--color-surface-0, #111); border: 1px solid var(--color-border-subtle, #333); border-radius: 12px; width: 380px; max-width: 90vw; max-height: 70vh; display: flex; flex-direction: column; overflow: hidden; }
-.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--color-border-subtle, #333); }
-.modal-title { font-size: 15px; font-weight: 600; color: var(--color-text-primary, #eee); }
-.close-btn { background: none; border: none; color: var(--color-text-muted, #888); font-size: 20px; cursor: pointer; padding: 0 4px; }
-.close-btn:hover { color: var(--color-text-primary, #eee); }
-.modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
-.project-options { display: flex; flex-direction: column; gap: 6px; }
-.project-option { padding: 10px 12px; border-radius: 8px; cursor: pointer; border: 1px solid var(--color-border-subtle, #333); transition: background 0.12s, border-color 0.12s; }
-.project-option:hover { background: var(--color-surface-hover, #1a1a1a); }
-.project-option.active { border-color: var(--color-accent, #3b82f6); background: rgba(59, 130, 246, 0.08); }
-.project-top { display: flex; align-items: center; gap: 8px; }
-.project-name { font-size: 13px; font-weight: 500; color: var(--color-text-primary, #eee); }
-.project-path { display: block; font-size: 11px; color: var(--color-text-muted, #888); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.empty-inline { font-size: 12px; color: var(--color-text-muted, #888); padding: 12px; text-align: center; }
+.skills-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-4);
+  height: var(--header-height);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.view-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.scope-btn {
+  font-size: 11px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text-secondary);
+  border: none;
+  cursor: pointer;
+  transition: color var(--duration-fast);
+}
+
+.scope-btn:hover {
+  color: var(--color-text-primary);
+}
+
+.view-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4);
+}
+
+.install-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-1);
+}
+
+.form-input {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-0);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--duration-fast);
+}
+
+.form-input:focus {
+  border-color: var(--color-accent);
+}
+
+.form-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.form-row {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.scope-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-1);
+}
+
+.scope-option {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast);
+}
+
+.scope-option:hover {
+  background: var(--color-surface-hover);
+}
+
+.scope-option.active {
+  background: var(--color-surface-2);
+}
+
+.scope-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  display: block;
+}
+
+.scope-path {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  display: block;
+  margin-top: 1px;
+}
+
+.skills-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.skills-table th {
+  text-align: left;
+  padding: var(--space-2);
+  color: var(--color-text-muted);
+  font-weight: 500;
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.skills-table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.cell-name {
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.cell-desc {
+  color: var(--color-text-secondary);
+}
+
+.cell-source {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.col-source { width: 120px; }
+.col-action { width: 60px; }
+
+.cell-action {
+  text-align: right;
+}
+
+.uninstall-btn {
+  font-size: 11px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-error);
+  background: transparent;
+  color: var(--color-error);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity var(--duration-fast);
+}
+
+.uninstall-btn:hover {
+  opacity: 1;
+}
+
+.action-btn {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--color-text-secondary);
+  transition: background var(--duration-fast);
+}
+
+.action-btn.primary {
+  background: var(--color-accent);
+  color: var(--color-surface-0);
+  border-color: transparent;
+}
+
+.action-btn.primary:hover {
+  background: var(--color-accent-hover);
+}
+
+.action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.empty {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  padding: var(--space-8) 0;
+  text-align: center;
+}
+
+.empty-inline {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  padding: var(--space-2) var(--space-3);
+}
 </style>

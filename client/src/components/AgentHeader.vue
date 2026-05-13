@@ -38,7 +38,6 @@ function confirmEditTitle() {
 <template>
   <div class="agent-header">
     <div class="agent-header-left">
-      <button class="back-btn" @click="emit('back')" aria-label="Back">&larr;</button>
       <template v-if="isEditingTitle">
         <input
           ref="titleInputRef"
@@ -61,18 +60,90 @@ function confirmEditTitle() {
 </template>
 
 <style scoped>
-.agent-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--color-border-subtle); }
-.agent-header-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
-.agent-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.back-btn { background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 4px; border-radius: 4px; font-size: 16px; line-height: 1; }
-.back-btn:hover { color: var(--color-text-primary); background: var(--color-surface-1); }
-.agent-header-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: background 0.12s; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
-.agent-header-title:hover { background: var(--color-surface-1); }
-.agent-header-workdir { font-family: var(--font-mono); font-size: 12px; color: var(--color-text-muted); padding: 2px 6px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
-.title-input { font-size: 13px; font-weight: 500; color: var(--color-text-primary); background: var(--color-surface-1); border: 1px solid var(--color-border); border-radius: 4px; padding: 2px 8px; outline: none; min-width: 120px; max-width: 300px; }
-.title-input:focus { border-color: var(--color-accent-dim); }
-.title-action-btn { background: none; border: none; font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
-.title-action-btn.confirm { color: var(--color-success, #22c55e); }
-.title-action-btn.cancel { color: var(--color-error, #ef4444); }
+.agent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3, 12px);
+  padding: 0 var(--space-4, 16px);
+  height: var(--header-height, 36px);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.agent-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  min-width: 0;
+  flex: 1;
+}
+
+.agent-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  flex-shrink: 0;
+}
+
+.agent-header-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm, 4px);
+  transition: background var(--duration-fast, 120ms);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
+.agent-header-title:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.agent-header-workdir {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm, 4px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
+.title-input {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 4px);
+  padding: 2px 8px;
+  outline: none;
+  min-width: 120px;
+  max-width: 300px;
+}
+
+.title-input:focus {
+  border-color: var(--color-accent);
+}
+
+.title-action-btn {
+  background: none;
+  border: none;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm, 4px);
+}
+
+.title-action-btn.confirm { color: var(--color-success); }
+.title-action-btn.cancel { color: var(--color-error); }
 .title-action-btn:hover { opacity: 0.7; }
 </style>

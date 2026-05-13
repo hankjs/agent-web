@@ -33,40 +33,60 @@ function relativeTime(dateStr: string): string {
   return `${Math.floor(hrs / 24)}天前`;
 }
 
+const statusLabels: Record<string, string> = {
+  all: "全部",
+  draft: "草稿",
+  in_progress: "进行中",
+  completed: "已完成",
+};
+
 const statusTabs = ["all", "draft", "in_progress", "completed"];
 
 onMounted(fetchChanges);
 </script>
 
 <template>
-  <div class="changes-page">
-    <div class="changes-header">
-      <button class="back-btn" @click="navigateTo('sessions')">返回</button>
-      <h2>需求</h2>
-      <button class="create-btn" @click="showCreate = true">新建需求</button>
-    </div>
-
-    <div class="status-tabs">
-      <button
-        v-for="tab in statusTabs" :key="tab"
-        :class="{ active: statusFilter === tab }"
-        @click="statusFilter = tab"
-      >{{ tab === 'all' ? '全部' : tab === 'draft' ? '草稿' : tab === 'in_progress' ? '进行中' : '已完成' }}</button>
-    </div>
-
-    <div class="changes-grid">
-      <div
-        v-for="change in filteredChanges" :key="change.id"
-        class="change-card"
-        @click="openDetail(change.id)"
-      >
-        <div class="card-name">{{ change.name }}</div>
-        <div class="card-meta">
-          <span class="status-badge" :class="change.status">{{ change.status.replace('_', ' ') }}</span>
-          <span class="time">{{ relativeTime(change.updated_at) }}</span>
+  <div class="changes-view">
+    <header class="view-header">
+      <span class="view-title">变更</span>
+      <div class="header-actions">
+        <div class="filter-tabs">
+          <button
+            v-for="tab in statusTabs" :key="tab"
+            class="filter-tab"
+            :class="{ active: statusFilter === tab }"
+            @click="statusFilter = tab"
+          >{{ statusLabels[tab] }}</button>
         </div>
+        <button class="action-btn primary" @click="showCreate = true">新建</button>
       </div>
-      <div v-if="filteredChanges.length === 0" class="empty">暂无需求</div>
+    </header>
+
+    <div class="view-body">
+      <table v-if="filteredChanges.length" class="changes-table">
+        <thead>
+          <tr>
+            <th class="col-name">名称</th>
+            <th class="col-status">状态</th>
+            <th class="col-time">更新</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="change in filteredChanges"
+            :key="change.id"
+            @click="openDetail(change.id)"
+          >
+            <td class="col-name">{{ change.name }}</td>
+            <td class="col-status">
+              <span class="status-badge" :class="change.status">{{ statusLabels[change.status] || change.status }}</span>
+            </td>
+            <td class="col-time">{{ relativeTime(change.updated_at) }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p v-else class="empty">暂无需求</p>
     </div>
 
     <NewChangeDialog v-if="showCreate" @close="showCreate = false; fetchChanges()" />
@@ -74,27 +94,150 @@ onMounted(fetchChanges);
 </template>
 
 <style scoped>
-.changes-page { display: flex; flex-direction: column; height: 100%; padding: 16px; gap: 12px; }
-.changes-header { display: flex; align-items: center; gap: 12px; }
-.changes-header h2 { flex: 1; margin: 0; font-size: 18px; }
-.status-tabs { display: flex; gap: 4px; }
-.status-tabs button { padding: 4px 10px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: transparent; color: var(--color-text-muted, #888); cursor: pointer; font-size: 12px; text-transform: capitalize; }
-.status-tabs button.active { background: var(--color-surface-2, #252525); color: var(--color-text-primary, #eee); }
-.input { padding: 8px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); color: inherit; flex: 1; }
-.changes-grid { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1; }
-.change-card { padding: 12px; border-radius: 8px; border: 1px solid var(--color-border, #333); cursor: pointer; }
-.change-card:hover { background: var(--color-surface-1, #1a1a1a); }
-.card-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
-.card-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.status-badge { padding: 2px 6px; border-radius: 3px; font-size: 11px; text-transform: capitalize; }
-.status-badge.draft { background: #374151; color: #9ca3af; }
-.status-badge.in_progress { background: #1e3a5f; color: #60a5fa; }
-.status-badge.completed { background: #14532d; color: #4ade80; }
-.time { color: var(--color-text-muted, #888); }
-button { padding: 6px 12px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-1, #1a1a1a); color: inherit; cursor: pointer; }
-button:hover { background: var(--color-surface-2, #252525); }
-button.primary { background: var(--color-accent, #3b82f6); border-color: var(--color-accent, #3b82f6); color: white; }
-.back-btn { font-size: 13px; }
-.create-btn { font-size: 13px; }
-.empty { color: var(--color-text-muted, #888); padding: 24px; text-align: center; }
+.changes-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-4);
+  height: var(--header-height);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.view-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.filter-tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.filter-tab {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+
+.filter-tab:hover {
+  color: var(--color-text-secondary);
+}
+
+.filter-tab.active {
+  background: var(--color-surface-2);
+  color: var(--color-text-primary);
+}
+
+.view-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4);
+}
+
+.changes-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.changes-table th {
+  text-align: left;
+  padding: var(--space-2) var(--space-2);
+  color: var(--color-text-muted);
+  font-weight: 500;
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.changes-table td {
+  padding: var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.changes-table tr {
+  cursor: pointer;
+  transition: background var(--duration-fast);
+}
+
+.changes-table tbody tr:hover {
+  background: var(--color-surface-hover);
+}
+
+.col-name {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.col-status { width: 80px; }
+.col-time { width: 80px; color: var(--color-text-muted); }
+
+.status-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+.status-badge.draft {
+  color: var(--color-text-muted);
+  background: var(--color-surface-2);
+}
+
+.status-badge.in_progress {
+  color: var(--color-info);
+  background: var(--color-info-surface);
+}
+
+.status-badge.completed {
+  color: var(--color-success);
+  background: var(--color-success-surface);
+}
+
+.action-btn {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--color-text-secondary);
+  transition: background var(--duration-fast);
+}
+
+.action-btn.primary {
+  background: var(--color-accent);
+  color: var(--color-surface-0);
+  border-color: transparent;
+}
+
+.action-btn.primary:hover {
+  background: var(--color-accent-hover);
+}
+
+.empty {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  padding: var(--space-8) 0;
+  text-align: center;
+}
 </style>

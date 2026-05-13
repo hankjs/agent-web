@@ -10,46 +10,52 @@ const router = createRouter({
     },
     {
       path: "/",
-      name: "sessions",
-      component: () => import("../views/SessionList.vue"),
-    },
-    {
-      path: "/chat/:sessionId",
-      name: "chat",
-      component: () => import("../views/Chat.vue"),
-      props: true,
-    },
-    {
-      path: "/agent/:sessionId",
-      name: "agent",
-      component: () => import("../views/Agent.vue"),
-      props: true,
-    },
-    {
-      path: "/specs",
-      name: "specs",
-      component: () => import("../views/Specs.vue"),
-    },
-    {
-      path: "/changes",
-      name: "changes",
-      component: () => import("../views/Changes.vue"),
-    },
-    {
-      path: "/changes/:changeId",
-      name: "change-detail",
-      component: () => import("../views/ChangeDetail.vue"),
-      props: true,
-    },
-    {
-      path: "/skills",
-      name: "skills",
-      component: () => import("../views/Skills.vue"),
-    },
-    {
-      path: "/settings/agents",
-      name: "agent-settings",
-      component: () => import("../views/LocalAgentSettings.vue"),
+      component: () => import("../components/AppShell.vue"),
+      children: [
+        {
+          path: "",
+          name: "sessions",
+          component: () => import("../views/SessionList.vue"),
+        },
+        {
+          path: "chat/:sessionId",
+          name: "chat",
+          component: () => import("../views/Chat.vue"),
+          props: true,
+        },
+        {
+          path: "agent/:sessionId",
+          name: "agent",
+          component: () => import("../views/Agent.vue"),
+          props: true,
+        },
+        {
+          path: "specs",
+          name: "specs",
+          component: () => import("../views/Specs.vue"),
+        },
+        {
+          path: "changes",
+          name: "changes",
+          component: () => import("../views/Changes.vue"),
+        },
+        {
+          path: "changes/:changeId",
+          name: "change-detail",
+          component: () => import("../views/ChangeDetail.vue"),
+          props: true,
+        },
+        {
+          path: "skills",
+          name: "skills",
+          component: () => import("../views/Skills.vue"),
+        },
+        {
+          path: "settings/agents",
+          name: "agent-settings",
+          component: () => import("../views/LocalAgentSettings.vue"),
+        },
+      ],
     },
   ],
 });

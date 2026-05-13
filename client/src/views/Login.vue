@@ -31,33 +31,109 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="h-screen flex items-center justify-center" style="background: var(--color-surface-0)">
-    <div class="w-72">
-      <div class="text-sm font-medium text-text-secondary mb-8">Hank</div>
+  <div class="login-page">
+    <div class="login-form">
+      <span class="login-brand">Hank</span>
 
-      <form @submit.prevent="handleLogin" class="space-y-3">
+      <form @submit.prevent="handleLogin">
         <input
           v-model="username"
           type="text"
           placeholder="用户名"
           autocomplete="username"
-          class="w-full bg-transparent border border-border rounded-md px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
+          class="login-input"
         />
         <input
           v-model="password"
           type="password"
           placeholder="密码"
           autocomplete="current-password"
-          class="w-full bg-transparent border border-border rounded-md px-3 py-2 text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent transition-colors"
+          class="login-input"
         />
         <button
           type="submit"
           :disabled="loading"
-          class="w-full px-3.5 py-2 bg-text-primary text-surface-0 text-[13px] rounded-md hover:opacity-80 disabled:opacity-40 transition-opacity"
-        >{{ loading ? '登录中...' : '登录' }}</button>
+          class="login-btn"
+        >{{ loading ? '...' : '登录' }}</button>
       </form>
 
-      <div v-if="error" class="mt-3 text-[12px] text-error">{{ error }}</div>
+      <div v-if="error" class="login-error">{{ error }}</div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.login-page {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-0);
+}
+
+.login-form {
+  width: 260px;
+}
+
+.login-brand {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-8);
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.login-input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: 13px;
+  color: var(--color-text-primary);
+  outline: none;
+  transition: border-color var(--duration-fast);
+}
+
+.login-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.login-input:focus {
+  border-color: var(--color-accent);
+}
+
+.login-btn {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-text-primary);
+  color: var(--color-surface-0);
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--duration-fast);
+}
+
+.login-btn:hover {
+  opacity: 0.85;
+}
+
+.login-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.login-error {
+  margin-top: var(--space-3);
+  font-size: 12px;
+  color: var(--color-error);
+}
+</style>

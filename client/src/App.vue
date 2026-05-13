@@ -13,7 +13,7 @@ watch(isAuthenticated, (authed) => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col" style="background: var(--color-surface-0); color: var(--color-text-primary)">
+  <div class="h-screen flex flex-col">
     <MessageToast />
     <router-view class="flex-1 overflow-hidden" />
   </div>

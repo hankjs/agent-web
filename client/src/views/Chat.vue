@@ -34,7 +34,7 @@ const sessionTitle = computed(() => currentSession.value?.title || "");
 const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
 
 // Sidebar panels
-const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, registerPanel, reset: resetPanels } = useSidebarPanels();
+const { activePanelId, closePanel, registerPanel, reset: resetPanels } = useSidebarPanels();
 registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
 registerPanel({ id: "specs", icon: "specs", title: "Specs", order: 2 });
 registerPanel({ id: "outline", icon: "outline", title: "Outline", order: 3 });
@@ -1942,144 +1942,28 @@ function scrollToMessageId(id: string | null) {
     />
     </div>
 
-    <!-- Sidebar Panel Content -->
-    <div v-if="activePanelId" class="sidebar-panel">
-      <div class="sidebar-panel-header">
-        <span class="sidebar-panel-title">{{ sidebarPanels.find(p => p.id === activePanelId)?.title }}</span>
-        <button class="sidebar-panel-close" @click="closePanel()">&times;</button>
-      </div>
-      <div class="sidebar-panel-body">
-        <ChangeChatPanel
-          v-if="activePanelId === 'changes' && sessionWorkDir"
-          :work-dir="sessionWorkDir"
-          :session-id="props.sessionId"
-          :refresh-key="changesPanelRefreshKey"
-          @navigate-session="handleNavigateSession"
-          @apply-change="handleApplyChange"
-          @review-change="handleReviewChange"
-        />
-        <SpecPanel v-if="activePanelId === 'specs'" />
-        <ConversationOutline
-          v-if="activePanelId === 'outline' && treeNodes.length > 0"
-          :session-id="props.sessionId"
-          :key="'outline-' + props.sessionId"
-        />
-      </div>
-    </div>
-
-    <!-- Activity Bar -->
-    <div class="activity-bar">
-      <button
-        v-for="panel in sidebarPanels"
-        :key="panel.id"
-        class="activity-bar-btn"
-        :class="{ active: activePanelId === panel.id }"
-        @click="togglePanel(panel.id)"
-        :aria-label="panel.title"
-        :title="panel.title"
-      >
-        <!-- Changes icon -->
-        <svg v-if="panel.icon === 'changes'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
-        </svg>
-        <!-- Specs icon -->
-        <svg v-else-if="panel.icon === 'specs'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/>
-        </svg>
-        <!-- Outline icon -->
-        <svg v-else-if="panel.icon === 'outline'" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
-          <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
-        </svg>
-      </button>
-    </div>
+    <!-- Panel content teleported to AppShell right panel -->
+    <Teleport to="#shell-panel-content" v-if="activePanelId">
+      <ChangeChatPanel
+        v-if="activePanelId === 'changes' && sessionWorkDir"
+        :work-dir="sessionWorkDir"
+        :session-id="props.sessionId"
+        :refresh-key="changesPanelRefreshKey"
+        @navigate-session="handleNavigateSession"
+        @apply-change="handleApplyChange"
+        @review-change="handleReviewChange"
+      />
+      <SpecPanel v-if="activePanelId === 'specs'" />
+      <ConversationOutline
+        v-if="activePanelId === 'outline' && treeNodes.length > 0"
+        :session-id="props.sessionId"
+        :key="'outline-' + props.sessionId"
+      />
+    </Teleport>
   </div>
 </template>
 
 <style scoped>
-/* Activity Bar */
-.activity-bar {
-  width: 40px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding-top: 8px;
-  gap: 4px;
-  background: var(--color-surface-0, #111);
-  border-left: 1px solid var(--color-border-subtle, #222);
-}
-.activity-bar-btn {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--color-text-muted, #666);
-  border-radius: 6px;
-  cursor: pointer;
-  position: relative;
-}
-.activity-bar-btn:hover {
-  color: var(--color-text-primary, #ccc);
-  background: var(--color-surface-1, #1a1a1a);
-}
-.activity-bar-btn.active {
-  color: var(--color-text-primary, #fff);
-  background: var(--color-surface-1, #1a1a1a);
-}
-.activity-bar-btn.active::before {
-  content: '';
-  position: absolute;
-  left: -4px;
-  top: 6px;
-  bottom: 6px;
-  width: 2px;
-  background: var(--color-accent, #6366f1);
-  border-radius: 1px;
-}
-
-/* Sidebar Panel */
-.sidebar-panel {
-  width: 280px;
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--color-border-subtle, #222);
-  background: var(--color-surface-0, #0f0f0f);
-  overflow: hidden;
-}
-.sidebar-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--color-border-subtle, #222);
-}
-.sidebar-panel-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--color-text-muted, #888);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.sidebar-panel-close {
-  background: none;
-  border: none;
-  color: var(--color-text-muted, #666);
-  font-size: 16px;
-  cursor: pointer;
-  padding: 0 4px;
-  line-height: 1;
-}
-.sidebar-panel-close:hover {
-  color: var(--color-text-primary, #ccc);
-}
-.sidebar-panel-body {
-  flex: 1;
-  overflow-y: auto;
-}
-
 .context-bar {
   display: flex;
   align-items: center;

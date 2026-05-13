@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-13T00:00:00Z",
+  "title": "Design System: Hank",
+  "extensions": {
+    "colorMeta": {
+      "accent-green-gold": {
+        "role": "primary",
+        "displayName": "Muted Green-Gold",
+        "canonical": "oklch(0.72 0.12 160)",
+        "tonalRamp": [
+          "oklch(0.20 0.03 160)",
+          "oklch(0.30 0.05 160)",
+          "oklch(0.40 0.07 160)",
+          "oklch(0.55 0.08 160)",
+          "oklch(0.65 0.10 160)",
+          "oklch(0.72 0.12 160)",
+          "oklch(0.78 0.14 160)",
+          "oklch(0.88 0.08 160)"
+        ]
+      },
+      "surface-deep": {
+        "role": "neutral",
+        "displayName": "Deep Slate",
+        "canonical": "oklch(0.13 0.008 220)",
+        "tonalRamp": [
+          "oklch(0.08 0.005 220)",
+          "oklch(0.13 0.008 220)",
+          "oklch(0.16 0.008 220)",
+          "oklch(0.20 0.01 220)",
+          "oklch(0.25 0.01 220)",
+          "oklch(0.30 0.012 220)",
+          "oklch(0.40 0.012 220)",
+          "oklch(0.50 0.01 220)"
+        ]
+      },
+      "text-primary": {
+        "role": "neutral",
+        "displayName": "Primary Text",
+        "canonical": "oklch(0.92 0.008 220)",
+        "tonalRamp": [
+          "oklch(0.50 0.008 220)",
+          "oklch(0.60 0.01 220)",
+          "oklch(0.68 0.01 220)",
+          "oklch(0.75 0.01 220)",
+          "oklch(0.82 0.008 220)",
+          "oklch(0.88 0.008 220)",
+          "oklch(0.92 0.008 220)",
+          "oklch(0.96 0.005 220)"
+        ]
+      },
+      "error": {
+        "role": "semantic",
+        "displayName": "Error Red",
+        "canonical": "oklch(0.65 0.18 25)",
+        "tonalRamp": [
+          "oklch(0.18 0.04 25)",
+          "oklch(0.30 0.08 25)",
+          "oklch(0.40 0.12 25)",
+          "oklch(0.50 0.15 25)",
+          "oklch(0.65 0.18 25)",
+          "oklch(0.75 0.15 25)",
+          "oklch(0.85 0.10 25)",
+          "oklch(0.93 0.04 25)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "body": { "displayName": "Body", "purpose": "All content text, messages, descriptions." },
+      "label": { "displayName": "Label", "purpose": "Button text, table headers, metadata." },
+      "title": { "displayName": "Title", "purpose": "Section headers, view titles." },
+      "mono": { "displayName": "Mono", "purpose": "Code blocks, file paths, terminal output." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "ease-out-expo", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Default easing for all transitions. Fast start, gentle settle." },
+      { "name": "duration-fast", "value": "120ms", "purpose": "Hover states, color transitions." },
+      { "name": "duration-normal", "value": "200ms", "purpose": "Panel collapse, element reveal." },
+      { "name": "duration-slow", "value": "350ms", "purpose": "Layout shifts, panel resize." }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Main action button. Green-gold accent, used sparingly.",
+      "html": "<button class=\"ds-btn-primary\">开始</button>",
+      "css": ".ds-btn-primary { background: oklch(0.72 0.12 160); color: oklch(0.13 0.008 220); padding: 4px 12px; font-size: 11px; font-weight: 500; border: none; border-radius: 4px; cursor: pointer; transition: background 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-primary:hover { background: oklch(0.78 0.14 160); } .ds-btn-primary:focus-visible { outline: 2px solid oklch(0.72 0.12 160); outline-offset: 2px; } .ds-btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Ghost button with border. For secondary actions.",
+      "html": "<button class=\"ds-btn-secondary\">取消</button>",
+      "css": ".ds-btn-secondary { background: transparent; color: oklch(0.68 0.01 220); padding: 4px 12px; font-size: 11px; font-weight: 500; border: 1px solid oklch(0.28 0.01 220); border-radius: 4px; cursor: pointer; transition: background 120ms cubic-bezier(0.16, 1, 0.3, 1), color 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-btn-secondary:hover { background: oklch(0.22 0.012 220); color: oklch(0.92 0.008 220); } .ds-btn-secondary:focus-visible { outline: 2px solid oklch(0.72 0.12 160); outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input-default",
+      "description": "Standard text input field.",
+      "html": "<input class=\"ds-input\" placeholder=\"输入内容...\" />",
+      "css": ".ds-input { width: 100%; background: oklch(0.16 0.008 220); color: oklch(0.92 0.008 220); padding: 8px 12px; font-size: 12px; line-height: 1.5; border: 1px solid oklch(0.22 0.008 220); border-radius: 6px; outline: none; transition: border-color 120ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-input::placeholder { color: oklch(0.50 0.008 220); } .ds-input:focus { border-color: oklch(0.72 0.12 160); }"
+    },
+    {
+      "name": "Nav Section Header",
+      "kind": "nav",
+      "refersTo": "nav-section",
+      "description": "Left panel navigation section label. Clickable.",
+      "html": "<button class=\"ds-nav-section\">会话</button>",
+      "css": ".ds-nav-section { display: block; width: 100%; text-align: left; background: none; border: none; padding: 8px 8px; font-size: 12px; font-weight: 500; color: oklch(0.68 0.01 220); cursor: pointer; border-radius: 4px; transition: color 120ms, background 120ms; } .ds-nav-section:hover { color: oklch(0.92 0.008 220); background: oklch(0.22 0.012 220); } .ds-nav-section.active { color: oklch(0.72 0.12 160); }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge-info",
+      "description": "Small status indicator badge.",
+      "html": "<span class=\"ds-badge ds-badge-info\">进行中</span>",
+      "css": ".ds-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 500; } .ds-badge-info { color: oklch(0.65 0.10 240); background: oklch(0.18 0.03 240); } .ds-badge-success { color: oklch(0.65 0.12 155); background: oklch(0.18 0.03 155); } .ds-badge-error { color: oklch(0.65 0.18 25); background: oklch(0.18 0.04 25); }"
+    },
+    {
+      "name": "View Header",
+      "kind": "nav",
+      "refersTo": "view-header",
+      "description": "Thin contextual header at top of center content area.",
+      "html": "<header class=\"ds-view-header\"><span class=\"ds-view-title\">变更</span><button class=\"ds-btn-primary\">新建</button></header>",
+      "css": ".ds-view-header { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; height: 36px; border-bottom: 1px solid oklch(0.22 0.008 220); } .ds-view-title { font-size: 12px; font-weight: 500; color: oklch(0.68 0.01 220); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Instrument",
+    "overview": "Hank's visual system is built on the principle that a developer tool should feel like a well-tuned instrument: responsive, predictable, and invisible when things are going well. The interface never competes with the content it displays. Every surface, every transition, every typographic choice serves a single purpose: keeping the developer in flow.\n\nThe system rejects chatbot aesthetics (bubbles, avatars, typing indicators), playful SaaS patterns (bouncy animations, gradient accents, rounded everything), and anything that signals \"AI product\" before \"developer tool.\" The closest physical analogy is a precision measuring instrument: matte black housing, clear markings, no ornamentation.",
+    "keyCharacteristics": [
+      "Controlled density: compact without cramping, breathable without wasting space",
+      "Flat tonal layering: depth through surface lightness, never shadows",
+      "System typography: native fonts at small sizes, hierarchy through weight",
+      "Restrained color: one accent used at less than 10% of any surface",
+      "Keyboard-native: every primary workflow reachable without a mouse"
+    ],
+    "rules": [
+      { "name": "The 10% Rule", "body": "The green-gold accent appears on no more than 10% of any screen. Primary buttons, active nav items, focus rings, and selection indicators only.", "section": "colors" },
+      { "name": "The No Pure Black Rule", "body": "Every neutral is tinted toward hue 220 at chroma 0.008-0.01. Pure black and pure white are prohibited.", "section": "colors" },
+      { "name": "The Tight Scale Rule", "body": "The entire type system spans only 11px to 13px. Hierarchy through weight and color, never dramatic size differences.", "section": "typography" },
+      { "name": "The No Shadow Rule", "body": "Shadows are prohibited. Depth through tonal layering only.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do use tonal layering (surface-0 through surface-3) to create depth.",
+      "Do keep the accent under 10% of any screen.",
+      "Do use the system font stack.",
+      "Do maintain 13px as the base size.",
+      "Do use tables for list data.",
+      "Do use inline patterns instead of modals.",
+      "Do respect prefers-reduced-motion.",
+      "Do use Cmd+key shortcuts for panel toggles."
+    ],
+    "donts": [
+      "Don't use box-shadows anywhere.",
+      "Don't use chat bubbles, avatars, or typing indicators.",
+      "Don't use bouncy or elastic easing.",
+      "Don't use border-left/right > 1px as colored accents.",
+      "Don't use gradient text.",
+      "Don't use cards for list data.",
+      "Don't use modals as the first solution.",
+      "Don't use font sizes larger than 14px.",
+      "Don't use rounded corners larger than 8px.",
+      "Don't use decorative motion."
+    ]
+  }
+}

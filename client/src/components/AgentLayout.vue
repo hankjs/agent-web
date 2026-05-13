@@ -17,8 +17,8 @@ defineProps<{
 .agent-layout {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  background: var(--color-bg);
+  height: 100%;
+  background: var(--color-surface-0);
   position: relative;
 }
 </style>

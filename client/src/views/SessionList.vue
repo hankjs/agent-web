@@ -4,7 +4,7 @@ import { useSession } from "../composables/useSession";
 import FolderPicker from "../components/FolderPicker.vue";
 import NewChangeDialog from "../components/NewChangeDialog.vue";
 
-const { sessions, fetchSessions, createSession, selectSession, deleteSession, navigateTo, createExploreSession } = useSession();
+const { createSession, fetchSessions } = useSession();
 
 type EnvTab = "remote" | "local";
 const activeTab = ref<EnvTab>("remote");
@@ -31,26 +31,8 @@ async function pickLocalDir() {
   } catch { /* not in Tauri */ }
 }
 
-function relativeTime(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "刚刚";
-  if (mins < 60) return `${mins}分钟前`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}小时前`;
-  const days = Math.floor(hrs / 24);
-  return `${days}天前`;
-}
-
-function displayTitle(title: string, workDir: string | null): string {
-  if (title) return title;
-  if (workDir) return workDir.split("/").pop() || workDir;
-  return "未命名";
-}
-
 onMounted(async () => {
   fetchSessions();
-  // Detect Tauri environment
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("acp_get_agents");
@@ -62,295 +44,156 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
-    <div class="session-header">
-      <span class="header-title">Hank</span>
-      <div class="header-right">
-        <button class="new-change-btn" @click="showNewChange = true">新建需求</button>
-        <button class="nav-btn" @click="navigateTo('skills')">Skills</button>
-        <button class="nav-btn" @click="navigateTo('specs')">规格</button>
-      </div>
-    </div>
-    <div class="flex-1 overflow-y-auto">
-      <div class="max-w-[720px] mx-auto px-6 py-10">
-        <!-- New session -->
-        <div class="new-session">
-          <div class="new-session-tabs">
-            <button class="tab-btn" :class="{ active: activeTab === 'remote' }" @click="activeTab = 'remote'">服务器</button>
-            <button v-if="isTauri" class="tab-btn" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本机</button>
-          </div>
-          <div class="new-session-picker">
-            <FolderPicker v-if="activeTab === 'remote'" v-model="workDir" />
-            <div v-else class="local-picker">
-              <button class="local-pick-btn" @click="pickLocalDir">
-                {{ localWorkDir || '选择本地目录...' }}
-              </button>
-            </div>
-            <button class="start-btn" @click="start">开始</button>
-          </div>
-        </div>
-        <!-- Session list -->
-        <div v-if="sessions.length" class="session-list">
-          <div
-            v-for="s in sessions"
-            :key="s.id"
-            class="session-row"
-            @click="selectSession(s)"
-          >
-            <div class="session-info">
-              <span class="session-title">{{ displayTitle(s.title, s.work_dir) }}</span>
-              <span v-if="s.work_dir" class="session-dir">{{ s.work_dir }}</span>
-            </div>
-            <div class="session-meta">
-              <span v-if="s.session_type === 'explore'" class="env-badge explore">探索</span>
-              <span class="env-badge" :class="s.environment === 'local' ? 'local' : 'remote'">{{ s.environment === 'local' ? '本地' : '远程' }}</span>
-              <span class="session-time">{{ relativeTime(s.updated_at) }}</span>
-              <button
-                class="session-delete"
-                @click.stop="deleteSession(s.id)"
-                aria-label="删除会话"
-              >&times;</button>
-            </div>
-          </div>
+  <div class="session-view">
+    <header class="view-header">
+      <span class="view-title">新会话</span>
+      <button class="action-btn primary" @click="showNewChange = true">新建需求</button>
+    </header>
+
+    <div class="view-body">
+      <div class="new-session">
+        <div class="env-tabs">
+          <button
+            class="env-tab"
+            :class="{ active: activeTab === 'remote' }"
+            @click="activeTab = 'remote'"
+          >服务器</button>
+          <button
+            v-if="isTauri"
+            class="env-tab"
+            :class="{ active: activeTab === 'local' }"
+            @click="activeTab = 'local'"
+          >本机</button>
         </div>
 
-        <p v-else class="empty-state">暂无会话</p>
+        <div class="picker-row">
+          <FolderPicker v-if="activeTab === 'remote'" v-model="workDir" />
+          <button v-else class="dir-picker" @click="pickLocalDir">
+            {{ localWorkDir || '选择本地目录...' }}
+          </button>
+          <button class="action-btn primary" @click="start">开始</button>
+        </div>
       </div>
     </div>
+
     <NewChangeDialog v-if="showNewChange" @close="showNewChange = false" />
   </div>
 </template>
-<!-- SESSION_LIST_STYLE -->
+
 <style scoped>
-.session-header {
+.session-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.view-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 24px;
+  padding: 0 var(--space-4);
+  height: var(--header-height);
   border-bottom: 1px solid var(--color-border-subtle);
-}
-.header-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text-primary);
-}
-.new-session {
-  margin-bottom: 32px;
+  flex-shrink: 0;
 }
 
-.new-session-tabs {
+.view-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.view-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-8) var(--space-6);
+  max-width: 560px;
+}
+
+.new-session {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.env-tabs {
   display: flex;
   gap: 0;
-  margin-bottom: 8px;
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
-.tab-btn {
+.env-tab {
   background: none;
   border: none;
-  padding: 6px 16px;
-  font-size: 13px;
-  cursor: pointer;
+  padding: var(--space-2) var(--space-4);
+  font-size: 12px;
   color: var(--color-text-muted);
+  cursor: pointer;
   border-bottom: 2px solid transparent;
-  transition: color 0.12s, border-color 0.12s;
+  transition: color var(--duration-fast), border-color var(--duration-fast);
 }
 
-.tab-btn.active {
+.env-tab.active {
   color: var(--color-text-primary);
   border-bottom-color: var(--color-accent);
 }
 
-.tab-btn:hover:not(.active) {
-  color: var(--color-text-primary);
+.env-tab:hover:not(.active) {
+  color: var(--color-text-secondary);
 }
 
-.new-session-picker {
+.picker-row {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2);
   align-items: stretch;
 }
 
-.local-picker {
-  flex: 1;
-  display: flex;
-}
-
-.local-pick-btn {
+.dir-picker {
   flex: 1;
   background: var(--color-surface-1);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
-  padding: 8px 12px;
-  font-size: 13px;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: 12px;
   color: var(--color-text-muted);
   cursor: pointer;
   text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: border-color 0.12s;
+  transition: border-color var(--duration-fast);
 }
 
-.local-pick-btn:hover {
+.dir-picker:hover {
   border-color: var(--color-text-muted);
 }
 
-.start-btn {
-  padding: 10px 20px;
-  background: var(--color-accent);
-  color: var(--color-surface-0);
-  border: none;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 600;
+/* Shared action button */
+.action-btn {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
+  background: transparent;
+  color: var(--color-text-secondary);
+  transition: background var(--duration-fast), color var(--duration-fast);
   white-space: nowrap;
-  transition: opacity 0.15s;
 }
 
-.start-btn:hover {
-  opacity: 0.85;
-}
-
-.session-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.session-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 8px;
-  border-bottom: 1px solid var(--color-border-subtle);
-  cursor: pointer;
-  transition: background 0.12s;
-  border-radius: 4px;
-}
-
-.session-row:hover {
+.action-btn:hover {
   background: var(--color-surface-hover);
-}
-
-.session-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.session-title {
-  font-size: 14px;
   color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.session-dir {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--color-text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.session-time {
-  font-size: 12px;
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.session-delete {
-  opacity: 0;
-  background: none;
-  border: none;
-  color: var(--color-text-muted);
-  font-size: 18px;
-  cursor: pointer;
-  padding: 0 4px;
-  transition: opacity 0.12s, color 0.12s;
-}
-
-.session-row:hover .session-delete {
-  opacity: 1;
-}
-
-.session-delete:hover {
-  color: var(--color-error);
-}
-
-.empty-state {
-  color: var(--color-text-muted);
-  font-size: 14px;
-  text-align: center;
-  padding: 40px 0;
-}
-
-.env-badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-
-.env-badge.local {
-  color: var(--color-env-local);
-  background: var(--color-env-local-bg);
-}
-
-.env-badge.remote {
-  color: var(--color-env-remote);
-  background: var(--color-env-remote-bg);
-}
-
-.env-badge.explore {
-  color: #c084fc;
-  background: rgba(192, 132, 252, 0.12);
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.new-change-btn {
-  padding: 5px 12px;
+.action-btn.primary {
   background: var(--color-accent);
   color: var(--color-surface-0);
-  border: none;
-  border-radius: 5px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: opacity 0.15s;
+  border-color: transparent;
 }
 
-.new-change-btn:hover {
-  opacity: 0.85;
-}
-.nav-btn {
-  background: none;
-  border: 1px solid var(--color-border, #333);
-  color: var(--color-text-muted);
-  cursor: pointer;
-  padding: 5px 12px;
-  border-radius: 5px;
-  font-size: 12px;
-}
-.nav-btn:hover {
-  color: var(--color-text-primary);
-  background: var(--color-surface-1);
+.action-btn.primary:hover {
+  background: var(--color-accent-hover);
 }
 </style>
