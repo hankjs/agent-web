@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted, onDeactivated, computed, watch } from "vue";
+import { ref, reactive, nextTick, onMounted, onUnmounted, onDeactivated, computed, watch } from "vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { useSession, authFetch, apiRequest } from "../composables/useSession";
@@ -33,7 +33,6 @@ const isEditingWorkDir = ref(false);
 const editWorkDir = ref("");
 const sessionTitle = computed(() => currentSession.value?.title || "");
 const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
-const isExploreSession = computed(() => currentSession.value?.session_type === "explore");
 
 // Sidebar panels
 const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, registerPanel, reset: resetPanels } = useSidebarPanels();
@@ -52,20 +51,23 @@ interface ToolCall {
   source?: "local" | "remote";
 }
 
+type AskUserQuestion = { header: string; question: string; options: string[]; selected?: string; customMode?: boolean; customAnswer?: string };
+
 type Block =
   | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
   | { kind: "text"; content: string }
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall }
-  | { kind: "ask_user"; question: string; options: string[]; answered: boolean; selected?: string; customMode?: boolean; customAnswer?: string };
+  | { kind: "ask_user"; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
 
 type RenderItem =
   | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
   | { kind: "text"; content: string }
+  | { kind: "structured"; cardType: string; data: any }
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: ToolCall }
   | { kind: "tool-group"; tools: ToolCall[] }
-  | { kind: "ask_user"; question: string; options: string[]; answered: boolean; selected?: string; customMode?: boolean; customAnswer?: string };
+  | { kind: "ask_user"; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
 
 const blocks = ref<Block[]>([]);
 const input = ref("");
@@ -260,13 +262,51 @@ const editingMessageId = ref<string | null>(null);
 const editingContent = ref("");
 
 const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
-const exploreStarters = [
-  "从代码库现状开始，帮我找出这个需求还缺哪些关键信息。",
-  "先用选项问题确认用户目标、范围边界和验收标准。",
-  "按快速探索模式推进，只确认能进入 Spec 和 Task 的最小信息。",
-];
 
 const groupExpanded = ref<Record<number, boolean>>({});
+
+const structuredBlockRegex = /```structured:(\w+)\n([\s\S]*?)\n```/g;
+const structuredAskCache = new Map<string, any>();
+
+function splitTextWithStructured(content: string): RenderItem[] {
+  const parts: RenderItem[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  structuredBlockRegex.lastIndex = 0;
+  while ((match = structuredBlockRegex.exec(content)) !== null) {
+    const before = content.slice(lastIndex, match.index);
+    if (before.trim()) parts.push({ kind: "text", content: before });
+    try {
+      const raw = match[2];
+      const cardType = match[1];
+      // For ask cards, use cache to preserve interactive state
+      if (cardType === "ask") {
+        const cacheKey = raw;
+        if (!structuredAskCache.has(cacheKey)) {
+          const data = JSON.parse(raw);
+          data._activeTab = 0;
+          data._answered = false;
+          for (const q of data.questions || []) {
+            q._selected = q.multiSelect ? [] : undefined;
+            q._customMode = false;
+            q._customAnswer = "";
+          }
+          structuredAskCache.set(cacheKey, reactive(data));
+        }
+        parts.push({ kind: "structured", cardType, data: structuredAskCache.get(cacheKey) });
+      } else {
+        const data = JSON.parse(raw);
+        parts.push({ kind: "structured", cardType, data });
+      }
+    } catch {
+      parts.push({ kind: "text", content: match[0] });
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  const after = content.slice(lastIndex);
+  if (after.trim()) parts.push({ kind: "text", content: after });
+  return parts;
+}
 
 const renderItems = computed<RenderItem[]>(() => {
   const items: RenderItem[] = [];
@@ -286,6 +326,26 @@ const renderItems = computed<RenderItem[]>(() => {
         items.push(block);
       }
       i = j;
+    } else if (block.kind === "ask_user") {
+      // 去重：跳过与前一个 ask_user 问题完全相同的重复块
+      const prev = items[items.length - 1];
+      if (prev && prev.kind === "ask_user" && prev.questions.length === block.questions.length &&
+          prev.questions.every((q, qi) => q.question === block.questions[qi].question)) {
+        i++;
+      } else {
+        items.push(block);
+        i++;
+      }
+    } else if (block.kind === "text" && (structuredBlockRegex.lastIndex = 0, structuredBlockRegex.test(block.content))) {
+      // 流式中只跳过最后一个 text block（正在写入的），之前的都正常解析
+      const isLastBlock = i === blocks.value.length - 1;
+      if (isStreaming.value && isLastBlock) {
+        items.push(block);
+      } else {
+        structuredBlockRegex.lastIndex = 0;
+        items.push(...splitTextWithStructured(block.content));
+      }
+      i++;
     } else {
       items.push(block);
       i++;
@@ -373,11 +433,6 @@ function renderMarkdown(text: string): string {
   return DOMPurify.sanitize(raw);
 }
 
-function applyExploreStarter(starter: string) {
-  input.value = starter;
-  nextTick(autoResize);
-}
-
 async function restoreInitialPrompt() {
   const key = `hank_initial_prompt:${props.sessionId}`;
   const raw = sessionStorage.getItem(key);
@@ -390,7 +445,6 @@ async function restoreInitialPrompt() {
   try {
     const parsed = JSON.parse(raw) as { content?: string; autoSend?: boolean };
     if (parsed.autoSend && (!isConnected.value || isStreaming.value)) {
-      // Connection not ready yet — leave in sessionStorage for retry on next tick
       return;
     }
     sessionStorage.removeItem(key);
@@ -442,26 +496,83 @@ async function loadHistory(leafId?: string) {
               textContent = block.text;
             }
           }
-          if (textContent || images.length > 0) {
+          // Check if this user message is an ask_user answer: [toolUseId]JSON
+          const askMatch = textContent.match(/^\[([^\]]+)\]([\s\S]*)$/);
+          if (askMatch) {
+            const matchedId = askMatch[1];
+            const answerBody = askMatch[2];
+            // Find the corresponding ask_user block and mark it answered
+            for (let i = blocks.value.length - 1; i >= 0; i--) {
+              const b = blocks.value[i];
+              if (b.kind === "ask_user" && b.toolUseId === matchedId) {
+                b.answered = true;
+                // Parse JSON payload
+                try {
+                  const payload = JSON.parse(answerBody) as Array<{ header: string; answer: string }>;
+                  for (let qi = 0; qi < b.questions.length && qi < payload.length; qi++) {
+                    b.questions[qi].selected = payload[qi].answer;
+                  }
+                } catch {
+                  // Fallback: legacy line-based format
+                  const lines = answerBody.split("\n").filter(l => l.trim());
+                  for (let qi = 0; qi < b.questions.length && qi < lines.length; qi++) {
+                    const colonIdx = lines[qi].indexOf(": ");
+                    b.questions[qi].selected = colonIdx >= 0 ? lines[qi].slice(colonIdx + 2) : lines[qi];
+                  }
+                }
+                break;
+              }
+            }
+            // Don't show the raw [id]answer as a user bubble
+          } else if (textContent || images.length > 0) {
             blocks.value.push({ kind: "user", content: textContent, images: images.length > 0 ? images : undefined, messageId: msg.id, parentId: msg.parent_id });
           }
         } else {
+          let skipNextText = false;
           for (const block of content) {
             if (block.type === "text" && block.text) {
+              if (skipNextText) {
+                skipNextText = false;
+                continue;
+              }
               blocks.value.push({ kind: "text", content: block.text });
             } else if (block.type === "error" && block.text) {
               blocks.value.push({ kind: "error", content: block.text });
             } else if (block.type === "tool_use") {
-              blocks.value.push({
-                kind: "tool",
-                tool: {
-                  id: block.id,
-                  name: block.name,
-                  input: typeof block.input === "string" ? block.input : JSON.stringify(block.input),
-                  isRunning: false,
-                  expanded: false,
-                },
-              });
+              // Render AskUserQuestion as interactive card
+              if (block.name === "AskUserQuestion") {
+                const inputData = typeof block.input === "string" ? JSON.parse(block.input) : block.input;
+                const rawQuestions = inputData.questions || [];
+                if (rawQuestions.length > 0) {
+                  const questions: AskUserQuestion[] = rawQuestions.map((q: any) => ({
+                    header: q.header || "",
+                    question: q.question || "",
+                    options: (q.options || []).map((o: any) => o.label || o),
+                    selected: undefined,
+                    customMode: false,
+                    customAnswer: "",
+                  }));
+                  blocks.value.push({
+                    kind: "ask_user",
+                    toolUseId: block.id || "",
+                    questions,
+                    answered: false,
+                    activeTab: 0,
+                  });
+                }
+                skipNextText = true;
+              } else {
+                blocks.value.push({
+                  kind: "tool",
+                  tool: {
+                    id: block.id,
+                    name: block.name,
+                    input: typeof block.input === "string" ? block.input : JSON.stringify(block.input),
+                    isRunning: false,
+                    expanded: false,
+                  },
+                });
+              }
             }
           }
         }
@@ -528,12 +639,17 @@ function handleServerEvent(event: any) {
     case "ask_user":
       blocks.value.push({
         kind: "ask_user",
-        question: event.question,
-        options: event.options || [],
+        toolUseId: event.tool_use_id || "",
+        questions: [{
+          header: "",
+          question: event.question,
+          options: event.options || [],
+          selected: undefined,
+          customMode: false,
+          customAnswer: "",
+        }],
         answered: false,
-        selected: undefined,
-        customMode: false,
-        customAnswer: "",
+        activeTab: 0,
       });
       break;
     case "explore_complete":
@@ -888,18 +1004,26 @@ async function send(parentIdOverride?: string) {
   }
 }
 
-function selectAskUserOption(item: Extract<RenderItem, { kind: "ask_user" }>, answer: string) {
+function selectAskUserOption(item: Extract<RenderItem, { kind: "ask_user" }>, qIdx: number, answer: string) {
   if (item.answered || isStreaming.value) return;
-  item.selected = answer;
-  item.customMode = false;
-  item.customAnswer = "";
+  const q = item.questions[qIdx];
+  if (!q) return;
+  q.selected = answer;
+  q.customMode = false;
+  q.customAnswer = "";
+  // 单选自动跳转下一题
+  if (qIdx < item.questions.length - 1) {
+    item.activeTab = qIdx + 1;
+  }
 }
 
-function startCustomAskUser(item: Extract<RenderItem, { kind: "ask_user" }>) {
+function startCustomAskUser(item: Extract<RenderItem, { kind: "ask_user" }>, qIdx: number) {
   if (item.answered || isStreaming.value) return;
-  item.selected = "";
-  item.customMode = true;
-  item.customAnswer = "";
+  const q = item.questions[qIdx];
+  if (!q) return;
+  q.selected = "";
+  q.customMode = true;
+  q.customAnswer = "";
   nextTick(() => {
     const inputs = document.querySelectorAll<HTMLInputElement>(".ask-card-custom-input");
     inputs[inputs.length - 1]?.focus();
@@ -907,18 +1031,76 @@ function startCustomAskUser(item: Extract<RenderItem, { kind: "ask_user" }>) {
 }
 
 async function submitAskUser(item: Extract<RenderItem, { kind: "ask_user" }>) {
-  const answer = item.customMode ? (item.customAnswer || "").trim() : (item.selected || "").trim();
-  if (!answer || item.answered || isStreaming.value) return;
-  await answerAskUser(item, answer);
+  if (item.answered || isStreaming.value) return;
+  // Collect answers from all questions
+  const answers: string[] = [];
+  for (const q of item.questions) {
+    const answer = q.customMode ? (q.customAnswer || "").trim() : (q.selected || "").trim();
+    if (!answer) return; // all questions must be answered
+    answers.push(answer);
+  }
+  await answerAskUser(item, answers);
 }
 
-async function answerAskUser(item: Extract<RenderItem, { kind: "ask_user" }>, answer: string) {
-  // Mark the ask_user block as answered
+async function answerAskUser(item: Extract<RenderItem, { kind: "ask_user" }>, answers: string[]) {
   item.answered = true;
-  item.selected = answer;
-  item.customMode = false;
-  // Send the answer as a regular chat message (server detects pending_ask_user)
-  input.value = answer;
+  // Format as JSON with tool_use_id prefix for reliable parsing
+  const payload = item.questions.map((q, i) => ({ header: q.header || q.question, answer: answers[i] }));
+  input.value = `[${item.toolUseId}]${JSON.stringify(payload)}`;
+  await send();
+}
+
+function selectStructuredAskOption(item: Extract<RenderItem, { kind: "structured" }>, qIdx: number, answer: string) {
+  if (item.data._answered || isStreaming.value) return;
+  const q = item.data.questions[qIdx];
+  if (!q) return;
+  if (q.multiSelect) {
+    const arr: string[] = q._selected || [];
+    const idx = arr.indexOf(answer);
+    if (idx >= 0) arr.splice(idx, 1);
+    else arr.push(answer);
+    q._selected = [...arr];
+  } else {
+    q._selected = answer;
+    // 单选自动跳转下一题
+    if (qIdx < item.data.questions.length - 1) {
+      item.data._activeTab = qIdx + 1;
+    }
+  }
+  q._customMode = false;
+  q._customAnswer = "";
+}
+
+function startStructuredAskCustom(item: Extract<RenderItem, { kind: "structured" }>, qIdx: number) {
+  if (item.data._answered || isStreaming.value) return;
+  const q = item.data.questions[qIdx];
+  if (!q) return;
+  q._selected = q.multiSelect ? [] : undefined;
+  q._customMode = true;
+  q._customAnswer = "";
+}
+
+async function submitStructuredAsk(item: Extract<RenderItem, { kind: "structured" }>) {
+  if (item.data._answered || isStreaming.value) return;
+  const answers: (string | string[])[] = [];
+  for (const q of item.data.questions) {
+    if (q._customMode) {
+      const val = (q._customAnswer || "").trim();
+      if (!val) return;
+      answers.push(val);
+    } else if (q.multiSelect) {
+      const arr = q._selected || [];
+      if (arr.length === 0) return;
+      answers.push(arr);
+    } else {
+      const val = (q._selected || "").trim();
+      if (!val) return;
+      answers.push(val);
+    }
+  }
+  item.data._answered = true;
+  const payload = item.data.questions.map((q: any, i: number) => ({ header: q.header || q.question, answer: answers[i] }));
+  input.value = JSON.stringify(payload);
   await send();
 }
 
@@ -1095,7 +1277,7 @@ async function stop() {
 
 // --- Local ACP Agent Functions ---
 
-function handleAcpEvent(event: any) {
+async function handleAcpEvent(event: any) {
   const eventType = event.type;
   // Collect events for batch upload
   localEvents.push({ event_type: eventType, agent_type: localAgentName.value, payload: event });
@@ -1120,6 +1302,35 @@ function handleAcpEvent(event: any) {
       break;
     }
     case "tool_use": {
+      // Intercept AskUserQuestion tool and render as ask_user card
+      if (event.tool_name === "AskUserQuestion") {
+        const inputData = typeof event.input === "string" ? JSON.parse(event.input) : event.input;
+        const rawQuestions = inputData.questions || [];
+        if (rawQuestions.length > 0) {
+          const questions: AskUserQuestion[] = rawQuestions.map((q: any) => ({
+            header: q.header || "",
+            question: q.question || "",
+            options: (q.options || []).map((o: any) => o.label || o),
+            selected: undefined,
+            customMode: false,
+            customAnswer: "",
+          }));
+          blocks.value.push({
+            kind: "ask_user",
+            toolUseId: event.tool_call_id || "",
+            questions,
+            answered: false,
+            activeTab: 0,
+          });
+        }
+        localAssistantBlocks.push({
+          type: "tool_use",
+          id: event.tool_call_id,
+          name: event.tool_name,
+          input: event.input,
+        });
+        break;
+      }
       blocks.value.push({
         kind: "tool",
         tool: {
@@ -1157,7 +1368,7 @@ function handleAcpEvent(event: any) {
       isStreaming.value = false;
       localAgentStatus.value = "stopped";
       // Save assistant message and upload local events
-      saveLocalAssistantMessage();
+      await saveLocalAssistantMessage();
       uploadLocalEvents();
       break;
     }
@@ -1263,8 +1474,11 @@ async function uploadLocalEvents() {
 
 async function saveLocalAssistantMessage() {
   if (localAssistantBlocks.length === 0) return;
+  // Capture parent before any async operation — activeLeafId should point to the
+  // user message saved at the start of sendLocal(). Fall back to localUserMessageId
+  // for backward compatibility.
+  const parentId = activeLeafId.value || localUserMessageId || undefined;
   try {
-    const parentId = localUserMessageId || activeLeafId.value || undefined;
     const res = await authFetch(`/api/sessions/${props.sessionId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1565,12 +1779,6 @@ function scrollToMessageId(id: string | null) {
       </div>
     </div>
 
-    <!-- Explore mode banner -->
-    <div v-if="isExploreSession" class="explore-banner">
-      <span>Explore</span>
-      <span>先确认问题，再沉淀为 Spec / Task 输入</span>
-    </div>
-
     <!-- Artifact Review Panel -->
     <ArtifactReview
       v-if="reviewingChangeId"
@@ -1650,6 +1858,76 @@ function scrollToMessageId(id: string | null) {
           <div v-else-if="item.kind === 'text'" class="agent-block">
             <div class="markdown-body" v-html="renderMarkdown(item.content)"></div>
           </div>
+          <div v-else-if="item.kind === 'structured' && item.cardType === 'result'" class="structured-card">
+            <div class="structured-card-title">{{ item.data.title }}</div>
+            <div v-for="(section, si) in item.data.sections" :key="si" class="structured-card-section">
+              <div class="structured-card-heading">{{ section.heading }}</div>
+              <ul class="structured-card-items">
+                <li v-for="(it, ii) in section.items" :key="ii">{{ it }}</li>
+              </ul>
+            </div>
+          </div>
+          <div v-else-if="item.kind === 'structured' && item.cardType === 'ask'" class="ask-card">
+            <div class="ask-card-tabs" v-if="item.data.questions && item.data.questions.length > 1">
+              <button
+                v-for="(q, qi) in item.data.questions"
+                :key="qi"
+                class="ask-card-tab"
+                :class="{ active: (item.data._activeTab || 0) === qi }"
+                type="button"
+                @click="item.data._activeTab = qi"
+              ><span class="ask-card-tab-dot" :class="{ answered: q.multiSelect ? (q._selected || []).length > 0 : (q._selected || (q._customMode && q._customAnswer?.trim())) }"></span>{{ q.header || `问题 ${qi + 1}` }}</button>
+            </div>
+            <div class="ask-card-body">
+              <div class="ask-card-question">{{ item.data.questions[item.data._activeTab || 0].question }}</div>
+              <div class="ask-card-options">
+                <button
+                  v-for="(opt, oi) in item.data.questions[item.data._activeTab || 0].options"
+                  :key="oi"
+                  type="button"
+                  class="ask-card-option"
+                  :class="{ selected: item.data.questions[item.data._activeTab || 0].multiSelect
+                    ? (item.data.questions[item.data._activeTab || 0]._selected || []).includes(opt.label || opt)
+                    : item.data.questions[item.data._activeTab || 0]._selected === (opt.label || opt) }"
+                  :disabled="item.data._answered || isStreaming"
+                  @click="selectStructuredAskOption(item, item.data._activeTab || 0, opt.label || opt)"
+                >
+                  <span>{{ opt.label || opt }}</span>
+                  <span v-if="opt.description" class="ask-card-option-desc">{{ opt.description }}</span>
+                </button>
+                <div v-if="!item.data._answered" class="ask-card-custom">
+                  <input
+                    v-if="item.data.questions[item.data._activeTab || 0]._customMode"
+                    v-model="item.data.questions[item.data._activeTab || 0]._customAnswer"
+                    type="text"
+                    class="ask-card-custom-input"
+                    placeholder="输入自己的答案..."
+                    :disabled="isStreaming"
+                    @keyup.enter="submitStructuredAsk(item)"
+                  />
+                  <button
+                    v-else
+                    type="button"
+                    class="ask-card-option"
+                    :class="{ selected: item.data.questions[item.data._activeTab || 0]._customMode }"
+                    :disabled="isStreaming"
+                    @click="startStructuredAskCustom(item, item.data._activeTab || 0)"
+                  >自定义答案...</button>
+                </div>
+              </div>
+            </div>
+            <div class="ask-card-footer">
+              <div v-if="item.data._answered" class="ask-card-answered">已提交</div>
+              <div v-else class="ask-card-spacer"></div>
+              <button
+                v-if="!item.data._answered"
+                type="button"
+                class="ask-card-submit"
+                :disabled="isStreaming || !item.data.questions.every((q: any) => q._customMode ? q._customAnswer?.trim() : q.multiSelect ? (q._selected || []).length > 0 : q._selected)"
+                @click="submitStructuredAsk(item)"
+              >提交</button>
+            </div>
+          </div>
           <div v-else-if="item.kind === 'error'" class="error-block">
             <span class="error-message">{{ item.content }}</span>
             <button v-if="item.content.includes('not configured')" class="retry-btn" @click="navigateTo('agent-settings')">Go to Settings</button>
@@ -1697,50 +1975,65 @@ function scrollToMessageId(id: string | null) {
           </div>
           <!-- Ask User Options -->
           <div v-else-if="item.kind === 'ask_user'" class="ask-card">
-            <div class="ask-card-tabs">
-              <button class="ask-card-tab active" type="button">问题 1</button>
+            <div class="ask-card-tabs" v-if="item.questions.length > 1">
+              <button
+                v-for="(q, qi) in item.questions"
+                :key="qi"
+                class="ask-card-tab"
+                :class="{ active: item.activeTab === qi }"
+                type="button"
+                @click="item.activeTab = qi"
+              ><span class="ask-card-tab-dot" :class="{ answered: q.selected || (q.customMode && q.customAnswer?.trim()) }"></span>{{ q.header || `问题 ${qi + 1}` }}</button>
             </div>
             <div class="ask-card-body">
-              <div class="ask-card-question">{{ item.question }}</div>
+              <div class="ask-card-question">{{ item.questions[item.activeTab].question }}</div>
               <div class="ask-card-options">
                 <button
-                  v-for="(opt, oi) in item.options"
+                  v-for="(opt, oi) in item.questions[item.activeTab].options"
                   :key="oi"
                   type="button"
                   class="ask-card-option"
-                  :class="{ selected: item.selected === opt && !item.customMode }"
+                  :class="{ selected: item.questions[item.activeTab].selected === opt }"
                   :disabled="item.answered || isStreaming"
-                  @click="selectAskUserOption(item, opt)"
+                  @click="selectAskUserOption(item, item.activeTab, opt)"
                 >{{ opt }}</button>
-                <div class="ask-card-custom">
+                <div v-if="!item.answered" class="ask-card-custom">
                   <input
-                    v-if="item.customMode && !item.answered"
-                    v-model="item.customAnswer"
+                    v-if="item.questions[item.activeTab].customMode"
+                    v-model="item.questions[item.activeTab].customAnswer"
                     type="text"
                     class="ask-card-custom-input"
                     placeholder="输入自己的答案..."
                     :disabled="isStreaming"
                     @keydown.enter.prevent="submitAskUser(item)"
-                    @keydown.escape="item.customMode = false"
+                    @keydown.escape="item.questions[item.activeTab].customMode = false"
                   />
                   <button
                     v-else
                     type="button"
                     class="ask-card-option"
-                    :class="{ selected: item.customMode || (!!item.selected && !item.options.includes(item.selected)) }"
-                    :disabled="item.answered || isStreaming"
-                    @click="startCustomAskUser(item)"
-                  >{{ item.answered && item.selected && !item.options.includes(item.selected) ? item.selected : '自定义答案' }}</button>
+                    :class="{ selected: item.questions[item.activeTab].customMode }"
+                    :disabled="isStreaming"
+                    @click="startCustomAskUser(item, item.activeTab)"
+                  >自定义答案</button>
                 </div>
+                <!-- Show custom answer as selected when answered with non-option value -->
+                <button
+                  v-if="item.answered && item.questions[item.activeTab].selected && !item.questions[item.activeTab].options.includes(item.questions[item.activeTab].selected || '')"
+                  type="button"
+                  class="ask-card-option selected"
+                  disabled
+                >{{ item.questions[item.activeTab].selected }}</button>
               </div>
             </div>
             <div class="ask-card-footer">
-              <div v-if="item.answered" class="ask-card-answered">已提交：{{ item.selected }}</div>
+              <div v-if="item.answered" class="ask-card-answered">已提交</div>
               <div v-else class="ask-card-spacer"></div>
               <button
+                v-if="!item.answered"
                 type="button"
                 class="ask-card-submit"
-                :disabled="item.answered || isStreaming || !(item.customMode ? item.customAnswer?.trim() : item.selected)"
+                :disabled="isStreaming || !item.questions.every(q => q.customMode ? q.customAnswer?.trim() : q.selected)"
                 @click="submitAskUser(item)"
               >提交</button>
             </div>
@@ -1748,21 +2041,6 @@ function scrollToMessageId(id: string | null) {
         </template>
         <div v-if="isStreaming && blocks.length === 0" class="streaming-dot"></div>
         <div class="scroll-spacer"></div>
-      </div>
-    </div>
-
-    <div v-else-if="isExploreSession" class="flex-1 explore-empty">
-      <div class="explore-empty-panel">
-        <div class="explore-empty-title">Explore -> Spec -> Task</div>
-        <div class="explore-empty-copy">选择一个起手式，或直接描述你想构建的能力。</div>
-        <div class="explore-starters">
-          <button
-            v-for="starter in exploreStarters"
-            :key="starter"
-            class="explore-starter"
-            @click="applyExploreStarter(starter)"
-          >{{ starter }}</button>
-        </div>
       </div>
     </div>
 
@@ -1786,7 +2064,7 @@ function scrollToMessageId(id: string | null) {
             @input="autoResize"
             @paste="handlePaste"
             :disabled="!isConnected"
-            :placeholder="!isConnected ? '离线' : isExploreSession ? '描述需求，或让模型先阅读代码并追问...' : ''"
+            :placeholder="!isConnected ? '离线' : ''"
             class="input-field"
             rows="1"
             aria-label="Message input"
@@ -1992,69 +2270,6 @@ function scrollToMessageId(id: string | null) {
   overflow-y: auto;
 }
 
-.explore-banner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 7px 16px;
-  font-size: 12px;
-  color: oklch(0.82 0.08 315);
-  background: oklch(0.2 0.035 315 / 0.42);
-  border-bottom: 1px solid oklch(0.55 0.09 315 / 0.28);
-}
-.explore-banner span:first-child {
-  font-weight: 700;
-  color: oklch(0.88 0.08 315);
-}
-.explore-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 32px 24px;
-}
-.explore-empty-panel {
-  width: min(720px, 100%);
-}
-.explore-empty-title {
-  font-size: 18px;
-  font-weight: 650;
-  color: var(--color-text-primary);
-  margin-bottom: 6px;
-}
-.explore-empty-copy {
-  font-size: 13px;
-  color: var(--color-text-muted);
-  margin-bottom: 16px;
-}
-.explore-starters {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-.explore-starter {
-  min-height: 76px;
-  padding: 11px 12px;
-  border-radius: 7px;
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-surface-1);
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  line-height: 1.45;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
-}
-.explore-starter:hover {
-  background: var(--color-surface-2);
-  border-color: var(--color-accent);
-  color: var(--color-text-primary);
-}
-@media (max-width: 760px) {
-  .explore-starters {
-    grid-template-columns: 1fr;
-  }
-}
 .context-bar {
   display: flex;
   align-items: center;
@@ -2668,6 +2883,19 @@ function scrollToMessageId(id: string | null) {
   color: var(--color-text-primary);
   background: color-mix(in oklch, var(--color-accent) 12%, var(--color-surface-1));
 }
+.ask-card-tab-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  margin-right: 6px;
+  vertical-align: middle;
+  transition: background 0.2s;
+}
+.ask-card-tab-dot.answered {
+  background: var(--color-accent);
+}
 .ask-card-body {
   padding: 14px 16px;
 }
@@ -2710,6 +2938,13 @@ function scrollToMessageId(id: string | null) {
 .ask-card-option:disabled {
   cursor: default;
   opacity: 0.65;
+}
+.ask-card-option-desc {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  font-weight: 400;
+  margin-top: 2px;
 }
 .ask-card-custom {
   min-height: 38px;
@@ -2760,5 +2995,44 @@ function scrollToMessageId(id: string | null) {
 .ask-card-submit:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* Structured Result Card */
+.structured-card {
+  margin: 10px 0;
+  border: 1px solid color-mix(in oklch, var(--color-accent) 30%, transparent);
+  border-radius: 10px;
+  background: var(--color-surface-1);
+  overflow: hidden;
+}
+.structured-card-title {
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  border-bottom: 1px solid color-mix(in oklch, var(--color-accent) 15%, transparent);
+  background: color-mix(in oklch, var(--color-accent) 6%, var(--color-surface-1));
+}
+.structured-card-section {
+  padding: 10px 16px;
+}
+.structured-card-section + .structured-card-section {
+  border-top: 1px solid color-mix(in oklch, var(--color-border) 50%, transparent);
+}
+.structured-card-heading {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+}
+.structured-card-items {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.structured-card-items li {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  line-height: 1.6;
 }
 </style>

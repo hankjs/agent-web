@@ -20,6 +20,12 @@ const router = createRouter({
       props: true,
     },
     {
+      path: "/agent/:sessionId",
+      name: "agent",
+      component: () => import("../views/Agent.vue"),
+      props: true,
+    },
+    {
       path: "/specs",
       name: "specs",
       component: () => import("../views/Specs.vue"),

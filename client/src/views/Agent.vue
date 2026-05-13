@@ -1,0 +1,337 @@
+<script setup lang="ts">
+import { ref, computed, nextTick, onMounted, watch } from "vue";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
+import { useSession, authFetch } from "../composables/useSession";
+import { useExploreAgent, type ExplorePhase } from "../composables/useExploreAgent";
+import { useSidebarPanels } from "../composables/useSidebarPanels";
+import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
+
+const props = defineProps<{ sessionId: string }>();
+
+const { currentSession, sessions, goBack, updateSessionTitle } = useSession();
+
+// Sidebar
+const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, registerPanel, reset: resetPanels } = useSidebarPanels();
+registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
+
+// Block types
+type AskUserQuestion = { header: string; question: string; options: string[]; selected?: string; customMode?: boolean; customAnswer?: string };
+type Block =
+  | { kind: "user"; content: string }
+  | { kind: "text"; content: string }
+  | { kind: "error"; content: string }
+  | { kind: "tool"; tool: { id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean } }
+  | { kind: "ask_user"; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
+
+const blocks = ref<Block[]>([]);
+const input = ref("");
+const isStreaming = ref(false);
+const messagesEl = ref<HTMLElement | null>(null);
+const textareaRef = ref<HTMLTextAreaElement | null>(null);
+const changesPanelRefreshKey = ref(0);
+
+// Explore agent
+const exploreAgent = useExploreAgent({
+  sessionId: props.sessionId,
+  metadata: currentSession.value?.metadata || null,
+  workDir: currentSession.value?.work_dir || "",
+  onBlock: (block: Block) => { blocks.value.push(block); nextTick(scrollToBottom); },
+  onStreaming: (v: boolean) => { isStreaming.value = v; },
+  onComplete: () => { changesPanelRefreshKey.value++; },
+});
+
+const starters = [
+  "从代码库现状开始，帮我找出这个需求还缺哪些关键信息。",
+  "先用选项问题确认用户目标、范围边界和验收标准。",
+  "按快速探索模式推进，只确认能进入 Spec 和 Task 的最小信息。",
+];
+
+const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
+
+function renderMarkdown(text: string): string {
+  const raw = marked.parse(text, { async: false }) as string;
+  return DOMPurify.sanitize(raw);
+}
+
+function scrollToBottom() {
+  if (messagesEl.value) {
+    messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+  }
+}
+
+function autoResize() {
+  const el = textareaRef.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 200) + "px";
+}
+
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+}
+
+async function send() {
+  if (!input.value.trim() || isStreaming.value) return;
+  const content = input.value.trim();
+  input.value = "";
+  nextTick(() => { if (textareaRef.value) textareaRef.value.style.height = "auto"; });
+  await exploreAgent.handleUserInput(content);
+}
+
+function stop() {
+  // Explore agent doesn't have a cancel mechanism yet — just mark not streaming
+  isStreaming.value = false;
+}
+
+function selectOption(block: Extract<Block, { kind: "ask_user" }>, qIdx: number, opt: string) {
+  if (block.answered || isStreaming.value) return;
+  const q = block.questions[qIdx];
+  q.selected = opt;
+  q.customMode = false;
+}
+
+async function submitAskUser(block: Extract<Block, { kind: "ask_user" }>) {
+  if (block.answered) return;
+  block.answered = true;
+  const answers = block.questions.map(q => q.customMode ? (q.customAnswer || "") : (q.selected || "")).join("; ");
+  exploreAgent.resume();
+  await exploreAgent.handleUserInput(answers);
+}
+
+// Load session on mount
+onMounted(() => {
+  if (!currentSession.value) {
+    const s = sessions.value.find(s => s.id === props.sessionId);
+    if (s) {
+      // Set current session from list
+      (currentSession as any).value = s;
+    }
+  }
+});
+
+// Watch session changes to update agent options
+watch(() => currentSession.value, (s) => {
+  if (s) {
+    // Agent options are set at creation time, but we can update title display
+  }
+});
+</script>
+
+<template>
+  <div class="agent-page">
+    <!-- Header -->
+    <div class="agent-header">
+      <button class="back-btn" @click="goBack" aria-label="Back">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 12L6 8L10 4"/></svg>
+      </button>
+      <span class="agent-title">{{ currentSession?.title || 'Explore' }}</span>
+    </div>
+
+    <!-- Explore banner -->
+    <div class="explore-banner">
+      <span>Explore</span>
+      <template v-if="currentSession?.metadata">
+        <span class="explore-chip">{{ currentSession.metadata.depth === 'quick' ? '快速' : currentSession.metadata.depth === 'deep' ? '深入' : '标准' }}</span>
+        <span class="explore-chip">{{ currentSession.metadata.questionStyle === 'open' ? '开放追问' : '选项优先' }}</span>
+        <span class="explore-chip" v-if="currentSession.metadata.focusAreas?.length">{{ currentSession.metadata.focusAreas.join('、') }}</span>
+      </template>
+    </div>
+
+    <!-- Messages area -->
+    <div v-if="blocks.length > 0 || isStreaming" ref="messagesEl" class="agent-messages">
+      <div class="agent-messages-inner">
+        <template v-for="(block, idx) in blocks" :key="idx">
+          <div v-if="block.kind === 'user'" class="user-block">
+            <pre class="whitespace-pre-wrap text-[15px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ block.content }}</pre>
+          </div>
+          <div v-else-if="block.kind === 'text'" class="agent-block">
+            <div class="markdown-body" v-html="renderMarkdown(block.content)"></div>
+          </div>
+          <div v-else-if="block.kind === 'error'" class="error-block">{{ block.content }}</div>
+          <div v-else-if="block.kind === 'tool'" class="tool-block" @click="block.tool.expanded = !block.tool.expanded">
+            <div class="tool-header">
+              <span class="tool-indicator" :class="{ running: block.tool.isRunning, error: block.tool.isError }"></span>
+              <span class="tool-name">{{ block.tool.name }}</span>
+              <span v-if="block.tool.isRunning" class="tool-running">运行中...</span>
+            </div>
+            <div v-if="block.tool.expanded" class="tool-detail">
+              <pre v-if="block.tool.input" class="tool-input">{{ block.tool.input }}</pre>
+              <pre v-if="block.tool.result" class="tool-result" :class="{ 'tool-error': block.tool.isError }">{{ block.tool.result?.slice(0, 500) }}</pre>
+            </div>
+          </div>
+          <div v-else-if="block.kind === 'ask_user'" class="ask-card">
+            <div v-for="(q, qIdx) in block.questions" :key="qIdx" class="ask-question">
+              <div class="ask-header">{{ q.header }}</div>
+              <div class="ask-body">{{ q.question }}</div>
+              <div class="ask-options">
+                <button
+                  v-for="opt in q.options"
+                  :key="opt"
+                  class="ask-option"
+                  :class="{ selected: q.selected === opt }"
+                  :disabled="block.answered"
+                  @click="selectOption(block, qIdx, opt)"
+                >{{ opt }}</button>
+                <button
+                  class="ask-option ask-option-custom"
+                  :class="{ selected: q.customMode }"
+                  :disabled="block.answered"
+                  @click="q.customMode = !q.customMode; if (q.customMode) q.selected = undefined"
+                >自定义</button>
+              </div>
+              <textarea
+                v-if="q.customMode && !block.answered"
+                v-model="q.customAnswer"
+                class="ask-custom-input"
+                rows="2"
+                placeholder="输入自定义回答..."
+              ></textarea>
+            </div>
+            <div class="ask-footer">
+              <div v-if="block.answered" class="ask-answered">已提交</div>
+              <button
+                v-else
+                class="ask-submit"
+                :disabled="isStreaming || !block.questions.every(q => q.customMode ? q.customAnswer?.trim() : q.selected)"
+                @click="submitAskUser(block)"
+              >提交</button>
+            </div>
+          </div>
+        </template>
+        <div v-if="isStreaming && blocks.length === 0" class="streaming-dot"></div>
+        <div class="scroll-spacer"></div>
+      </div>
+    </div>
+
+    <!-- Empty state -->
+    <div v-else class="agent-empty">
+      <div class="agent-empty-panel">
+        <div class="agent-empty-title">Explore -> Spec -> Task</div>
+        <div class="agent-empty-copy">选择一个起手式，或直接描述你想构建的能力。</div>
+        <div class="agent-starters">
+          <button v-for="s in starters" :key="s" class="agent-starter" @click="input = s; nextTick(autoResize)">{{ s }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input -->
+    <div class="agent-input-area" :class="blocks.length === 0 && !isStreaming ? 'input-centered' : 'input-docked'">
+      <div class="agent-input-wrapper">
+        <textarea
+          ref="textareaRef"
+          v-model="input"
+          @keydown="handleKeydown"
+          @input="autoResize"
+          placeholder="描述需求，或让模型先阅读代码并追问..."
+          class="agent-input-field"
+          rows="1"
+          aria-label="Message input"
+        ></textarea>
+        <button
+          class="agent-send-btn"
+          :class="{ 'stop-mode': isStreaming }"
+          @click="isStreaming ? stop() : send()"
+          :disabled="!isStreaming && !input.trim()"
+          :aria-label="isStreaming ? 'Stop' : 'Send'"
+        >
+          <svg v-if="!isStreaming" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 14V3M8 3L3 8M8 3L13 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="12" height="12" rx="2" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div v-if="activePanelId" class="agent-sidebar">
+      <div class="sidebar-panel-header">
+        <span>{{ sidebarPanels.find(p => p.id === activePanelId)?.title }}</span>
+        <button class="sidebar-panel-close" @click="closePanel">&times;</button>
+      </div>
+      <div class="sidebar-panel-body">
+        <ChangeChatPanel v-if="activePanelId === 'changes'" :session-id="sessionId" :work-dir="currentSession?.work_dir || ''" :key="changesPanelRefreshKey" />
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.agent-page { display: flex; flex-direction: column; height: 100vh; background: var(--color-bg); position: relative; }
+.agent-header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--color-border-subtle); }
+.back-btn { background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 4px; border-radius: 4px; }
+.back-btn:hover { color: var(--color-text-primary); background: var(--color-surface-1); }
+.agent-title { font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
+
+.explore-banner { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 7px 16px; font-size: 12px; color: oklch(0.82 0.08 315); background: oklch(0.2 0.035 315 / 0.42); border-bottom: 1px solid oklch(0.55 0.09 315 / 0.28); }
+.explore-banner span:first-child { font-weight: 700; color: oklch(0.88 0.08 315); }
+.explore-chip { padding: 2px 8px; border-radius: 4px; background: oklch(0.25 0.04 315 / 0.6); font-size: 11px; color: oklch(0.85 0.06 315); }
+
+.agent-messages { flex: 1; overflow-y: auto; }
+.agent-messages-inner { max-width: 720px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+
+.user-block { padding: 12px 16px; border-radius: 8px; background: var(--color-surface-1); }
+.agent-block { padding: 4px 0; }
+.error-block { padding: 8px 12px; border-radius: 6px; background: oklch(0.25 0.06 25 / 0.5); color: oklch(0.85 0.1 25); font-size: 13px; }
+
+.tool-block { padding: 6px 10px; border-radius: 6px; background: var(--color-surface-1); cursor: pointer; font-size: 12px; }
+.tool-header { display: flex; align-items: center; gap: 8px; }
+.tool-indicator { width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-muted); }
+.tool-indicator.running { background: oklch(0.75 0.15 145); animation: pulse 1s infinite; }
+.tool-indicator.error { background: oklch(0.7 0.15 25); }
+.tool-name { font-weight: 500; color: var(--color-text-secondary); }
+.tool-running { color: var(--color-text-muted); font-size: 11px; }
+.tool-detail { margin-top: 8px; }
+.tool-input, .tool-result { font-size: 11px; padding: 6px 8px; border-radius: 4px; background: var(--color-surface-2); overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
+.tool-result { margin-top: 4px; }
+.tool-error { color: oklch(0.8 0.1 25); }
+
+.ask-card { padding: 16px; border-radius: 8px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); }
+.ask-question { margin-bottom: 12px; }
+.ask-header { font-size: 11px; font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; margin-bottom: 4px; }
+.ask-body { font-size: 14px; color: var(--color-text-primary); margin-bottom: 8px; }
+.ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.ask-option { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-2); color: var(--color-text-secondary); font-size: 13px; cursor: pointer; transition: all 0.15s; }
+.ask-option:hover:not(:disabled) { border-color: var(--color-accent); color: var(--color-text-primary); }
+.ask-option.selected { border-color: var(--color-accent); background: oklch(0.3 0.05 260 / 0.3); color: var(--color-text-primary); }
+.ask-option:disabled { opacity: 0.5; cursor: default; }
+.ask-custom-input { width: 100%; margin-top: 8px; padding: 8px; border-radius: 6px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-2); color: var(--color-text-primary); font-size: 13px; resize: vertical; }
+.ask-footer { margin-top: 12px; display: flex; justify-content: flex-end; }
+.ask-submit { padding: 6px 16px; border-radius: 6px; border: none; background: var(--color-accent); color: #fff; font-size: 13px; font-weight: 500; cursor: pointer; }
+.ask-submit:disabled { opacity: 0.4; cursor: default; }
+.ask-answered { font-size: 12px; color: var(--color-text-muted); }
+
+.agent-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 32px 24px; }
+.agent-empty-panel { width: min(720px, 100%); }
+.agent-empty-title { font-size: 18px; font-weight: 650; color: var(--color-text-primary); margin-bottom: 6px; }
+.agent-empty-copy { font-size: 13px; color: var(--color-text-muted); margin-bottom: 16px; }
+.agent-starters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.agent-starter { min-height: 76px; padding: 11px 12px; border-radius: 7px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; text-align: left; cursor: pointer; transition: background 0.15s, border-color 0.15s, color 0.15s; }
+.agent-starter:hover { background: var(--color-surface-2); border-color: var(--color-accent); color: var(--color-text-primary); }
+
+.agent-input-area { padding: 16px 24px; border-top: 1px solid var(--color-border-subtle); }
+.agent-input-area.input-centered { position: absolute; bottom: 0; left: 0; right: 0; }
+.agent-input-wrapper { max-width: 720px; margin: 0 auto; display: flex; align-items: flex-end; gap: 8px; }
+.agent-input-field { flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); color: var(--color-text-primary); font-size: 14px; resize: none; outline: none; line-height: 1.5; }
+.agent-input-field:focus { border-color: var(--color-accent); }
+.agent-send-btn { width: 36px; height: 36px; border-radius: 8px; border: none; background: var(--color-accent); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.agent-send-btn:disabled { opacity: 0.4; cursor: default; }
+.agent-send-btn.stop-mode { background: oklch(0.55 0.15 25); }
+
+.agent-sidebar { position: absolute; top: 0; right: 0; bottom: 0; width: 360px; background: var(--color-bg); border-left: 1px solid var(--color-border-subtle); display: flex; flex-direction: column; z-index: 10; }
+.sidebar-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--color-border-subtle); font-size: 13px; font-weight: 600; }
+.sidebar-panel-close { background: none; border: none; color: var(--color-text-muted); font-size: 16px; cursor: pointer; }
+.sidebar-panel-body { flex: 1; overflow-y: auto; }
+
+.streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1s infinite; }
+.scroll-spacer { height: 40px; }
+
+.markdown-body { font-size: 14px; line-height: 1.6; color: var(--color-text-primary); }
+.markdown-body :deep(p) { margin: 0.5em 0; }
+.markdown-body :deep(code) { padding: 2px 5px; border-radius: 3px; background: var(--color-surface-2); font-size: 0.9em; }
+.markdown-body :deep(pre) { padding: 12px; border-radius: 6px; background: var(--color-surface-2); overflow-x: auto; }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@media (max-width: 760px) { .agent-starters { grid-template-columns: 1fr; } }
+</style>

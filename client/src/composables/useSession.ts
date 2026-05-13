@@ -11,6 +11,7 @@ export interface Session {
   environment: "remote" | "local";
   session_type: "chat" | "explore";
   active_leaf_id: string | null;
+  metadata: Record<string, any> | null;
   created_at: string;
   updated_at: string;
 }
@@ -18,6 +19,7 @@ export interface Session {
 interface NewSessionOptions {
   initialPrompt?: string;
   autoSendInitialPrompt?: boolean;
+  metadata?: Record<string, any>;
 }
 
 const sessions = ref<Session[]>([]);
@@ -25,6 +27,12 @@ const currentSession = ref<Session | null>(null);
 const TOKEN_KEY = "hank_client_token";
 const token = ref(localStorage.getItem(TOKEN_KEY) || "");
 const isAuthenticated = ref(!!token.value);
+
+function parseSessionMetadata(s: Session) {
+  if (typeof s.metadata === "string") {
+    try { s.metadata = JSON.parse(s.metadata); } catch { s.metadata = null; }
+  }
+}
 
 export function queueSessionInitialPrompt(sessionId: string, content: string, autoSend = true) {
   sessionStorage.setItem(`hank_initial_prompt:${sessionId}`, JSON.stringify({
@@ -68,7 +76,10 @@ export async function apiRequest<T = any>(path: string, options: RequestInit = {
 async function fetchSessions() {
   const result = await apiRequest<Session[]>("/api/sessions");
   if (result.ok && result.data) {
-    result.data.forEach(s => { if (!s.environment) s.environment = "remote"; });
+    result.data.forEach(s => {
+      if (!s.environment) s.environment = "remote";
+      parseSessionMetadata(s);
+    });
     sessions.value = result.data;
   }
 }
@@ -83,18 +94,25 @@ async function createSession(
   const result = await apiRequest<Session>("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ work_dir: workDir || null, environment: environment || "remote", session_type: sessionType || "chat" }),
+    body: JSON.stringify({
+      work_dir: workDir || null,
+      environment: environment || "remote",
+      session_type: sessionType || "chat",
+      metadata: options?.metadata ? JSON.stringify(options.metadata) : undefined,
+    }),
   });
   if (!result.ok || !result.data) return null;
   const session = result.data;
   if (!session.environment) session.environment = environment || "remote";
   if (!session.session_type) session.session_type = sessionType || "chat";
+  parseSessionMetadata(session);
   sessions.value.unshift(session);
   currentSession.value = session;
   if (options?.initialPrompt) {
     queueSessionInitialPrompt(session.id, options.initialPrompt, options.autoSendInitialPrompt ?? false);
   }
-  router.push({ name: "chat", params: { sessionId: session.id } });
+  const routeName = sessionType === "explore" ? "agent" : "chat";
+  router.push({ name: routeName, params: { sessionId: session.id } });
   return session;
 }
 
@@ -111,7 +129,8 @@ async function deleteSession(id: string, router: ReturnType<typeof useRouter>) {
 
 function selectSession(session: Session, router: ReturnType<typeof useRouter>) {
   currentSession.value = session;
-  router.push({ name: "chat", params: { sessionId: session.id } });
+  const routeName = session.session_type === "explore" ? "agent" : "chat";
+  router.push({ name: routeName, params: { sessionId: session.id } });
 }
 
 async function login(username?: string, password?: string): Promise<{ ok: boolean; error?: string }> {
@@ -141,6 +160,7 @@ async function updateSessionTitle(id: string, title: string) {
   });
   if (result.ok && result.data) {
     const updated = result.data;
+    parseSessionMetadata(updated);
     const idx = sessions.value.findIndex((s) => s.id === id);
     if (idx !== -1) sessions.value[idx] = updated;
     if (currentSession.value?.id === id) currentSession.value = updated;
@@ -155,6 +175,7 @@ async function updateSessionWorkDir(id: string, workDir: string | null) {
   });
   if (result.ok && result.data) {
     const updated = result.data;
+    parseSessionMetadata(updated);
     const idx = sessions.value.findIndex((s) => s.id === id);
     if (idx !== -1) sessions.value[idx] = updated;
     if (currentSession.value?.id === id) currentSession.value = updated;
