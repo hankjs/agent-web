@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import { useSession } from "../composables/useSession";
 import { listSkills, installSkill, uninstallSkill, type SkillInfo } from "../api/skills";
+import ActionBtn from "../components/ActionBtn.vue";
 
 const { sessions, fetchSessions } = useSession();
 const skills = ref<SkillInfo[]>([]);
@@ -107,7 +108,7 @@ onMounted(async () => {
       <span class="view-title">Skills</span>
       <div class="header-actions">
         <button class="scope-btn" @click="showScopePicker = !showScopePicker">{{ scopeLabel }}</button>
-        <button class="action-btn primary" @click="showInstall = !showInstall">安装</button>
+        <ActionBtn variant="primary" @click="showInstall = !showInstall">安装</ActionBtn>
       </div>
     </header>
 
@@ -118,8 +119,8 @@ onMounted(async () => {
         <input v-model="installName" placeholder="Skill 名称" class="form-input" />
         <input v-model="installPath" placeholder="路径 (默认 skill/SKILL.md)" class="form-input" />
         <div class="form-row">
-          <button class="action-btn" @click="showInstall = false">取消</button>
-          <button class="action-btn primary" @click="submitInstall" :disabled="loading">安装</button>
+          <ActionBtn @click="showInstall = false">取消</ActionBtn>
+          <ActionBtn variant="primary" @click="submitInstall" :disabled="loading">安装</ActionBtn>
         </div>
       </div>
 
@@ -355,33 +356,6 @@ onMounted(async () => {
 
 .uninstall-btn:hover {
   opacity: 1;
-}
-
-.action-btn {
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  background: transparent;
-  color: var(--color-text-secondary);
-  transition: background var(--duration-fast);
-}
-
-.action-btn.primary {
-  background: var(--color-accent);
-  color: var(--color-surface-0);
-  border-color: transparent;
-}
-
-.action-btn.primary:hover {
-  background: var(--color-accent-hover);
-}
-
-.action-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 .empty {

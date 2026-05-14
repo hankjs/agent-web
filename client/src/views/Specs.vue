@@ -4,6 +4,7 @@ import { useSession } from "../composables/useSession";
 import { listSpecs, updateSpec, deleteSpec, type Spec } from "../api/specs";
 import { listChanges, type Change } from "../api/changes";
 import NewChangeDialog from "../components/NewChangeDialog.vue";
+import ActionBtn from "../components/ActionBtn.vue";
 
 const { navigateTo, sessions, fetchSessions } = useSession();
 const specs = ref<Spec[]>([]);
@@ -97,7 +98,7 @@ onMounted(fetchAll);
   <div class="specs-view">
     <header class="view-header">
       <span class="view-title">规格</span>
-      <button class="action-btn primary" @click="creatingChange = true">新建需求</button>
+      <ActionBtn variant="primary" @click="creatingChange = true">新建需求</ActionBtn>
     </header>
 
     <div class="specs-body">
@@ -156,15 +157,15 @@ onMounted(fetchAll);
             <div class="spec-detail-header">
               <span class="spec-detail-title">{{ selectedSpec.capability }}</span>
               <div class="spec-detail-actions">
-                <button v-if="!editing" class="action-btn" @click="startEdit">编辑</button>
-                <button class="action-btn danger" @click="removeSpec(selectedSpec.id)">删除</button>
+                <ActionBtn v-if="!editing" @click="startEdit">编辑</ActionBtn>
+                <ActionBtn variant="danger" @click="removeSpec(selectedSpec.id)">删除</ActionBtn>
               </div>
             </div>
             <div v-if="editing" class="edit-area">
               <textarea v-model="editContent" class="edit-textarea" rows="16"></textarea>
               <div class="edit-actions">
-                <button class="action-btn" @click="editing = false">取消</button>
-                <button class="action-btn primary" @click="saveEdit">保存</button>
+                <ActionBtn @click="editing = false">取消</ActionBtn>
+                <ActionBtn variant="primary" @click="saveEdit">保存</ActionBtn>
               </div>
             </div>
             <pre v-else class="spec-content">{{ selectedSpec.content }}</pre>
@@ -399,43 +400,6 @@ onMounted(fetchAll);
   display: flex;
   gap: var(--space-2);
   justify-content: flex-end;
-}
-
-.action-btn {
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  background: transparent;
-  color: var(--color-text-secondary);
-  transition: background var(--duration-fast), color var(--duration-fast);
-}
-
-.action-btn:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-text-primary);
-}
-
-.action-btn.primary {
-  background: var(--color-accent);
-  color: var(--color-surface-0);
-  border-color: transparent;
-}
-
-.action-btn.primary:hover {
-  background: var(--color-accent-hover);
-}
-
-.action-btn.danger {
-  color: var(--color-error);
-  border-color: var(--color-error);
-  opacity: 0.7;
-}
-
-.action-btn.danger:hover {
-  opacity: 1;
 }
 
 .empty-inline {

@@ -3,6 +3,7 @@ import { onMounted, ref } from "vue";
 import { useSession } from "../composables/useSession";
 import FolderPicker from "../components/FolderPicker.vue";
 import NewChangeDialog from "../components/NewChangeDialog.vue";
+import ActionBtn from "../components/ActionBtn.vue";
 
 const { createSession, fetchSessions } = useSession();
 
@@ -47,7 +48,7 @@ onMounted(async () => {
   <div class="session-view">
     <header class="view-header">
       <span class="view-title">新会话</span>
-      <button class="action-btn primary" @click="showNewChange = true">新建需求</button>
+      <ActionBtn variant="primary" @click="showNewChange = true">新建需求</ActionBtn>
     </header>
 
     <div class="view-body">
@@ -71,7 +72,7 @@ onMounted(async () => {
           <button v-else class="dir-picker" @click="pickLocalDir">
             {{ localWorkDir || '选择本地目录...' }}
           </button>
-          <button class="action-btn primary" @click="start">开始</button>
+          <ActionBtn variant="primary" @click="start">开始</ActionBtn>
         </div>
       </div>
     </div>
@@ -106,7 +107,15 @@ onMounted(async () => {
 .view-body {
   flex: 1;
   overflow-y: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: var(--space-8) var(--space-6);
+  width: 100%;
+}
+
+.new-session {
+  width: 100%;
   max-width: 560px;
 }
 
@@ -166,34 +175,5 @@ onMounted(async () => {
 
 .dir-picker:hover {
   border-color: var(--color-text-muted);
-}
-
-/* Shared action button */
-.action-btn {
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  background: transparent;
-  color: var(--color-text-secondary);
-  transition: background var(--duration-fast), color var(--duration-fast);
-  white-space: nowrap;
-}
-
-.action-btn:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-text-primary);
-}
-
-.action-btn.primary {
-  background: var(--color-accent);
-  color: var(--color-surface-0);
-  border-color: transparent;
-}
-
-.action-btn.primary:hover {
-  background: var(--color-accent-hover);
 }
 </style>

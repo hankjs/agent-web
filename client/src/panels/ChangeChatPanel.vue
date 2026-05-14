@@ -4,6 +4,7 @@ import { listChanges, createChange, startExplore, triggerGenerate, confirmArtifa
 import { useSession } from "../composables/useSession";
 import { buildExploreContinuePrompt } from "../agents/ExploreAgent";
 import { buildGeneratePrompt } from "../agents/ChangeAgent";
+import ActionBtn from "../components/ActionBtn.vue";
 
 const props = defineProps<{
   workDir: string;
@@ -112,12 +113,11 @@ watch(() => props.refreshKey, fetchChanges);
           <span class="change-status" :class="change.status">{{ change.status }}</span>
         </div>
         <div class="change-actions">
-          <button
+          <ActionBtn
             v-for="action in getActions(change)"
             :key="action"
-            class="action-btn"
             @click="action === '探索' ? handleExplore(change) : action === '生成' ? handleGenerate(change) : action === '应用' ? handleApply(change) : action === '确认' ? handleConfirm(change) : action === '审查' ? handleReview(change) : handleView(change)"
-          >{{ action }}</button>
+          >{{ action }}</ActionBtn>
         </div>
       </div>
 
@@ -130,8 +130,8 @@ watch(() => props.refreshKey, fetchChanges);
           @keydown.enter="handleCreate"
           @keydown.escape="showNewForm = false"
         />
-        <button class="action-btn" @click="handleCreate">创建</button>
-        <button class="action-btn cancel" @click="showNewForm = false">取消</button>
+        <ActionBtn @click="handleCreate">创建</ActionBtn>
+        <ActionBtn variant="cancel" @click="showNewForm = false">取消</ActionBtn>
       </div>
     </div>
 
@@ -159,9 +159,6 @@ watch(() => props.refreshKey, fetchChanges);
 .change-status.active { color: #34d399; background: rgba(52, 211, 153, 0.1); }
 .change-status.draft { color: #fbbf24; background: rgba(251, 191, 36, 0.1); }
 .change-actions { display: flex; gap: 6px; }
-.action-btn { padding: 4px 10px; font-size: 11px; font-weight: 500; border-radius: 4px; border: 1px solid var(--color-border, #333); background: transparent; color: var(--color-text-primary); cursor: pointer; }
-.action-btn:hover { background: var(--color-surface-1); border-color: var(--color-accent, #6366f1); }
-.action-btn.cancel { color: var(--color-text-secondary); }
 .new-change-form { display: flex; gap: 6px; padding: 8px 0; align-items: center; }
 .new-change-input { flex: 1; padding: 5px 10px; font-size: 12px; border-radius: 4px; border: 1px solid var(--color-border, #333); background: var(--color-surface-0); color: var(--color-text-primary); outline: none; }
 .new-change-input:focus { border-color: var(--color-accent, #6366f1); }

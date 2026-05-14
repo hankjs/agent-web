@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import { useSession } from "../composables/useSession";
 import { listChanges, type Change } from "../api/changes";
 import NewChangeDialog from "../components/NewChangeDialog.vue";
+import ActionBtn from "../components/ActionBtn.vue";
 
 const { navigateTo } = useSession();
 const changes = ref<Change[]>([]);
@@ -58,7 +59,7 @@ onMounted(fetchChanges);
             @click="statusFilter = tab"
           >{{ statusLabels[tab] }}</button>
         </div>
-        <button class="action-btn primary" @click="showCreate = true">新建</button>
+        <ActionBtn variant="primary" @click="showCreate = true">新建</ActionBtn>
       </div>
     </header>
 
@@ -212,27 +213,6 @@ onMounted(fetchChanges);
   background: var(--color-success-surface);
 }
 
-.action-btn {
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  background: transparent;
-  color: var(--color-text-secondary);
-  transition: background var(--duration-fast);
-}
-
-.action-btn.primary {
-  background: var(--color-accent);
-  color: var(--color-surface-0);
-  border-color: transparent;
-}
-
-.action-btn.primary:hover {
-  background: var(--color-accent-hover);
-}
 
 .empty {
   color: var(--color-text-muted);
