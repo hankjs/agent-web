@@ -58,13 +58,13 @@ onMounted(async () => {
             class="env-tab"
             :class="{ active: activeTab === 'remote' }"
             @click="activeTab = 'remote'"
-          >服务器</button>
+          >线上</button>
           <button
             v-if="isTauri"
             class="env-tab"
             :class="{ active: activeTab === 'local' }"
             @click="activeTab = 'local'"
-          >本机</button>
+          >本地</button>
         </div>
 
         <div class="picker-row">

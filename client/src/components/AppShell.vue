@@ -3,11 +3,59 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useSession } from "../composables/useSession";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
+import { useContextMenu, type ContextMenuItem } from "../composables/useContextMenu";
+import ContextMenu from "./ContextMenu.vue";
 
 const router = useRouter();
 const route = useRoute();
-const { sessions, fetchSessions, selectSession, deleteSession, logout } = useSession();
+const { sessions, fetchSessions, selectSession, deleteSession, updateSessionTitle, logout } = useSession();
 const { panels: sidebarPanels, activePanelId, togglePanel, closePanel } = useSidebarPanels();
+const { visible: ctxVisible, position: ctxPosition, items: ctxItems, open: ctxOpen, close: ctxClose } = useContextMenu();
+
+const renamingSessionId = ref<string | null>(null);
+const renameInput = ref("");
+const pendingDeleteId = ref<string | null>(null);
+
+function confirmDelete() {
+  if (pendingDeleteId.value) {
+    deleteSession(pendingDeleteId.value);
+    pendingDeleteId.value = null;
+  }
+}
+
+function cancelDelete() {
+  pendingDeleteId.value = null;
+}
+
+function openSessionMenu(e: MouseEvent, session: { id: string; title: string; work_dir: string | null }) {
+  const items: ContextMenuItem[] = [
+    {
+      label: "重命名",
+      action: () => {
+        renamingSessionId.value = session.id;
+        renameInput.value = session.title || "";
+      },
+    },
+    { label: "", action: () => {}, separator: true },
+    {
+      label: "删除",
+      destructive: true,
+      action: () => { pendingDeleteId.value = session.id; },
+    },
+  ];
+  ctxOpen(e, items);
+}
+
+function confirmRename(sessionId: string) {
+  if (renameInput.value.trim()) {
+    updateSessionTitle(sessionId, renameInput.value.trim());
+  }
+  renamingSessionId.value = null;
+}
+
+function cancelRename() {
+  renamingSessionId.value = null;
+}
 
 const navCollapsed = ref(false);
 const lastPanelId = ref<string | null>(null);
@@ -122,9 +170,25 @@ defineExpose({ rightPanelOpen, navCollapsed });
               class="nav-session-item"
               :class="{ active: route.params.sessionId === s.id }"
               @click="selectSession(s)"
+              @contextmenu="openSessionMenu($event, s)"
             >
-              <span class="nav-session-title">{{ displayTitle(s.title, s.work_dir) }}</span>
-              <span class="nav-session-time">{{ relativeTime(s.updated_at) }}</span>
+              <template v-if="renamingSessionId === s.id">
+                <input
+                  class="nav-session-rename"
+                  v-model="renameInput"
+                  @click.stop
+                  @keydown.enter="confirmRename(s.id)"
+                  @keydown.escape="cancelRename"
+                  @blur="confirmRename(s.id)"
+                  ref="renameInputEl"
+                  autofocus
+                />
+              </template>
+              <template v-else>
+                <span class="nav-session-title">{{ displayTitle(s.title, s.work_dir) }}</span>
+                <span class="nav-session-env" :class="s.environment">{{ s.environment === 'local' ? '本地' : '线上' }}</span>
+                <span class="nav-session-time">{{ relativeTime(s.updated_at) }}</span>
+              </template>
             </div>
           </div>
         </div>
@@ -272,6 +336,21 @@ defineExpose({ rightPanelOpen, navCollapsed });
         </svg>
       </button>
     </div>
+
+    <ContextMenu :visible="ctxVisible" :position="ctxPosition" :items="ctxItems" @close="ctxClose" />
+
+    <!-- Delete confirmation -->
+    <Teleport to="body">
+      <div v-if="pendingDeleteId" class="confirm-backdrop" @mousedown.self="cancelDelete">
+        <div class="confirm-dialog" @keydown.escape="cancelDelete">
+          <p class="confirm-text">确定删除此会话？</p>
+          <div class="confirm-actions">
+            <button class="confirm-btn cancel" @click="cancelDelete">取消</button>
+            <button class="confirm-btn destructive" @click="confirmDelete" autofocus>删除</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -430,11 +509,43 @@ defineExpose({ rightPanelOpen, navCollapsed });
   color: var(--color-text-primary);
 }
 
+.nav-session-env {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 0 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  margin-left: var(--space-1);
+  line-height: 16px;
+}
+
+.nav-session-env.remote {
+  color: var(--color-env-remote);
+  background: var(--color-env-remote-bg);
+}
+
+.nav-session-env.local {
+  color: var(--color-env-local);
+  background: var(--color-env-local-bg);
+}
+
 .nav-session-time {
   font-size: 10px;
   color: var(--color-text-muted);
   flex-shrink: 0;
   margin-left: var(--space-2);
+}
+
+.nav-session-rename {
+  width: 100%;
+  background: var(--color-surface-0);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--space-1);
+  font-size: 12px;
+  color: var(--color-text-primary);
+  outline: none;
+  font-family: inherit;
 }
 
 .nav-footer {
@@ -549,5 +660,65 @@ defineExpose({ rightPanelOpen, navCollapsed });
   width: 2px;
   background: var(--color-accent);
   border-radius: 1px;
+}
+
+/* Delete confirmation dialog */
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: oklch(0 0 0 / 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-dialog {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+  min-width: 240px;
+}
+
+.confirm-text {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  margin: 0 0 var(--space-4);
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.confirm-btn {
+  padding: var(--space-1) var(--space-3);
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: none;
+  cursor: pointer;
+  transition: background var(--duration-fast);
+}
+
+.confirm-btn.cancel {
+  background: var(--color-surface-3);
+  color: var(--color-text-secondary);
+}
+
+.confirm-btn.cancel:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.confirm-btn.destructive {
+  background: var(--color-error);
+  color: var(--color-surface-0);
+}
+
+.confirm-btn.destructive:hover {
+  background: oklch(0.60 0.18 25);
 }
 </style>
