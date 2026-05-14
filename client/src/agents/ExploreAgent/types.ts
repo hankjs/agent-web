@@ -58,8 +58,15 @@ export interface ToolUseBlock {
   input: any;
 }
 
+export interface LlmMeta {
+  tokens_in: number;
+  tokens_out: number;
+  latency_ms: number;
+}
+
 export interface LlmResponse {
   text: string;
   toolCalls: ToolUseBlock[];
   stopReason: string;
+  meta: LlmMeta;
 }

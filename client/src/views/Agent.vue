@@ -7,7 +7,7 @@ import { useExploreAgent, type ExplorePhase } from "../agents/ExploreAgent";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
 import AgentLayout from "../components/AgentLayout.vue";
 import AgentHeader from "../components/AgentHeader.vue";
-import AgentInput from "../components/AgentInput.vue";
+import AgentInput, { type PendingImage } from "../components/AgentInput.vue";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 
 const props = defineProps<{ sessionId: string }>();
@@ -39,6 +39,11 @@ const input = ref("");
 const isStreaming = ref(false);
 const messagesEl = ref<HTMLElement | null>(null);
 const changesPanelRefreshKey = ref(0);
+const pendingImages = ref<PendingImage[]>([]);
+
+function handleImagesChange(images: PendingImage[]) {
+  pendingImages.value = images;
+}
 
 // Explore agent
 const exploreAgent = useExploreAgent({
@@ -70,10 +75,15 @@ function scrollToBottom() {
 }
 
 async function send() {
-  if (!input.value.trim() || isStreaming.value) return;
+  if (!input.value.trim() && pendingImages.value.length === 0) return;
+  if (isStreaming.value) return;
   const content = input.value.trim();
+  const images = pendingImages.value.length > 0
+    ? pendingImages.value.map(img => ({ media_type: img.media_type, data: img.data }))
+    : undefined;
   input.value = "";
-  await exploreAgent.handleUserInput(content);
+  pendingImages.value = [];
+  await exploreAgent.handleUserInput(content, images);
 }
 
 function stop() {
@@ -218,9 +228,10 @@ watch(() => currentSession.value, (s) => {
         :is-connected="true"
         :is-empty="isEmpty"
         placeholder="描述需求，或让模型先阅读代码并追问..."
-        :show-image-upload="false"
+        :show-image-upload="true"
         @send="send"
         @stop="stop"
+        @images-change="handleImagesChange"
       />
     </template>
 

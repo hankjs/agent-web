@@ -138,9 +138,10 @@ export const api = {
     })
   },
 
-  sessions(page = 1, perPage = 20, search = '') {
+  sessions(page = 1, perPage = 20, search = '', sessionType = '') {
     const params = new URLSearchParams({ page: String(page), per_page: String(perPage) })
     if (search) params.set('search', search)
+    if (sessionType) params.set('session_type', sessionType)
     return request<PaginatedResponse<Session>>(`/api/admin/sessions?${params}`)
   },
 

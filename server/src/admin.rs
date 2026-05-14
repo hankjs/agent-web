@@ -26,6 +26,7 @@ pub struct PaginationQuery {
     pub page: Option<u32>,
     pub per_page: Option<u32>,
     pub search: Option<String>,
+    pub session_type: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -91,6 +92,14 @@ pub async fn list_sessions(
         all_sessions
     };
 
+    // Filter by session_type if specified
+    let filtered: Vec<_> = match &query.session_type {
+        Some(st) if st == "explore" => filtered.into_iter().filter(|s| s.session_type == "explore").collect(),
+        Some(st) if st == "!explore" => filtered.into_iter().filter(|s| s.session_type != "explore").collect(),
+        Some(st) => filtered.into_iter().filter(|s| s.session_type == *st).collect(),
+        None => filtered,
+    };
+
     let total = filtered.len() as u64;
     let start = ((page - 1) * per_page) as usize;
     let data: Vec<SessionWithUser> = filtered.into_iter().skip(start).take(per_page as usize).map(|sess| {
@@ -128,10 +137,49 @@ pub async fn session_events(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    match state.db.get_session_events(&session_id).await {
-        Ok(events) => R::ok(events),
-        Err(e) => R::internal_error(e),
+    // Merge agent_events + local_events (explore events are in local_events)
+    let remote_events = match state.db.get_session_events(&session_id).await {
+        Ok(events) => events,
+        Err(e) => return R::internal_error(e),
+    };
+
+    let local_events = match state.db.get_local_events(&session_id).await {
+        Ok(events) => events,
+        Err(e) => return R::internal_error(e),
+    };
+
+    let mut unified: Vec<serde_json::Value> = Vec::new();
+
+    for e in remote_events {
+        unified.push(serde_json::json!({
+            "id": e.id,
+            "session_id": e.session_id,
+            "event_type": e.event_type,
+            "payload": e.payload,
+            "source": "remote",
+            "created_at": e.created_at,
+        }));
     }
+
+    for e in local_events {
+        unified.push(serde_json::json!({
+            "id": e.id,
+            "session_id": e.session_id,
+            "event_type": e.event_type,
+            "agent_type": e.agent_type,
+            "payload": e.payload,
+            "source": e.source,
+            "created_at": e.created_at,
+        }));
+    }
+
+    unified.sort_by(|a, b| {
+        let ta = a["created_at"].as_str().unwrap_or("");
+        let tb = b["created_at"].as_str().unwrap_or("");
+        ta.cmp(tb)
+    });
+
+    R::ok(serde_json::json!(unified))
 }
 
 pub async fn metrics_overview(

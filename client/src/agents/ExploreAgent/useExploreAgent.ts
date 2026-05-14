@@ -6,7 +6,7 @@ import {
   buildExploreSummarizerPrompt,
 } from "./prompts";
 import { callLLM, callLLMWithTools, execTool } from "./llm";
-import { READER_TOOLS } from "./tools";
+import { READER_TOOLS, WRITER_TOOLS } from "./tools";
 import type {
   ExploreAgentState,
   ExploreAgentOptions,
@@ -27,6 +27,20 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   });
 
   const isFirstTurn = ref(true);
+  const startTime = Date.now();
+
+  function elapsed() { return Date.now() - startTime; }
+
+  // Pause/resume mechanism for AskUserQuestion inside tool loop
+  let answerResolver: ((answer: string) => void) | null = null;
+
+  function waitForAnswer(): Promise<string> {
+    return new Promise(resolve => { answerResolver = resolve; });
+  }
+
+  function resolveAnswer(answer: string) {
+    if (answerResolver) { answerResolver(answer); answerResolver = null; }
+  }
 
   function getInitialAreas(): string[] {
     const meta = options.metadata;
@@ -55,7 +69,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     } catch { return []; }
   }
 
-  async function runPlannerStep(userInput: string): Promise<PlannerAction | null> {
+  async function runPlannerStep(userInput: string, images?: Array<{ media_type: string; data: string }>): Promise<PlannerAction | null> {
     state.value.phase = "thinking";
     const uncovered = state.value.uncoveredAreas.length > 0
       ? state.value.uncoveredAreas.join("、")
@@ -69,7 +83,8 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     options.onBlock({ kind: "text", content: "正在规划下一步..." });
 
     try {
-      const response = await callLLM("你是一个 JSON 输出机器，只返回合法 JSON。", prompt);
+      const { text: response, meta } = await callLLM("你是一个 JSON 输出机器，只返回合法 JSON。", prompt, images);
+      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "planner", tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed() }, "internal");
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("No JSON in planner response");
       const action: PlannerAction = JSON.parse(jsonMatch[0]);
@@ -97,6 +112,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const resp = await callLLMWithTools(system, messages, READER_TOOLS);
+      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "reader", round, tokens_in: resp.meta.tokens_in, tokens_out: resp.meta.tokens_out, latency_ms: resp.meta.latency_ms, tools_count: resp.toolCalls.length, elapsed_ms: elapsed() }, "internal");
 
       if (resp.toolCalls.length === 0) {
         state.value.phase = "observing";
@@ -115,8 +131,25 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
       const toolResults: any[] = [];
       for (const tc of resp.toolCalls) {
-        const result = await execTool(tc.name, tc.input, options.workDir);
-        toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: result.content, is_error: result.is_error });
+        if (tc.name === "AskUserQuestion") {
+          // Emit ask_user block and pause for user answer
+          const questions = (tc.input.questions || []).map((q: any) => ({
+            header: q.header,
+            question: q.question,
+            options: (q.options || []).map((o: any) => typeof o === "string" ? o : o.label),
+          }));
+          options.onBlock({ kind: "ask_user", toolUseId: tc.id, questions, answered: false, activeTab: 0 });
+          state.value.phase = "waiting_user";
+          const answer = await waitForAnswer();
+          state.value.phase = "acting";
+          toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: answer });
+        } else {
+          await logEvent("explore:tool_call", { turn: state.value.turnCount, tool_name: tc.name, input: tc.input, round, elapsed_ms: elapsed() }, "internal");
+          const result = await execTool(tc.name, tc.input, options.workDir);
+          const outputPreview = result.content.length > 200 ? result.content.slice(0, 200) + "..." : result.content;
+          await logEvent("explore:tool_result", { turn: state.value.turnCount, tool_name: tc.name, output_preview: outputPreview, output_length: result.content.length, is_error: result.is_error, duration_ms: result.duration_ms, round, elapsed_ms: elapsed() }, "internal");
+          toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: result.content, is_error: result.is_error });
+        }
       }
       messages.push({ role: "user", content: toolResults });
     }
@@ -154,22 +187,24 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       newFindings: findingsText,
     });
     try {
-      const compressed = await callLLM("你是一个文本压缩助手。", prompt);
+      const { text: compressed, meta } = await callLLM("你是一个文本压缩助手。", prompt);
+      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "summarizer", tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed() }, "internal");
       const oldSummary = state.value.runningSummary;
       state.value.runningSummary = compressed.trim();
-      await logEvent("explore:summary_update", { before: oldSummary, after: state.value.runningSummary }, "internal");
+      await logEvent("explore:summary_update", { before: oldSummary, after: state.value.runningSummary, elapsed_ms: elapsed() }, "internal");
     } catch { /* keep existing */ }
   }
 
   function emitAskUser(params: { questions: Array<{ header: string; question: string; options: Array<{ label: string; description?: string }> }> }) {
     state.value.phase = "waiting_user";
-    const questions = params.questions.map(q => ({
+    const questionsForUI = params.questions.map(q => ({
       header: q.header,
       question: q.question,
       options: q.options.map(o => typeof o === "string" ? o : o.label),
     }));
-    options.onBlock({ kind: "ask_user", toolUseId: `explore_ask_${Date.now()}`, questions, answered: false, activeTab: 0 });
-    logEvent("explore:question", { questions }, "user");
+    options.onBlock({ kind: "ask_user", toolUseId: `explore_ask_${Date.now()}`, questions: questionsForUI, answered: false, activeTab: 0 });
+    // Log full options (with descriptions) for admin trace
+    logEvent("explore:question", { questions: params.questions }, "user");
   }
 
   async function executeFinalize(params: { title: string }) {
@@ -193,16 +228,17 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     options.onComplete();
   }
 
-  async function reactLoop(userInput: string) {
+  async function reactLoop(userInput: string, images?: Array<{ media_type: string; data: string }>) {
     const MAX_CONSECUTIVE_READS = 6;
     let consecutiveReads = 0;
 
     while (state.value.phase !== "done" && state.value.phase !== "waiting_user") {
       state.value.turnCount++;
-      const action = await runPlannerStep(userInput);
+      const action = await runPlannerStep(userInput, images);
       if (!action) break;
 
       userInput = "";
+      images = undefined;
 
       switch (action.action) {
         case "read_code":
@@ -227,8 +263,15 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     }
   }
 
-  async function handleUserInput(content: string) {
+  async function handleUserInput(content: string, images?: Array<{ media_type: string; data: string }>) {
     if (state.value.phase === "done") return;
+
+    // If waiting for user answer (from AskUserQuestion in tool loop), resolve the pending promise
+    if (answerResolver) {
+      resolveAnswer(content);
+      return;
+    }
+
     options.onStreaming(true);
     options.onBlock({ kind: "user", content });
 
@@ -240,7 +283,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     await logEvent("explore:answer", { content }, "user");
 
     try {
-      await reactLoop(content);
+      await reactLoop(content, images);
     } finally {
       options.onStreaming(false);
     }

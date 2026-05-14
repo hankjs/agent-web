@@ -9,7 +9,7 @@ const search = ref('')
 const perPage = 20
 
 async function load() {
-  const res: PaginatedResponse<Session> = await api.sessions(page.value, perPage, search.value)
+  const res: PaginatedResponse<Session> = await api.sessions(page.value, perPage, search.value, '!explore')
   sessions.value = res.data
   total.value = res.total
 }

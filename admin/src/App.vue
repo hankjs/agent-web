@@ -12,6 +12,7 @@ const aiPrompt = ref('')
 const nav = [
   { to: '/', label: '概览', icon: '◫' },
   { to: '/sessions', label: '会话', icon: '☰' },
+  { to: '/explore', label: '探索', icon: '⊙' },
   { to: '/prompts', label: '提示词', icon: '✎' },
   { to: '/providers', label: '供应商', icon: '⚡' },
   { to: '/users', label: '用户', icon: '⚇' },

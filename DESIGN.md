@@ -6,8 +6,8 @@ colors:
   surface-base: "#272a2e"
   surface-raised: "#31353a"
   surface-elevated: "#3c4147"
-  accent-green-gold: "#7dba6e"
-  accent-green-gold-hover: "#96d088"
+  accent-amber-gold: "#d4a24e"
+  accent-amber-gold-hover: "#e0b86a"
   text-primary: "#e8e9eb"
   text-secondary: "#a3a7ad"
   text-muted: "#6e7279"
@@ -52,12 +52,12 @@ spacing:
   2xl: "32px"
 components:
   button-primary:
-    backgroundColor: "{colors.accent-green-gold}"
+    backgroundColor: "{colors.accent-amber-gold}"
     textColor: "{colors.surface-deep}"
     rounded: "{rounded.sm}"
     padding: "4px 12px"
   button-primary-hover:
-    backgroundColor: "{colors.accent-green-gold-hover}"
+    backgroundColor: "{colors.accent-amber-gold-hover}"
     textColor: "{colors.surface-deep}"
   button-secondary:
     backgroundColor: "transparent"
@@ -90,10 +90,10 @@ The system rejects chatbot aesthetics (bubbles, avatars, typing indicators), pla
 
 ## 2. Colors
 
-A restrained palette of cool blue-slate neutrals with a single muted green-gold accent. The accent is deliberately non-obvious for a developer tool (avoiding blue, cyan, and purple reflexes).
+A restrained palette of cool blue-slate neutrals with a single muted amber-gold accent. The accent is deliberately non-obvious for a developer tool (avoiding blue, cyan, and purple reflexes).
 
 ### Primary
-- **Muted Green-Gold** (oklch(0.72 0.12 160)): Active states, primary actions, current selection indicators. Used on less than 10% of any given screen. Its rarity is the point.
+- **Warm Amber-Gold** (oklch(0.74 0.14 70)): Active states, primary actions, current selection indicators. Used on less than 10% of any given screen. Its rarity is the point.
 
 ### Neutral
 - **Deep Slate** (oklch(0.13 0.008 220)): Root background. The deepest surface.
@@ -113,7 +113,7 @@ A restrained palette of cool blue-slate neutrals with a single muted green-gold 
 - **Info** (oklch(0.65 0.10 240)): Informational badges, in-progress states.
 
 ### Named Rules
-**The 10% Rule.** The green-gold accent appears on no more than 10% of any screen. Primary buttons, active nav items, focus rings, and selection indicators only. If you're reaching for the accent color for decoration, stop.
+**The 10% Rule.** The amber-gold accent appears on no more than 10% of any screen. Primary buttons, active nav items, focus rings, and selection indicators only. If you're reaching for the accent color for decoration, stop.
 
 **The No Pure Black Rule.** Every neutral is tinted toward hue 220 at chroma 0.008-0.01. Pure black (#000) and pure white (#fff) are prohibited. The tint is subtle enough to be invisible consciously but prevents the clinical feel of true achromatic surfaces.
 
@@ -154,7 +154,7 @@ Hank uses flat tonal layering exclusively. No box-shadows anywhere in the system
 ### Buttons
 - **Shape:** Slightly rounded (4px radius). Not pill-shaped, not sharp.
 - **Primary:** Green-gold background, deep-slate text. Padding 4px 12px. Font-size 11-12px, weight 500.
-- **Hover:** Lighter green-gold (oklch 0.78). No transform, no shadow.
+- **Hover:** Lighter amber-gold (oklch 0.80). No transform, no shadow.
 - **Secondary/Ghost:** Transparent background, 1px border in border color, secondary text. Hover fills with surface-hover.
 - **Disabled:** 40% opacity, cursor not-allowed.
 
@@ -190,7 +190,7 @@ Hank uses flat tonal layering exclusively. No box-shadows anywhere in the system
 
 ### Do:
 - **Do** use tonal layering (surface-0 through surface-3) to create depth. Darker recedes, lighter advances.
-- **Do** keep the accent under 10% of any screen. Count the green-gold pixels; if it feels like more than a few touches, remove some.
+- **Do** keep the accent under 10% of any screen. Count the amber-gold pixels; if it feels like more than a few touches, remove some.
 - **Do** use the system font stack. It loads instantly and feels native on every platform.
 - **Do** maintain 13px as the base size. Hierarchy through weight and color, not size.
 - **Do** use tables for list data. They're denser and more scannable than cards.

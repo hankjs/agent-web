@@ -1,5 +1,6 @@
 mod acp;
 mod commands;
+mod tools;
 
 use std::sync::Arc;
 use acp::AcpState;
@@ -37,6 +38,12 @@ pub fn run() {
             commands::acp_add_agent,
             commands::acp_remove_agent,
             commands::acp_test_agent,
+            tools::tool_read_file,
+            tools::tool_grep,
+            tools::tool_glob,
+            tools::tool_write_file,
+            tools::tool_edit,
+            tools::tool_bash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
