@@ -17,6 +17,15 @@ import type {
   Block,
 } from "./types";
 
+const SUMMARIZE_THRESHOLD = 800;
+
+/** 粗略估算中英文混合文本的 token 数 */
+function estimateTokens(text: string): number {
+  const cjk = text.match(/[\u4e00-\u9fff]/g)?.length || 0;
+  const rest = text.length - cjk;
+  return cjk * 2 + Math.ceil(rest / 4);
+}
+
 export function useExploreAgent(options: ExploreAgentOptions) {
   const state = ref<ExploreAgentState>({
     phase: "idle",
@@ -148,7 +157,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       if (resp.toolCalls.length === 0) {
         state.value.phase = "observing";
         const findings = parseFindings(resp.text);
-        applyFindings(findings, resp.text);
+        await applyFindings(findings, resp.text);
         return;
       }
 
@@ -188,10 +197,14 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     state.value.phase = "observing";
     const lastResp = await callLLMWithTools(system, messages, []);
     const findings = parseFindings(lastResp.text);
-    applyFindings(findings, lastResp.text);
+    await applyFindings(findings, lastResp.text);
   }
 
-  function applyFindings(findings: Finding[], rawText: string) {
+  async function applyFindings(findings: Finding[], rawText: string) {
+    const newText = findings.length > 0
+      ? findings.map(f => `[${f.topic}] ${f.content} (${f.source})`).join("\n")
+      : rawText.slice(0, 300);
+
     if (findings.length > 0) {
       state.value.findings.push(...findings);
       for (const f of findings) {
@@ -200,22 +213,20 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         );
       }
       logEvent("explore:observation", { findings }, "internal");
-      if (state.value.turnCount % 2 === 0 && state.value.findings.length >= 3) {
-        compressSummary(findings);
-      } else {
-        const newBits = findings.map(f => `[${f.topic}] ${f.content}`).join("; ");
-        state.value.runningSummary += (state.value.runningSummary ? "\n" : "") + newBits;
-      }
+    }
+
+    const combined = (state.value.runningSummary ? state.value.runningSummary + "\n" : "") + newText;
+    if (estimateTokens(combined) > SUMMARIZE_THRESHOLD) {
+      await compressSummary(newText);
     } else {
-      state.value.runningSummary += (state.value.runningSummary ? "\n" : "") + rawText.slice(0, 300);
+      state.value.runningSummary = combined;
     }
   }
 
-  async function compressSummary(newFindings: Finding[]) {
-    const findingsText = newFindings.map(f => `- [${f.topic}] ${f.content} (${f.source})`).join("\n");
+  async function compressSummary(newText: string) {
     const prompt = buildExploreSummarizerPrompt({
       currentSummary: state.value.runningSummary || "（空）",
-      newFindings: findingsText,
+      newFindings: newText,
     });
     try {
       const { text: compressed, meta } = await callLLM("你是一个文本压缩助手。", prompt);
