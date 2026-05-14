@@ -1,5 +1,6 @@
 mod acp;
 mod commands;
+mod llm_stream;
 mod tools;
 
 use std::sync::Arc;
@@ -44,6 +45,8 @@ pub fn run() {
             tools::tool_write_file,
             tools::tool_edit,
             tools::tool_bash,
+            llm_stream::llm_stream,
+            llm_stream::llm_stream_test,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

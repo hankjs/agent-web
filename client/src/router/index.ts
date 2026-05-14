@@ -55,6 +55,11 @@ const router = createRouter({
           name: "agent-settings",
           component: () => import("../views/LocalAgentSettings.vue"),
         },
+        {
+          path: "debug/stream",
+          name: "debug-stream",
+          component: () => import("../views/DebugStream.vue"),
+        },
       ],
     },
   ],

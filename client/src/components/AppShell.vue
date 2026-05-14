@@ -69,6 +69,7 @@ const activeSection = computed(() => {
   if (name === "changes" || name === "change-detail") return "changes";
   if (name === "skills") return "skills";
   if (name === "agent-settings") return "settings";
+  if (name === "debug-stream") return "debug";
   return "sessions";
 });
 
@@ -142,14 +143,25 @@ defineExpose({ rightPanelOpen, navCollapsed });
       <div class="nav-sections">
         <!-- Sessions -->
         <div class="nav-section">
-          <button
-            v-if="!navCollapsed"
-            class="nav-section-header"
-            :class="{ active: activeSection === 'sessions' }"
-            @click="navigateTo('sessions')"
-          >
-            会话
-          </button>
+          <div v-if="!navCollapsed" class="nav-section-header-row">
+            <button
+              class="nav-section-header"
+              :class="{ active: activeSection === 'sessions' }"
+              @click="navigateTo('sessions')"
+            >
+              会话
+            </button>
+            <button
+              class="nav-home-btn"
+              @click="navigateTo('sessions')"
+              title="回到会话列表"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <path d="M3 8.5V13a1 1 0 001 1h3v-3.5h2V14h3a1 1 0 001-1V8.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M1.5 8L8 2l6.5 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
           <button
             v-else
             class="nav-icon-btn"
@@ -263,6 +275,29 @@ defineExpose({ rightPanelOpen, navCollapsed });
             </svg>
           </button>
         </div>
+
+        <!-- Debug -->
+        <div class="nav-section">
+          <button
+            v-if="!navCollapsed"
+            class="nav-section-header"
+            :class="{ active: activeSection === 'debug' }"
+            @click="navigateTo('debug-stream')"
+          >
+            Debug
+          </button>
+          <button
+            v-else
+            class="nav-icon-btn"
+            :class="{ active: activeSection === 'debug' }"
+            @click="navigateTo('debug-stream')"
+            aria-label="Debug"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M5 3l6 5-6 5V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       <!-- Bottom: Settings -->
@@ -292,8 +327,8 @@ defineExpose({ rightPanelOpen, navCollapsed });
 
     <!-- Center Content -->
     <main class="content">
-      <router-view v-slot="{ Component }">
-        <component :is="Component" />
+      <router-view v-slot="{ Component, route }">
+        <component :is="Component" :key="route.fullPath" />
       </router-view>
     </main>
 
@@ -421,6 +456,32 @@ defineExpose({ rightPanelOpen, navCollapsed });
 
 .nav-section {
   margin-bottom: var(--space-1);
+}
+
+.nav-section-header-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.nav-section-header-row .nav-section-header {
+  flex: 1;
+}
+.nav-home-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+.nav-home-btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
 }
 
 .nav-section-header {

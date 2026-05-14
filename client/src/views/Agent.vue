@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, watch } from "vue";
+import { ref, computed, nextTick, onMounted } from "vue";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { useSession, authFetch } from "../composables/useSession";
@@ -27,11 +27,14 @@ registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
 
 // Block types
 type AskUserQuestion = { header: string; question: string; options: string[]; selected?: string; customMode?: boolean; customAnswer?: string };
+type ToolItem = { id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean };
 type Block =
   | { kind: "user"; content: string }
   | { kind: "text"; content: string }
+  | { kind: "thinking"; content: string }
   | { kind: "error"; content: string }
-  | { kind: "tool"; tool: { id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean } }
+  | { kind: "tool"; tool: ToolItem }
+  | { kind: "explore_round"; objective: string; reasoning?: string; tools: ToolItem[]; expanded: boolean; isRunning: boolean }
   | { kind: "ask_user"; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
 
 const blocks = ref<Block[]>([]);
@@ -50,7 +53,49 @@ const exploreAgent = useExploreAgent({
   sessionId: props.sessionId,
   metadata: currentSession.value?.metadata || null,
   workDir: currentSession.value?.work_dir || "",
-  onBlock: (block: Block) => { blocks.value.push(block); nextTick(scrollToBottom); },
+  onBlock: (block: Block) => {
+    if (block.kind === "thinking") {
+      // Update existing thinking block in-place
+      const existing = blocks.value.find(b => b.kind === "thinking") as Extract<Block, { kind: "thinking" }> | undefined;
+      if (existing) {
+        existing.content = block.content;
+        return;
+      }
+    }
+    if (block.kind === "tool") {
+      // Try to append to current explore_round
+      const lastBlock = blocks.value[blocks.value.length - 1];
+      if (lastBlock && lastBlock.kind === "explore_round") {
+        const existing = lastBlock.tools.find(t => t.id === block.tool.id);
+        if (existing) {
+          Object.assign(existing, block.tool);
+          if (lastBlock.tools.every(t => !t.isRunning)) {
+            lastBlock.isRunning = false;
+          }
+        } else {
+          lastBlock.tools.push(block.tool);
+        }
+        return;
+      }
+      // Fallback: update existing standalone tool block
+      const existingStandalone = blocks.value.find(
+        (b) => b.kind === "tool" && b.tool.id === block.tool.id
+      ) as Extract<Block, { kind: "tool" }> | undefined;
+      if (existingStandalone) {
+        Object.assign(existingStandalone.tool, block.tool);
+        return;
+      }
+    }
+    // Remove thinking block when transitioning to a new phase
+    if (block.kind === "explore_round" || block.kind === "ask_user" || (block.kind === "text" && block.content.startsWith("探索完成"))) {
+      const thinkingIdx = blocks.value.findIndex(b => b.kind === "thinking");
+      if (thinkingIdx >= 0) {
+        blocks.value.splice(thinkingIdx, 1);
+      }
+    }
+    blocks.value.push(block);
+    nextTick(scrollToBottom);
+  },
   onStreaming: (v: boolean) => { isStreaming.value = v; },
   onComplete: () => { changesPanelRefreshKey.value++; },
 });
@@ -106,22 +151,110 @@ async function submitAskUser(block: Extract<Block, { kind: "ask_user" }>) {
   await exploreAgent.handleUserInput(answers);
 }
 
-// Load session on mount
-onMounted(() => {
-  if (!currentSession.value) {
-    const s = sessions.value.find(s => s.id === props.sessionId);
-    if (s) {
-      // Set current session from list
-      (currentSession as any).value = s;
-    }
-  }
-});
+// Restore history from persisted events
+async function loadHistory() {
+  try {
+    const res = await authFetch(`/api/sessions/${props.sessionId}/events`);
+    if (!res.ok) return;
+    const json = await res.json();
+    const events: Array<{ event_type: string; payload: any; source: string }> = json.data || json;
+    // Count questions and answers to determine which questions are unanswered
+    const userEvents = events.filter((ev: any) => ev.source !== "remote");
+    const questionIndices: number[] = [];
+    const answerIndices: number[] = [];
+    userEvents.forEach((ev: any, idx: number) => {
+      if (ev.event_type === "explore:question") questionIndices.push(idx);
+      if (ev.event_type === "explore:answer") answerIndices.push(idx);
+    });
+    // First answer is the initial user input (before any question), so questions map to answers after the first
+    // More robust: a question at index Q is answered if there's an answer event after Q
+    const restored: Block[] = [];
+    let currentRound: Extract<Block, { kind: "explore_round" }> | null = null;
 
-// Watch session changes to update agent options
-watch(() => currentSession.value, (s) => {
+    for (const ev of userEvents) {
+      const p = typeof ev.payload === "string" ? JSON.parse(ev.payload) : ev.payload;
+      switch (ev.event_type) {
+        case "explore:answer":
+          currentRound = null;
+          if (p.content) restored.push({ kind: "user", content: p.content });
+          break;
+        case "explore:action":
+          // Start a new explore_round block for read_code actions
+          if (p.action === "read_code" && p.params?.objective) {
+            currentRound = { kind: "explore_round", objective: p.params.objective, reasoning: p.reasoning, tools: [], expanded: false, isRunning: false };
+            restored.push(currentRound);
+          } else {
+            currentRound = null;
+          }
+          break;
+        case "explore:tool_call":
+          if (currentRound && p.tool_name) {
+            currentRound.tools.push({ id: p.tool_name + "_" + (currentRound.tools.length), name: p.tool_name, input: p.input ? JSON.stringify(p.input) : undefined, isRunning: false, expanded: false });
+          }
+          break;
+        case "explore:tool_result":
+          if (currentRound && currentRound.tools.length > 0) {
+            const lastTool = currentRound.tools[currentRound.tools.length - 1];
+            lastTool.result = p.output_preview || "";
+            lastTool.isError = p.is_error || false;
+          }
+          break;
+        case "explore:status":
+          // Skip "正在阅读代码" status if we have an explore_round for it
+          if (p.message && !p.message.startsWith("正在阅读代码:")) {
+            currentRound = null;
+            restored.push({ kind: "text", content: p.message });
+          }
+          break;
+        case "explore:error":
+          currentRound = null;
+          restored.push({ kind: "error", content: p.error || "未知错误" });
+          break;
+        case "explore:question":
+          currentRound = null;
+          if (p.questions) {
+            const questions = p.questions.map((q: any) => ({
+              header: q.header || "",
+              question: q.question || "",
+              options: (q.options || []).map((o: any) => typeof o === "string" ? o : o.label),
+            }));
+            const qPos = userEvents.indexOf(ev);
+            const hasAnswerAfter = answerIndices.some(aIdx => aIdx > qPos);
+            restored.push({ kind: "ask_user", toolUseId: `hist_${Date.now()}_${Math.random()}`, questions, answered: hasAnswerAfter, activeTab: 0 });
+          }
+          break;
+        case "explore:complete":
+          currentRound = null;
+          if (p.title) restored.push({ kind: "text", content: `探索完成: ${p.title}` });
+          break;
+      }
+    }
+    if (restored.length > 0) {
+      blocks.value = restored;
+      // If explore already completed, mark agent as done
+      const hasComplete = events.some((ev: any) => ev.event_type === "explore:complete");
+      if (hasComplete) {
+        exploreAgent.markDone();
+      }
+      // If last event was a question (waiting_user), mark agent phase
+      const lastQuestion = events.filter((ev: any) => ev.event_type === "explore:question").length;
+      const lastAnswer = events.filter((ev: any) => ev.event_type === "explore:answer").length;
+      if (lastQuestion > lastAnswer) {
+        // There's an unanswered question — but since we can't resume mid-loop,
+        // just show history as-is; user can start fresh input
+      }
+      nextTick(scrollToBottom);
+    }
+  } catch { /* best effort */ }
+}
+
+// Load session on mount
+onMounted(async () => {
+  const s = sessions.value.find(s => s.id === props.sessionId);
   if (s) {
-    // Agent options are set at creation time, but we can update title display
+    (currentSession as any).value = s;
   }
+  await loadHistory();
 });
 </script>
 
@@ -155,6 +288,10 @@ watch(() => currentSession.value, (s) => {
             <div class="markdown-body" v-html="renderMarkdown(block.content)"></div>
           </div>
           <div v-else-if="block.kind === 'error'" class="error-block">{{ block.content }}</div>
+          <div v-else-if="block.kind === 'thinking'" class="thinking-block">
+            <span class="thinking-indicator"></span>
+            <pre class="thinking-text">{{ block.content || '思考中...' }}</pre>
+          </div>
           <div v-else-if="block.kind === 'tool'" class="tool-block" @click="block.tool.expanded = !block.tool.expanded">
             <div class="tool-header">
               <span class="tool-indicator" :class="{ running: block.tool.isRunning, error: block.tool.isError }"></span>
@@ -164,6 +301,30 @@ watch(() => currentSession.value, (s) => {
             <div v-if="block.tool.expanded" class="tool-detail">
               <pre v-if="block.tool.input" class="tool-input">{{ block.tool.input }}</pre>
               <pre v-if="block.tool.result" class="tool-result" :class="{ 'tool-error': block.tool.isError }">{{ block.tool.result?.slice(0, 500) }}</pre>
+            </div>
+          </div>
+          <div v-else-if="block.kind === 'explore_round'" class="explore-round" :class="{ running: block.isRunning }">
+            <div class="explore-round-header" @click="block.expanded = !block.expanded">
+              <span class="explore-round-indicator" :class="{ running: block.isRunning }"></span>
+              <span class="explore-round-objective">{{ block.objective }}</span>
+              <span v-if="block.isRunning" class="explore-round-status">探索中...</span>
+              <span v-else class="explore-round-status done">{{ block.tools.length }} 次调用</span>
+              <span class="explore-round-toggle">{{ block.expanded ? '▾' : '▸' }}</span>
+            </div>
+            <div v-if="block.expanded" class="explore-round-body">
+              <div v-if="block.reasoning" class="explore-round-reasoning">{{ block.reasoning }}</div>
+              <div v-for="tool in block.tools" :key="tool.id" class="explore-round-tool" @click.stop="tool.expanded = !tool.expanded">
+                <div class="tool-header">
+                  <span class="tool-indicator" :class="{ running: tool.isRunning, error: tool.isError }"></span>
+                  <span class="tool-name">{{ tool.name }}</span>
+                  <span v-if="tool.isRunning" class="tool-running">运行中...</span>
+                  <span v-else-if="tool.result" class="tool-done">✓</span>
+                </div>
+                <div v-if="tool.expanded" class="tool-detail">
+                  <pre v-if="tool.input" class="tool-input">{{ tool.input }}</pre>
+                  <pre v-if="tool.result" class="tool-result" :class="{ 'tool-error': tool.isError }">{{ tool.result?.slice(0, 500) }}</pre>
+                </div>
+              </div>
             </div>
           </div>
           <div v-else-if="block.kind === 'ask_user'" class="ask-card">
@@ -263,6 +424,25 @@ watch(() => currentSession.value, (s) => {
 .tool-input, .tool-result { font-size: 11px; padding: 6px 8px; border-radius: 4px; background: var(--color-surface-2); overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
 .tool-result { margin-top: 4px; }
 .tool-error { color: var(--color-error); }
+
+.explore-round { border-radius: 8px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); overflow: hidden; }
+.explore-round.running { border-color: color-mix(in srgb, var(--color-accent) 40%, transparent); }
+.explore-round-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; }
+.explore-round-indicator { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); flex-shrink: 0; }
+.explore-round-indicator.running { background: var(--color-success); animation: pulse 1s infinite; }
+.explore-round-objective { flex: 1; font-size: 13px; font-weight: 500; color: var(--color-text-primary); line-height: 1.4; }
+.explore-round-status { font-size: 11px; color: var(--color-text-muted); flex-shrink: 0; }
+.explore-round-status.done { color: var(--color-text-muted); }
+.explore-round-toggle { font-size: 11px; color: var(--color-text-muted); }
+.explore-round-body { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 6px; }
+.explore-round-reasoning { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; padding: 6px 8px; border-radius: 4px; background: var(--color-surface-2); margin-bottom: 4px; }
+.explore-round-tool { padding: 4px 8px; border-radius: 4px; background: var(--color-surface-2); cursor: pointer; font-size: 12px; }
+.explore-round-tool .tool-header { display: flex; align-items: center; gap: 6px; }
+.explore-round-tool .tool-done { font-size: 10px; color: var(--color-success); }
+
+.thinking-block { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; border-radius: 6px; background: var(--color-surface-1); border-left: 2px solid var(--color-accent); }
+.thinking-indicator { width: 6px; height: 6px; border-radius: 50%; background: var(--color-accent); animation: pulse 1s infinite; flex-shrink: 0; margin-top: 5px; }
+.thinking-text { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; margin: 0; font-family: inherit; }
 
 .ask-card { padding: 16px; border-radius: 8px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); }
 .ask-question { margin-bottom: 12px; }

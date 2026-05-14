@@ -40,6 +40,28 @@ export const READER_TOOLS = [
     },
   },
   {
+    name: "report_findings",
+    description: "Report structured findings from code reading. Call this when you have gathered enough information.",
+    input_schema: {
+      type: "object",
+      properties: {
+        findings: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              topic: { type: "string", description: "Finding topic" },
+              content: { type: "string", description: "Detailed content" },
+              source: { type: "string", description: "file:line reference" },
+            },
+            required: ["topic", "content", "source"],
+          },
+        },
+      },
+      required: ["findings"],
+    },
+  },
+  {
     name: "AskUserQuestion",
     description: "Ask the user a question when you need clarification or a decision before continuing.",
     input_schema: {

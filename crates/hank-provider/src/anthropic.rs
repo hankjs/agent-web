@@ -66,7 +66,7 @@ impl LlmProvider for AnthropicProvider {
             bail!("Anthropic API error {status}: {text}");
         }
 
-        let (tx, rx) = mpsc::channel(64);
+        let (tx, rx) = mpsc::channel(1);
         let byte_stream = response.bytes_stream();
 
         tokio::spawn(async move {

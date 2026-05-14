@@ -3,17 +3,15 @@ use crate::response::{self as R};
 use crate::AppState;
 use axum::{
     extract::State,
-    response::{
-        sse::{Event, Sse},
-        IntoResponse,
-    },
+    response::IntoResponse,
+    body::Body,
     Json,
 };
 use futures::StreamExt;
 use hank_provider::{CompletionRequest, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use hank_web_tools::{read_file::ReadFileTool, search::SearchTool, Tool};
+use axum::http::Response;
 use serde::Deserialize;
-use std::convert::Infallible;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
@@ -92,42 +90,47 @@ pub async fn completion_handler(
         Err(e) => return R::internal_error(e),
     };
 
-    let sse_stream = event_stream.map(|result| match result {
-        Ok(StreamEvent::TextDelta(text)) => {
-            let json = serde_json::json!({"type": "text_delta", "text": text});
-            Ok::<_, Infallible>(Event::default().data(json.to_string()))
-        }
-        Ok(StreamEvent::ToolUseStart { id, name }) => {
-            let json = serde_json::json!({"type": "tool_use_start", "id": id, "name": name});
-            Ok(Event::default().data(json.to_string()))
-        }
-        Ok(StreamEvent::ToolUseInputDelta(delta)) => {
-            let json = serde_json::json!({"type": "tool_use_input_delta", "delta": delta});
-            Ok(Event::default().data(json.to_string()))
-        }
-        Ok(StreamEvent::ToolUseEnd) => {
-            let json = serde_json::json!({"type": "tool_use_end"});
-            Ok(Event::default().data(json.to_string()))
-        }
-        Ok(StreamEvent::MessageEnd { stop_reason }) => {
-            let json = serde_json::json!({"type": "message_end", "stop_reason": stop_reason});
-            Ok(Event::default().data(json.to_string()))
-        }
-        Ok(StreamEvent::Usage { input_tokens, output_tokens }) => {
-            let json = serde_json::json!({"type": "usage", "input_tokens": input_tokens, "output_tokens": output_tokens});
-            Ok(Event::default().data(json.to_string()))
-        }
-        Ok(StreamEvent::Error(msg)) => {
-            let json = serde_json::json!({"type": "error", "message": msg});
-            Ok(Event::default().data(json.to_string()))
-        }
-        Err(e) => {
-            let json = serde_json::json!({"type": "error", "message": e.to_string()});
-            Ok(Event::default().data(json.to_string()))
-        }
+    // Manual SSE formatting — bypasses Axum Sse wrapper to avoid hyper write buffering.
+    // Each event is yielded as a separate Bytes frame for immediate TCP delivery.
+    let body_stream = event_stream.map(|result| {
+        let json = match result {
+            Ok(StreamEvent::TextDelta(text)) => {
+                serde_json::json!({"type": "text_delta", "text": text}).to_string()
+            }
+            Ok(StreamEvent::ToolUseStart { id, name }) => {
+                serde_json::json!({"type": "tool_use_start", "id": id, "name": name}).to_string()
+            }
+            Ok(StreamEvent::ToolUseInputDelta(delta)) => {
+                serde_json::json!({"type": "tool_use_input_delta", "delta": delta}).to_string()
+            }
+            Ok(StreamEvent::ToolUseEnd) => {
+                serde_json::json!({"type": "tool_use_end"}).to_string()
+            }
+            Ok(StreamEvent::MessageEnd { stop_reason }) => {
+                serde_json::json!({"type": "message_end", "stop_reason": stop_reason}).to_string()
+            }
+            Ok(StreamEvent::Usage { input_tokens, output_tokens }) => {
+                serde_json::json!({"type": "usage", "input_tokens": input_tokens, "output_tokens": output_tokens}).to_string()
+            }
+            Ok(StreamEvent::Error(msg)) => {
+                serde_json::json!({"type": "error", "message": msg}).to_string()
+            }
+            Err(e) => {
+                serde_json::json!({"type": "error", "message": e.to_string()}).to_string()
+            }
+        };
+        // SSE format: "data: <json>\n\n"
+        Ok::<_, std::convert::Infallible>(format!("data: {}\n\n", json))
     });
 
-    Sse::new(sse_stream).into_response()
+    Response::builder()
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        .header("connection", "keep-alive")
+        .header("x-accel-buffering", "no")
+        .body(Body::from_stream(body_stream))
+        .unwrap()
+        .into_response()
 }
 
 // --- Tool Execution Endpoint ---

@@ -7,6 +7,13 @@
 
 用户最新输入：{{user_input}}
 
+当前进度：
+- 已用轮次: {{turn_count}}/{{max_turns}}
+- 已发现: {{findings_count}} 条
+- 耗时: {{elapsed_sec}}s
+
+（如果已用轮次接近上限，应优先 finalize 而非继续探索）
+
 返回 JSON（不要其他内容）：
 {
   "reasoning": "你的思考过程",

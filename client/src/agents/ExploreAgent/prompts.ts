@@ -12,11 +12,19 @@ export function buildExplorePlannerPrompt(values: {
   summary: string;
   uncoveredAreas: string;
   userInput: string;
+  turnCount: number;
+  maxTurns: number;
+  findingsCount: number;
+  elapsedSec: number;
 }) {
   return fillTemplate(plannerTemplate, {
     summary: values.summary,
     uncovered_areas: values.uncoveredAreas,
     user_input: values.userInput,
+    turn_count: String(values.turnCount),
+    max_turns: String(values.maxTurns),
+    findings_count: String(values.findingsCount),
+    elapsed_sec: String(values.elapsedSec),
   });
 }
 

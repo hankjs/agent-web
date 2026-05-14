@@ -5,7 +5,7 @@ export interface Finding {
   confirmed: boolean;
 }
 
-export type ExplorePhase = "idle" | "thinking" | "acting" | "observing" | "waiting_user" | "done";
+export type ExplorePhase = "idle" | "thinking" | "acting" | "observing" | "waiting_user" | "done" | "cancelled";
 
 export interface ExploreAgentState {
   phase: ExplorePhase;
@@ -27,8 +27,10 @@ export type AskUserQuestion = {
 export type Block =
   | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
   | { kind: "text"; content: string }
+  | { kind: "thinking"; content: string }
   | { kind: "error"; content: string }
   | { kind: "tool"; tool: { id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean } }
+  | { kind: "explore_round"; objective: string; reasoning?: string; tools: Array<{ id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean }>; expanded: boolean; isRunning: boolean }
   | { kind: "ask_user"; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
 
 export interface ExploreAgentOptions {
