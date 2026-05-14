@@ -45,7 +45,7 @@ async function fetchWithRetry(url: string, init: RequestInit): Promise<Response>
 }
 
 /** Call LLM via server proxy — no tools, pure text completion */
-export async function callLLM(system: string, userText: string, images?: Array<{ media_type: string; data: string }>): Promise<{ text: string; meta: LlmMeta }> {
+export async function callLLM(system: string, userText: string, images?: Array<{ media_type: string; data: string }>): Promise<{ text: string; meta: LlmMeta; httpStatus: number }> {
   const start = performance.now();
   const content: Array<{ type: string; [key: string]: any }> = [];
   if (images && images.length > 0) {
@@ -63,7 +63,7 @@ export async function callLLM(system: string, userText: string, images?: Array<{
   if (!res.ok) throw new Error(`LLM error: ${res.status}`);
   const { text, meta } = await readSSEText(res);
   meta.latency_ms = Math.round(performance.now() - start);
-  return { text, meta };
+  return { text, meta, httpStatus: res.status };
 }
 
 /** Call LLM with tools — returns text + tool calls + metadata */

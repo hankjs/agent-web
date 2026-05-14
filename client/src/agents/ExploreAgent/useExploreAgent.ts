@@ -82,18 +82,49 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     await logEvent("explore:thought", { prompt_preview: prompt.slice(0, 200) }, "internal");
     options.onBlock({ kind: "text", content: "正在规划下一步..." });
 
-    try {
-      const { text: response, meta } = await callLLM("你是一个 JSON 输出机器，只返回合法 JSON。", prompt, images);
-      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "planner", tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed() }, "internal");
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("No JSON in planner response");
-      const action: PlannerAction = JSON.parse(jsonMatch[0]);
-      await logEvent("explore:action", action, "internal");
-      return action;
-    } catch (e: any) {
-      options.onBlock({ kind: "error", content: `规划失败: ${e.message}` });
-      return null;
+    const MAX_PLANNER_RETRIES = 2;
+    let lastError = "";
+
+    for (let attempt = 0; attempt <= MAX_PLANNER_RETRIES; attempt++) {
+      try {
+        const systemPrompt = attempt === 0
+          ? "你是一个 JSON 输出机器，只返回合法 JSON。"
+          : `你是一个 JSON 输出机器，只返回合法 JSON。\n\n上次输出失败原因: ${lastError}\n请严格只输出一个 JSON 对象，不要包含任何其他文字。`;
+        const { text: response, meta, httpStatus } = await callLLM(systemPrompt, prompt, images);
+        await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "planner", attempt, tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(), httpStatus }, "internal");
+
+        if (!response || response.trim().length === 0) {
+          lastError = "LLM 返回空响应";
+          await logEvent("explore:planner_retry", { attempt, error: lastError, willRetry: attempt < MAX_PLANNER_RETRIES, httpStatus }, "user");
+          if (attempt < MAX_PLANNER_RETRIES) continue;
+          throw new Error(lastError);
+        }
+
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+          lastError = `响应中未找到 JSON (响应前100字: ${response.slice(0, 100)})`;
+          await logEvent("explore:planner_retry", { attempt, error: lastError, willRetry: attempt < MAX_PLANNER_RETRIES, httpStatus }, "user");
+          if (attempt < MAX_PLANNER_RETRIES) continue;
+          throw new Error("No JSON in planner response");
+        }
+
+        const action: PlannerAction = JSON.parse(jsonMatch[0]);
+        await logEvent("explore:action", action, "internal");
+        return action;
+      } catch (e: any) {
+        lastError = e.message;
+        const statusMatch = lastError.match(/LLM error: (\d+)/);
+        const httpStatus = statusMatch ? parseInt(statusMatch[1]) : undefined;
+        if (attempt < MAX_PLANNER_RETRIES) {
+          await logEvent("explore:planner_retry", { attempt, error: lastError, willRetry: true, httpStatus }, "user");
+          continue;
+        }
+        await logEvent("explore:error", { phase: "planner", error: lastError, attempts: attempt + 1, httpStatus }, "user");
+        options.onBlock({ kind: "error", content: `规划失败: ${e.message}` });
+        return null;
+      }
     }
+    return null;
   }
 
   async function executeReadCode(params: { objective: string; files_hint?: string[] }) {
