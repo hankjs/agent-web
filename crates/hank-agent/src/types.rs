@@ -73,4 +73,13 @@ pub enum AgentEvent {
         change_id: String,
         artifact_count: u32,
     },
+    /// 每次 LLM 调用前 emit，记录请求参数
+    LlmRequest {
+        model: String,
+        system: Option<String>,
+        tools: Vec<String>,
+        max_tokens: u32,
+        message_count: usize,
+        phase: String,
+    },
 }

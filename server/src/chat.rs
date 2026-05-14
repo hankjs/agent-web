@@ -611,5 +611,6 @@ fn extract_event_type(event: &AgentEvent) -> &'static str {
         AgentEvent::AskUser { .. } => "ask_user",
         AgentEvent::ExploreComplete { .. } => "explore_complete",
         AgentEvent::GenerateComplete { .. } => "generate_complete",
+        AgentEvent::LlmRequest { .. } => "llm_request",
     }
 }

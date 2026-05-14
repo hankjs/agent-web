@@ -85,6 +85,15 @@ impl WorkerAgent {
 
             debug!("Worker iteration {iteration} for task {}", task.id);
 
+            let _ = event_tx.send(AgentEvent::LlmRequest {
+                model: req.model.clone(),
+                system: req.system.clone(),
+                tools: req.tools.iter().map(|t| t.name.clone()).collect(),
+                max_tokens: req.max_tokens,
+                message_count: req.messages.len(),
+                phase: "worker".to_string(),
+            }).await;
+
             let mut stream = self.provider.stream(req).await?;
             let mut assistant_content: Vec<ContentBlock> = Vec::new();
             let mut current_text = String::new();
