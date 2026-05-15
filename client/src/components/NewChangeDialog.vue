@@ -9,9 +9,9 @@ const emit = defineEmits<{ close: [] }>();
 const selectedKey = ref<string | null>(null);
 const depth = ref<"quick" | "standard" | "deep">("standard");
 const questionStyle = ref<"guided" | "open">("guided");
-const focusAreas = ref<string[]>(["用户目标", "核心流程", "边界条件", "交付标准"]);
+const focusAreas = ref<string[]>([]);
 
-const focusOptions = ["用户目标", "核心流程", "数据与接口", "界面体验", "边界条件", "迁移兼容", "交付标准"];
+const focusOptions: string[] = [];
 
 interface ProjectEntry {
   work_dir: string;

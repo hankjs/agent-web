@@ -10,7 +10,6 @@ function fillTemplate(template: string, values: Record<string, string>): string 
 
 export function buildExplorePlannerPrompt(values: {
   summary: string;
-  uncoveredAreas: string;
   userInput: string;
   turnCount: number;
   maxTurns: number;
@@ -19,7 +18,6 @@ export function buildExplorePlannerPrompt(values: {
 }) {
   return fillTemplate(plannerTemplate, {
     summary: values.summary,
-    uncovered_areas: values.uncoveredAreas,
     user_input: values.userInput,
     turn_count: String(values.turnCount),
     max_turns: String(values.maxTurns),
@@ -53,14 +51,12 @@ export function buildExplorePrompt(values: {
   workDir: string;
   depth: string;
   questionStyle: string;
-  focusAreas: string;
 }) {
   return fillTemplate(exploreTemplate, {
     project_label: values.projectLabel,
     work_dir: values.workDir,
     depth: values.depth,
     question_style: values.questionStyle,
-    focus_areas: values.focusAreas,
   });
 }
 

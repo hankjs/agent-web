@@ -200,6 +200,15 @@ defineExpose({ rightPanelOpen, navCollapsed });
                 <span class="nav-session-title">{{ displayTitle(s.title, s.work_dir) }}</span>
                 <span class="nav-session-env" :class="s.environment">{{ s.environment === 'local' ? '本地' : '线上' }}</span>
                 <span class="nav-session-time">{{ relativeTime(s.updated_at) }}</span>
+                <button
+                  class="nav-session-delete"
+                  @click.stop="pendingDeleteId = s.id"
+                  aria-label="删除会话"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M4.5 3V2.5a1.5 1.5 0 0 1 1.5-1.5h4a1.5 1.5 0 0 1 1.5 1.5V3M2.5 3h11M3.5 3v10a1.5 1.5 0 0 0 1.5 1.5h6a1.5 1.5 0 0 0 1.5-1.5V3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
               </template>
             </div>
           </div>
@@ -595,6 +604,36 @@ defineExpose({ rightPanelOpen, navCollapsed });
   color: var(--color-text-muted);
   flex-shrink: 0;
   margin-left: var(--space-2);
+}
+
+.nav-session-delete {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-left: var(--space-1);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+
+.nav-session-item:hover .nav-session-delete {
+  display: flex;
+}
+
+.nav-session-item:hover .nav-session-time {
+  display: none;
+}
+
+.nav-session-delete:hover {
+  color: var(--color-error);
+  background: oklch(0.65 0.18 25 / 0.12);
 }
 
 .nav-session-rename {

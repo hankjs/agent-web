@@ -24,8 +24,8 @@ function isTauri(): boolean {
 }
 
 /**
- * Stream SSE via Tauri invoke + app.emit events.
- * Uses global event listener instead of Channel (Channel batches events until invoke resolves).
+ * Stream SSE via Tauri invoke + Channel.
+ * Channel delivers events directly from the command without global event bus.
  */
 function streamSSEViaTauri(
   url: string,
@@ -36,48 +36,43 @@ function streamSSEViaTauri(
   onError: (err: Error) => void,
 ): () => void {
   let aborted = false;
-  let unlisten: (() => void) | null = null;
-
-  const streamId = `sse_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   const run = async () => {
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const { listen } = await import("@tauri-apps/api/event");
-
-      // Listen for events with our stream_id
-      unlisten = await listen<{ stream_id: string; data: string; done: boolean }>("llm-stream-event", (event) => {
-        if (aborted) return;
-        if (event.payload.stream_id !== streamId) return;
-        if (event.payload.done) {
-          onDone();
-        } else if (event.payload.data) {
-          onLine(event.payload.data);
-        }
-      });
+      const { invoke, Channel } = await import("@tauri-apps/api/core");
 
       if (signal?.aborted) { onError(new DOMException("Aborted", "AbortError")); return; }
 
-      // invoke fires events via app.emit during execution — no batching
+      const onEvent = new Channel<{ data: string; done: boolean }>();
+      onEvent.onmessage = (event) => {
+        if (aborted) return;
+        if (event.done) {
+          onDone();
+        } else if (event.data) {
+          onLine(event.data);
+        }
+      };
+
       await invoke("llm_stream", {
-        req: { url, token: getToken(), body, streamId },
+        req: { url, token: getToken(), body },
+        onEvent,
       });
+      // invoke resolves after stream ends; if onDone wasn't called via channel, call it now
+      // (Channel should have delivered done:true before invoke resolves)
     } catch (err: any) {
       if (!aborted) {
         onError(new Error(err?.toString() || "Tauri invoke failed"));
       }
-    } finally {
-      if (unlisten) unlisten();
     }
   };
 
   run();
 
   if (signal) {
-    signal.addEventListener("abort", () => { aborted = true; if (unlisten) unlisten(); });
+    signal.addEventListener("abort", () => { aborted = true; });
   }
 
-  return () => { aborted = true; if (unlisten) unlisten(); };
+  return () => { aborted = true; };
 }
 
 /**
@@ -127,8 +122,9 @@ function streamSSEViaXHR(
     }
   };
 
-  xhr.onerror = () => onError(new Error("Network error"));
-  xhr.onabort = () => onError(new DOMException("Aborted", "AbortError"));
+  xhr.onerror = () => { onError(new Error("Network error")); };
+  xhr.onabort = () => { onError(new DOMException("Aborted", "AbortError")); };
+  xhr.ontimeout = () => { onError(new Error("Request timeout")); };
 
   if (signal) {
     if (signal.aborted) { xhr.abort(); return () => {}; }
@@ -220,6 +216,7 @@ export async function callLLMWithTools(system: string, messages: LlmMessage[], t
 function streamSSERequest(body: string, signal?: AbortSignal, onDelta?: (text: string) => void): Promise<{ text: string; meta: LlmMeta }> {
   return new Promise((resolve, reject) => {
     let text = "";
+    let resolved = false;
     const meta: LlmMeta = { tokens_in: 0, tokens_out: 0, latency_ms: 0 };
 
     streamSSE(
@@ -232,11 +229,16 @@ function streamSSERequest(body: string, signal?: AbortSignal, onDelta?: (text: s
           const ev = JSON.parse(data);
           if (ev.type === "text_delta") { text += ev.text; if (onDelta) onDelta(ev.text); }
           else if (ev.type === "usage") { meta.tokens_in = ev.input_tokens || 0; meta.tokens_out = ev.output_tokens || 0; }
-          else if (ev.type === "error") reject(new Error(ev.message));
+          else if (ev.type === "message_end") {
+            if (!resolved) { resolved = true; resolve({ text, meta }); }
+          }
+          else if (ev.type === "error") {
+            if (!resolved) { resolved = true; reject(new Error(ev.message)); }
+          }
         } catch {}
       },
-      () => resolve({ text, meta }),
-      (err) => reject(err),
+      () => { if (!resolved) { resolved = true; resolve({ text, meta }); } },
+      (err) => { if (!resolved) { resolved = true; reject(err); } },
     );
   });
 }
@@ -245,6 +247,7 @@ function streamSSERequest(body: string, signal?: AbortSignal, onDelta?: (text: s
 function streamSSERequestFull(body: string, signal?: AbortSignal): Promise<LlmResponse> {
   return new Promise((resolve, reject) => {
     let text = "";
+    let resolved = false;
     const toolCalls: ToolUseBlock[] = [];
     let currentTool: { id: string; name: string; inputJson: string } | null = null;
     let stopReason = "end_turn";
@@ -276,17 +279,21 @@ function streamSSERequestFull(body: string, signal?: AbortSignal): Promise<LlmRe
               break;
             case "message_end":
               stopReason = ev.stop_reason || "end_turn";
+              // Resolve immediately — don't wait for TCP close
+              if (!resolved) { resolved = true; resolve({ text, toolCalls, stopReason, meta }); }
               break;
             case "usage":
               meta.tokens_in = ev.input_tokens || 0;
               meta.tokens_out = ev.output_tokens || 0;
               break;
-            case "error": reject(new Error(ev.message)); break;
+            case "error":
+              if (!resolved) { resolved = true; reject(new Error(ev.message)); }
+              break;
           }
         } catch {}
       },
-      () => resolve({ text, toolCalls, stopReason, meta }),
-      (err) => reject(err),
+      () => { if (!resolved) { resolved = true; resolve({ text, toolCalls, stopReason, meta }); } },
+      (err) => { if (!resolved) { resolved = true; reject(err); } },
     );
   });
 }

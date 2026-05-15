@@ -53,6 +53,7 @@ export function useBlockEvents() {
         const shouldClear =
             block.kind === BlockKind.ExploreRound ||
             block.kind === BlockKind.AskUser ||
+            block.kind === BlockKind.Error ||
             (block.kind === BlockKind.Text && block.content.startsWith("探索完成"));
         if (shouldClear) {
             const idx = blocks.value.findIndex((b) => b.kind === BlockKind.Thinking);
@@ -70,6 +71,11 @@ export function useBlockEvents() {
 
     function onStreaming(v: boolean) {
         isStreaming.value = v;
+        // 当 streaming 结束时，确保清除残留的 thinking block
+        if (!v) {
+            const idx = blocks.value.findIndex((b) => b.kind === BlockKind.Thinking);
+            if (idx >= 0) blocks.value.splice(idx, 1);
+        }
     }
 
     return { blocks, isStreaming, messagesEl, scrollToBottom, onBlock, onStreaming };

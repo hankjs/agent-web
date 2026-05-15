@@ -125,12 +125,8 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
   async function runPlannerStep(userInput: string, images?: Array<{ media_type: string; data: string }>): Promise<PlannerAction | null> {
     state.value.phase = "thinking";
-    const uncovered = state.value.uncoveredAreas.length > 0
-      ? state.value.uncoveredAreas.join("、")
-      : "由 agent 根据上下文判断";
     const prompt = buildExplorePlannerPrompt({
       summary: state.value.runningSummary || "（尚未开始探索）",
-      uncoveredAreas: uncovered,
       userInput,
       turnCount: state.value.turnCount,
       maxTurns: HARD_MAX_READS,
