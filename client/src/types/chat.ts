@@ -18,18 +18,29 @@ export type AskUserQuestion = {
   customAnswer?: string;
 };
 
+/** Chat 所有 block/render 类型枚举 */
+export const enum ChatBlockKind {
+  User = "user",
+  Text = "text",
+  Error = "error",
+  Tool = "tool",
+  AskUser = "ask_user",
+  Structured = "structured",
+  ToolGroup = "tool-group",
+}
+
 export type Block =
-  | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
-  | { kind: "text"; content: string }
-  | { kind: "error"; content: string }
-  | { kind: "tool"; tool: ToolCall }
-  | { kind: "ask_user"; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
+  | { kind: ChatBlockKind.User; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
+  | { kind: ChatBlockKind.Text; content: string }
+  | { kind: ChatBlockKind.Error; content: string }
+  | { kind: ChatBlockKind.Tool; tool: ToolCall }
+  | { kind: ChatBlockKind.AskUser; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
 
 export type RenderItem =
-  | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
-  | { kind: "text"; content: string }
-  | { kind: "structured"; cardType: string; data: any }
-  | { kind: "error"; content: string }
-  | { kind: "tool"; tool: ToolCall }
-  | { kind: "tool-group"; tools: ToolCall[] }
-  | { kind: "ask_user"; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
+  | { kind: ChatBlockKind.User; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
+  | { kind: ChatBlockKind.Text; content: string }
+  | { kind: ChatBlockKind.Structured; cardType: string; data: any }
+  | { kind: ChatBlockKind.Error; content: string }
+  | { kind: ChatBlockKind.Tool; tool: ToolCall }
+  | { kind: ChatBlockKind.ToolGroup; tools: ToolCall[] }
+  | { kind: ChatBlockKind.AskUser; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };

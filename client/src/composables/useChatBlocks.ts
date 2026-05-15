@@ -1,5 +1,5 @@
 import { ref, reactive, computed, type Ref } from "vue";
-import type { Block, RenderItem, ToolCall, AskUserQuestion } from "../types/chat";
+import { ChatBlockKind, type Block, type RenderItem, type ToolCall, type AskUserQuestion } from "../types/chat";
 import { apiRequest } from "./useSession";
 
 export function useChatBlocks(sessionId: Ref<string>, isStreaming: Ref<boolean>) {
@@ -15,7 +15,7 @@ export function useChatBlocks(sessionId: Ref<string>, isStreaming: Ref<boolean>)
     structuredBlockRegex.lastIndex = 0;
     while ((match = structuredBlockRegex.exec(content)) !== null) {
       const before = content.slice(lastIndex, match.index);
-      if (before.trim()) parts.push({ kind: "text", content: before });
+      if (before.trim()) parts.push({ kind: ChatBlockKind.Text, content: before });
       try {
         const raw = match[2];
         const cardType = match[1];
@@ -32,18 +32,18 @@ export function useChatBlocks(sessionId: Ref<string>, isStreaming: Ref<boolean>)
             }
             structuredAskCache.set(cacheKey, reactive(data));
           }
-          parts.push({ kind: "structured", cardType, data: structuredAskCache.get(cacheKey) });
+          parts.push({ kind: ChatBlockKind.Structured, cardType, data: structuredAskCache.get(cacheKey) });
         } else {
           const data = JSON.parse(raw);
-          parts.push({ kind: "structured", cardType, data });
+          parts.push({ kind: ChatBlockKind.Structured, cardType, data });
         }
       } catch {
-        parts.push({ kind: "text", content: match[0] });
+        parts.push({ kind: ChatBlockKind.Text, content: match[0] });
       }
       lastIndex = match.index + match[0].length;
     }
     const after = content.slice(lastIndex);
-    if (after.trim()) parts.push({ kind: "text", content: after });
+    if (after.trim()) parts.push({ kind: ChatBlockKind.Text, content: after });
     return parts;
   }
 
@@ -52,29 +52,29 @@ export function useChatBlocks(sessionId: Ref<string>, isStreaming: Ref<boolean>)
     let i = 0;
     while (i < blocks.value.length) {
       const block = blocks.value[i];
-      if (block.kind === "tool") {
+      if (block.kind === ChatBlockKind.Tool) {
         const tools: ToolCall[] = [block.tool];
         let j = i + 1;
-        while (j < blocks.value.length && blocks.value[j].kind === "tool") {
-          tools.push((blocks.value[j] as { kind: "tool"; tool: ToolCall }).tool);
+        while (j < blocks.value.length && blocks.value[j].kind === ChatBlockKind.Tool) {
+          tools.push((blocks.value[j] as { kind: ChatBlockKind.Tool; tool: ToolCall }).tool);
           j++;
         }
         if (tools.length >= 2) {
-          items.push({ kind: "tool-group", tools });
+          items.push({ kind: ChatBlockKind.ToolGroup, tools });
         } else {
           items.push(block);
         }
         i = j;
-      } else if (block.kind === "ask_user") {
+      } else if (block.kind === ChatBlockKind.AskUser) {
         const prev = items[items.length - 1];
-        if (prev && prev.kind === "ask_user" && prev.questions.length === block.questions.length &&
+        if (prev && prev.kind === ChatBlockKind.AskUser && prev.questions.length === block.questions.length &&
             prev.questions.every((q, qi) => q.question === block.questions[qi].question)) {
           i++;
         } else {
           items.push(block);
           i++;
         }
-      } else if (block.kind === "text" && (structuredBlockRegex.lastIndex = 0, structuredBlockRegex.test(block.content))) {
+      } else if (block.kind === ChatBlockKind.Text && (structuredBlockRegex.lastIndex = 0, structuredBlockRegex.test(block.content))) {
         const isLastBlock = i === blocks.value.length - 1;
         if (isStreaming.value && isLastBlock) {
           items.push(block);
@@ -105,7 +105,7 @@ export function useChatBlocks(sessionId: Ref<string>, isStreaming: Ref<boolean>)
     const items = renderItems.value;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (item.kind === "tool-group" && !item.tools.some((t) => t.isRunning)) {
+      if (item.kind === ChatBlockKind.ToolGroup && !item.tools.some((t) => t.isRunning)) {
         if (groupExpanded.value[i] === undefined || groupExpanded.value[i]) {
           groupExpanded.value[i] = false;
         }
@@ -130,7 +130,7 @@ export function useChatBlocks(sessionId: Ref<string>, isStreaming: Ref<boolean>)
               if (block.type === "tool_result") {
                 for (let i = blocks.value.length - 1; i >= 0; i--) {
                   const b = blocks.value[i];
-                  if (b.kind === "tool" && b.tool.id === block.tool_use_id) {
+                  if (b.kind === ChatBlockKind.Tool && b.tool.id === block.tool_use_id) {
                     b.tool.result = block.content;
                     b.tool.isError = block.is_error;
                     b.tool.isRunning = false;
@@ -149,7 +149,7 @@ export function useChatBlocks(sessionId: Ref<string>, isStreaming: Ref<boolean>)
               const answerBody = askMatch[2];
               for (let i = blocks.value.length - 1; i >= 0; i--) {
                 const b = blocks.value[i];
-                if (b.kind === "ask_user" && b.toolUseId === matchedId) {
+                if (b.kind === ChatBlockKind.AskUser && b.toolUseId === matchedId) {
                   b.answered = true;
                   try {
                     const payload = JSON.parse(answerBody) as Array<{ header: string; answer: string }>;
@@ -167,16 +167,16 @@ export function useChatBlocks(sessionId: Ref<string>, isStreaming: Ref<boolean>)
                 }
               }
             } else if (textContent || images.length > 0) {
-              blocks.value.push({ kind: "user", content: textContent, images: images.length > 0 ? images : undefined, messageId: msg.id, parentId: msg.parent_id });
+              blocks.value.push({ kind: ChatBlockKind.User, content: textContent, images: images.length > 0 ? images : undefined, messageId: msg.id, parentId: msg.parent_id });
             }
           } else {
             let skipNextText = false;
             for (const block of content) {
               if (block.type === "text" && block.text) {
                 if (skipNextText) { skipNextText = false; continue; }
-                blocks.value.push({ kind: "text", content: block.text });
+                blocks.value.push({ kind: ChatBlockKind.Text, content: block.text });
               } else if (block.type === "error" && block.text) {
-                blocks.value.push({ kind: "error", content: block.text });
+                blocks.value.push({ kind: ChatBlockKind.Error, content: block.text });
               } else if (block.type === "tool_use") {
                 if (block.name === "AskUserQuestion") {
                   const inputData = typeof block.input === "string" ? JSON.parse(block.input) : block.input;
@@ -190,12 +190,12 @@ export function useChatBlocks(sessionId: Ref<string>, isStreaming: Ref<boolean>)
                       customMode: false,
                       customAnswer: "",
                     }));
-                    blocks.value.push({ kind: "ask_user", toolUseId: block.id || "", questions, answered: false, activeTab: 0 });
+                    blocks.value.push({ kind: ChatBlockKind.AskUser, toolUseId: block.id || "", questions, answered: false, activeTab: 0 });
                   }
                   skipNextText = true;
                 } else {
                   blocks.value.push({
-                    kind: "tool",
+                    kind: ChatBlockKind.Tool,
                     tool: { id: block.id, name: block.name, input: typeof block.input === "string" ? block.input : JSON.stringify(block.input), isRunning: false, expanded: false },
                   });
                 }

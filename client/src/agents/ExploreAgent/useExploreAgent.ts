@@ -8,14 +8,15 @@ import {
 } from "./prompts";
 import { callLLM, callLLMWithTools, execTool } from "./llm";
 import { READER_TOOLS, WRITER_TOOLS } from "./tools";
-import type {
-  ExploreAgentState,
-  ExploreAgentOptions,
-  ExplorePhase,
-  Finding,
-  PlannerAction,
-  LlmMessage,
-  Block,
+import {
+  BlockKind,
+  type ExploreAgentState,
+  type ExploreAgentOptions,
+  type ExplorePhase,
+  type Finding,
+  type PlannerAction,
+  type LlmMessage,
+  type Block,
 } from "./types";
 
 const enc = encodingForModel("gpt-4o"); // cl100k_base compatible
@@ -59,7 +60,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   function cancel() {
     abortController.abort();
     state.value.phase = "cancelled";
-    options.onBlock({ kind: "text", content: "探索已取消。" });
+    options.onBlock({ kind: BlockKind.Text, content: "探索已取消。" });
     options.onStreaming(false);
     options.onComplete();
   }
@@ -138,7 +139,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     });
     await logEvent("explore:thought", { prompt_preview: prompt.slice(0, 200) }, "internal");
     // Emit a thinking block that will stream planner output
-    const thinkingBlock = { kind: "thinking" as const, content: "" };
+    const thinkingBlock: Extract<Block, { kind: BlockKind.Thinking }> = { kind: BlockKind.Thinking, content: "" };
     options.onBlock(thinkingBlock);
 
     const MAX_PLANNER_RETRIES = 2;
@@ -152,7 +153,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         thinkingBlock.content = "";
         const { text: response, meta, httpStatus } = await callLLM(systemPrompt, prompt, images, abortController.signal, (delta) => {
           thinkingBlock.content += delta;
-          options.onBlock({ kind: "thinking", content: thinkingBlock.content });
+          options.onBlock({ kind: BlockKind.Thinking, content: thinkingBlock.content });
         });
         await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "planner", attempt, tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(), httpStatus }, "internal");
 
@@ -184,7 +185,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           continue;
         }
         await logEvent("explore:error", { phase: "planner", error: lastError, attempts: attempt + 1, httpStatus }, "user");
-        options.onBlock({ kind: "error", content: `规划失败: ${e.message}` });
+        options.onBlock({ kind: BlockKind.Error, content: `规划失败: ${e.message}` });
         return null;
       }
     }
@@ -195,7 +196,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     state.value.phase = "acting";
     const statusMsg = `正在阅读代码: ${params.objective}`;
     // Emit an explore_round block that groups all tool calls for this read
-    options.onBlock({ kind: "explore_round", objective: params.objective, reasoning, tools: [], expanded: true, isRunning: true } as any);
+    options.onBlock({ kind: BlockKind.ExploreRound, objective: params.objective, reasoning, tools: [], expanded: true, isRunning: true } as any);
     await logEvent("explore:status", { message: statusMsg }, "user");
 
     const system = buildExploreReaderPrompt({
@@ -223,7 +224,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       if (resp.text) assistantContent.push({ type: "text", text: resp.text });
       for (const tc of resp.toolCalls) {
         assistantContent.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
-        options.onBlock({ kind: "tool", tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: true, expanded: false } });
+        options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: true, expanded: false } });
       }
       messages.push({ role: "assistant", content: assistantContent });
 
@@ -234,7 +235,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
             topic: f.topic || "", content: f.content || "", source: f.source || "", confirmed: false,
           }));
           toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: "Findings recorded." });
-          options.onBlock({ kind: "tool", tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: false, expanded: false } });
+          options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: false, expanded: false } });
           earlyFindings = reported;
         } else if (tc.name === "AskUserQuestion") {
           const questions = (tc.input.questions || []).map((q: any) => ({
@@ -242,8 +243,8 @@ export function useExploreAgent(options: ExploreAgentOptions) {
             question: q.question,
             options: (q.options || []).map((o: any) => typeof o === "string" ? o : { label: o.label, description: o.description }),
           }));
-          options.onBlock({ kind: "ask_user", toolUseId: tc.id, questions, answered: false, activeTab: 0 });
-          options.onBlock({ kind: "tool", tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: false, expanded: false } });
+          options.onBlock({ kind: BlockKind.AskUser, toolUseId: tc.id, questions, answered: false, activeTab: 0 });
+          options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: false, expanded: false } });
           state.value.phase = "waiting_user";
           const answer = await waitForAnswer();
           state.value.phase = "acting";
@@ -254,7 +255,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           const outputPreview = result.content.length > 200 ? result.content.slice(0, 200) + "..." : result.content;
           await logEvent("explore:tool_result", { turn: state.value.turnCount, tool_name: tc.name, output_preview: outputPreview, output_length: result.content.length, is_error: result.is_error, duration_ms: result.duration_ms, round, elapsed_ms: elapsed() }, "user");
           toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: result.content, is_error: result.is_error });
-          options.onBlock({ kind: "tool", tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), result: outputPreview, isError: result.is_error, isRunning: false, expanded: false } });
+          options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), result: outputPreview, isError: result.is_error, isRunning: false, expanded: false } });
         }
       }
       messages.push({ role: "user", content: toolResults });
@@ -332,14 +333,14 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       question: q.question,
       options: q.options.map(o => typeof o === "string" ? o : { label: o.label, description: o.description }),
     }));
-    options.onBlock({ kind: "ask_user", toolUseId: `explore_ask_${Date.now()}`, questions: questionsForUI, answered: false, activeTab: 0 });
+    options.onBlock({ kind: BlockKind.AskUser, toolUseId: `explore_ask_${Date.now()}`, questions: questionsForUI, answered: false, activeTab: 0 });
     logEvent("explore:question", { questions: params.questions }, "user");
   }
 
   async function executeFinalize(params: { title: string }) {
     state.value.phase = "done";
     const statusMsg = `探索完成: ${params.title}`;
-    options.onBlock({ kind: "text", content: statusMsg });
+    options.onBlock({ kind: BlockKind.Text, content: statusMsg });
     await logEvent("explore:status", { message: statusMsg }, "user");
 
     try {
@@ -352,7 +353,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         await logEvent("explore:complete", { title: params.title, summary: state.value.runningSummary }, "user");
       }
     } catch (e: any) {
-      options.onBlock({ kind: "error", content: `创建 Change 失败: ${e.message}` });
+      options.onBlock({ kind: BlockKind.Error, content: `创建 Change 失败: ${e.message}` });
     }
     options.onComplete();
   }
@@ -407,7 +408,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
               degradeCount++;
               consecutiveErrors = 0;
               state.value.runningSummary += `\n[跳过] ${action.params.objective} (连续错误)`;
-              options.onBlock({ kind: "error", content: `跳过目标: ${action.params.objective}（连续错误）` });
+              options.onBlock({ kind: BlockKind.Error, content: `跳过目标: ${action.params.objective}（连续错误）` });
               if (degradeCount >= 2) {
                 emitAskUser({ questions: [{ header: "多次降级", question: "已多次因错误跳过目标，是否继续？", options: [{ label: "继续" }, { label: "结束探索" }] }] });
                 return;
@@ -423,7 +424,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           await executeFinalize(action.params);
           return;
         default:
-          options.onBlock({ kind: "error", content: `未知 action: ${(action as any).action}` });
+          options.onBlock({ kind: BlockKind.Error, content: `未知 action: ${(action as any).action}` });
           return;
       }
     }
@@ -439,7 +440,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     }
 
     options.onStreaming(true);
-    options.onBlock({ kind: "user", content });
+    options.onBlock({ kind: BlockKind.User, content });
 
     if (isFirstTurn.value) {
       state.value.uncoveredAreas = getInitialAreas();

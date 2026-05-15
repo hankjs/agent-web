@@ -74,10 +74,13 @@ function canSubmit(): boolean {
         <button
           v-for="(opt, oi) in questions[activeTab].options" :key="oi"
           type="button" class="ask-card-option"
-          :class="{ selected: isSelected(questions[activeTab], opt) }"
+          :class="{ selected: isSelected(questions[activeTab], opt), 'has-desc': !!getOptionDescription(opt) }"
           :disabled="answered || isStreaming"
           @click="emit('selectOption', activeTab, getOptionLabel(opt))"
-        >{{ getOptionLabel(opt) }}<span v-if="getOptionDescription(opt)" class="ask-card-option-desc"> - {{ getOptionDescription(opt) }}</span></button>
+        >
+          <span class="ask-card-option-label">{{ getOptionLabel(opt) }}</span>
+          <span v-if="getOptionDescription(opt)" class="ask-card-option-desc">{{ getOptionDescription(opt) }}</span>
+        </button>
         <div v-if="!answered" class="ask-card-custom">
           <input
             v-if="questions[activeTab].customMode"
@@ -122,11 +125,15 @@ function canSubmit(): boolean {
 .ask-card-body { padding: 14px 16px; }
 .ask-card-question { color: var(--color-text-primary); font-size: 14px; font-weight: 600; line-height: 1.55; margin-bottom: 12px; }
 .ask-card-options { display: flex; flex-direction: column; gap: 8px; }
-.ask-card-option { width: 100%; min-height: 38px; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-0); color: var(--color-text-secondary); font-size: 13px; line-height: 1.45; text-align: left; cursor: pointer; transition: background 0.15s, border-color 0.15s, color 0.15s; }
+.ask-card-option { width: 100%; min-height: 38px; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-0); color: var(--color-text-secondary); font-size: 13px; line-height: 1.45; text-align: left; cursor: pointer; transition: background 0.15s, border-color 0.15s, color 0.15s; display: flex; flex-direction: column; gap: 2px; }
+.ask-card-option.has-desc { padding: 10px 12px; }
 .ask-card-option:hover:not(:disabled) { color: var(--color-text-primary); border-color: var(--color-accent); background: var(--color-surface-2); }
 .ask-card-option.selected { color: var(--color-text-primary); border-color: var(--color-accent); background: color-mix(in oklch, var(--color-accent) 16%, var(--color-surface-1)); }
 .ask-card-option:disabled { cursor: default; opacity: 0.65; }
-.ask-card-option-desc { font-size: 12px; color: var(--color-text-tertiary); font-weight: 400; }
+.ask-card-option-label { font-weight: 500; }
+.ask-card-option-desc { font-size: 12px; color: var(--color-text-muted); font-weight: 400; line-height: 1.4; }
+.ask-card-option:hover:not(:disabled) .ask-card-option-desc { color: var(--color-text-secondary); }
+.ask-card-option.selected .ask-card-option-desc { color: var(--color-text-secondary); }
 .ask-card-custom { min-height: 38px; }
 .ask-card-custom-input { width: 100%; min-height: 38px; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--color-accent); background: var(--color-surface-0); color: var(--color-text-primary); font-size: 13px; outline: none; }
 .ask-card-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--color-border-subtle); background: color-mix(in oklch, var(--color-surface-0) 75%, transparent); }

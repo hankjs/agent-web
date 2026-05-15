@@ -1,5 +1,5 @@
 import { ref, computed, watch, nextTick, type Ref, type ComputedRef } from "vue";
-import type { Block, ToolCall, AskUserQuestion } from "../types/chat";
+import { ChatBlockKind, type Block, type ToolCall, type AskUserQuestion } from "../types/chat";
 import { authFetch } from "./useSession";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -98,7 +98,7 @@ export function useLocalAgent(options: UseLocalAgentOptions) {
           else { localAssistantBlocks.push({ type: "text", text: event.content }); }
         } else {
           collapseFinishedToolGroups();
-          blocks.value.push({ kind: "text", content: event.content });
+          blocks.value.push({ kind: ChatBlockKind.Text, content: event.content });
           localAssistantBlocks.push({ type: "text", text: event.content });
         }
         break;
@@ -113,13 +113,13 @@ export function useLocalAgent(options: UseLocalAgentOptions) {
               options: (q.options || []).map((o: any) => o.label || o),
               selected: undefined, customMode: false, customAnswer: "",
             }));
-            blocks.value.push({ kind: "ask_user", toolUseId: event.tool_call_id || "", questions, answered: false, activeTab: 0 });
+            blocks.value.push({ kind: ChatBlockKind.AskUser, toolUseId: event.tool_call_id || "", questions, answered: false, activeTab: 0 });
           }
           localAssistantBlocks.push({ type: "tool_use", id: event.tool_call_id, name: event.tool_name, input: event.input });
           break;
         }
         blocks.value.push({
-          kind: "tool",
+          kind: ChatBlockKind.Tool,
           tool: { id: event.tool_call_id, name: event.tool_name, input: typeof event.input === "string" ? event.input : JSON.stringify(event.input), isRunning: true, expanded: false, source: "local" },
         });
         localAssistantBlocks.push({ type: "tool_use", id: event.tool_call_id, name: event.tool_name, input: event.input });
@@ -128,7 +128,7 @@ export function useLocalAgent(options: UseLocalAgentOptions) {
       case "tool_result": {
         for (let i = blocks.value.length - 1; i >= 0; i--) {
           const b = blocks.value[i];
-          if (b.kind === "tool" && b.tool.id === event.tool_call_id) {
+          if (b.kind === ChatBlockKind.Tool && b.tool.id === event.tool_call_id) {
             b.tool.result = typeof event.output === "string" ? event.output : JSON.stringify(event.output);
             b.tool.isError = event.is_error;
             b.tool.isRunning = false;
@@ -145,7 +145,7 @@ export function useLocalAgent(options: UseLocalAgentOptions) {
         break;
       }
       case "error": {
-        blocks.value.push({ kind: "error", content: event.message });
+        blocks.value.push({ kind: ChatBlockKind.Error, content: event.message });
         isStreaming.value = false;
         localAgentStatus.value = "stopped";
         break;
@@ -157,10 +157,10 @@ export function useLocalAgent(options: UseLocalAgentOptions) {
   async function sendLocal(content: string) {
     if (!content.trim() || isStreaming.value) return;
     if (!localAgentName.value) {
-      blocks.value.push({ kind: "error", content: "本地 Agent 未配置，请在设置中配置 Agent。" });
+      blocks.value.push({ kind: ChatBlockKind.Error, content: "本地 Agent 未配置，请在设置中配置 Agent。" });
       return;
     }
-    blocks.value.push({ kind: "user", content });
+    blocks.value.push({ kind: ChatBlockKind.User, content });
     isStreaming.value = true;
     localEvents = [];
     localAssistantBlocks = [];
@@ -191,7 +191,7 @@ export function useLocalAgent(options: UseLocalAgentOptions) {
       }
       await invoke("acp_prompt", { sessionId: sessionId.value, message: content });
     } catch (e: any) {
-      blocks.value.push({ kind: "error", content: `Local agent error: ${e}` });
+      blocks.value.push({ kind: ChatBlockKind.Error, content: `Local agent error: ${e}` });
       isStreaming.value = false;
     }
   }

@@ -26,14 +26,37 @@ export type AskUserQuestion = {
   customAnswer?: string;
 };
 
+/** Block 类型枚举 */
+export const enum BlockKind {
+  User = "user",
+  Text = "text",
+  Thinking = "thinking",
+  Error = "error",
+  Tool = "tool",
+  ExploreRound = "explore_round",
+  AskUser = "ask_user",
+}
+
+/** 后端事件类型枚举 */
+export const enum ExploreEvent {
+  Answer = "explore:answer",
+  Action = "explore:action",
+  ToolCall = "explore:tool_call",
+  ToolResult = "explore:tool_result",
+  Status = "explore:status",
+  Error = "explore:error",
+  Question = "explore:question",
+  Complete = "explore:complete",
+}
+
 export type Block =
-  | { kind: "user"; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
-  | { kind: "text"; content: string }
-  | { kind: "thinking"; content: string }
-  | { kind: "error"; content: string }
-  | { kind: "tool"; tool: { id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean } }
-  | { kind: "explore_round"; objective: string; reasoning?: string; tools: Array<{ id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean }>; expanded: boolean; isRunning: boolean }
-  | { kind: "ask_user"; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
+  | { kind: BlockKind.User; content: string; images?: Array<{ media_type: string; data: string }>; messageId?: string; parentId?: string | null }
+  | { kind: BlockKind.Text; content: string }
+  | { kind: BlockKind.Thinking; content: string }
+  | { kind: BlockKind.Error; content: string }
+  | { kind: BlockKind.Tool; tool: { id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean } }
+  | { kind: BlockKind.ExploreRound; objective: string; reasoning?: string; tools: Array<{ id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean }>; expanded: boolean; isRunning: boolean }
+  | { kind: BlockKind.AskUser; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
 
 export interface ExploreAgentOptions {
   sessionId: string;

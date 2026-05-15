@@ -1,5 +1,5 @@
 import { ref, nextTick, type Ref } from "vue";
-import type { Block } from "../types/chat";
+import { ChatBlockKind, type Block } from "../types/chat";
 import { authFetch } from "./useSession";
 
 export interface UseChatSSEOptions {
@@ -28,17 +28,17 @@ export function useChatSSE(options: UseChatSSEOptions) {
     switch (event.type) {
       case "text_delta": {
         const last = blocks.value[blocks.value.length - 1];
-        if (last && last.kind === "text") {
+        if (last && last.kind === ChatBlockKind.Text) {
           last.content += event.text;
         } else {
           collapseFinishedToolGroups();
-          blocks.value.push({ kind: "text", content: event.text });
+          blocks.value.push({ kind: ChatBlockKind.Text, content: event.text });
         }
         break;
       }
       case "tool_start": {
         blocks.value.push({
-          kind: "tool",
+          kind: ChatBlockKind.Tool,
           tool: { id: event.id, name: event.name, input: event.input, isRunning: true, expanded: false },
         });
         break;
@@ -46,7 +46,7 @@ export function useChatSSE(options: UseChatSSEOptions) {
       case "tool_result": {
         for (let i = blocks.value.length - 1; i >= 0; i--) {
           const b = blocks.value[i];
-          if (b.kind === "tool" && b.tool.id === event.id) {
+          if (b.kind === ChatBlockKind.Tool && b.tool.id === event.id) {
             b.tool.result = event.content;
             b.tool.isError = event.is_error;
             b.tool.isRunning = false;
@@ -63,14 +63,14 @@ export function useChatSSE(options: UseChatSSEOptions) {
         onTurnComplete?.();
         break;
       case "error":
-        blocks.value.push({ kind: "error", content: event.message });
+        blocks.value.push({ kind: ChatBlockKind.Error, content: event.message });
         isStreaming.value = false;
         currentSessionStreaming = false;
         clearHeartbeatTimer();
         break;
       case "ask_user":
         blocks.value.push({
-          kind: "ask_user",
+          kind: ChatBlockKind.AskUser,
           toolUseId: event.tool_use_id || "",
           questions: [{ header: "", question: event.question, options: event.options || [], selected: undefined, customMode: false, customAnswer: "" }],
           answered: false,
@@ -114,7 +114,7 @@ export function useChatSSE(options: UseChatSSEOptions) {
     }
     if (!currentSessionStreaming) return;
     if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      blocks.value.push({ kind: "error", content: "连接断开，多次重连失败。" });
+      blocks.value.push({ kind: ChatBlockKind.Error, content: "连接断开，多次重连失败。" });
       isStreaming.value = false;
       currentSessionStreaming = false;
       reconnectAttempts = 0;
@@ -198,7 +198,7 @@ export function useChatSSE(options: UseChatSSEOptions) {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        blocks.value.push({ kind: "error", content: `Request failed: ${res.status}` });
+        blocks.value.push({ kind: ChatBlockKind.Error, content: `Request failed: ${res.status}` });
         isStreaming.value = false;
         currentSessionStreaming = false;
         return;
@@ -211,7 +211,7 @@ export function useChatSSE(options: UseChatSSEOptions) {
       if (e.name === "AbortError") return;
       if (currentSessionStreaming) { handleDisconnect(); }
       else {
-        blocks.value.push({ kind: "error", content: `Connection lost: ${e.message || e}` });
+        blocks.value.push({ kind: ChatBlockKind.Error, content: `Connection lost: ${e.message || e}` });
         isStreaming.value = false;
       }
     }

@@ -1,5 +1,5 @@
 import { ref, computed, nextTick, type Ref, type ComputedRef } from "vue";
-import type { Block, RenderItem } from "../types/chat";
+import { ChatBlockKind, type Block, type RenderItem } from "../types/chat";
 import { authFetch, apiRequest } from "./useSession";
 import { getApplyContext } from "../api/changes";
 import { buildApplyPrompt } from "../agents/ChangeAgent";
@@ -56,7 +56,7 @@ export function useChatActions(options: UseChatActionsOptions) {
     const images = pendingImages.value.length > 0
       ? pendingImages.value.map(img => ({ media_type: img.media_type, data: img.data }))
       : undefined;
-    blocks.value.push({ kind: "user", content, images });
+    blocks.value.push({ kind: ChatBlockKind.User, content, images });
     input.value = "";
     pendingImages.value = [];
     agentInputRef.value?.clearImages();
@@ -84,7 +84,7 @@ export function useChatActions(options: UseChatActionsOptions) {
       }
       if (cutIdx >= 0) blocks.value.splice(cutIdx);
     }
-    blocks.value.push({ kind: "user", content });
+    blocks.value.push({ kind: ChatBlockKind.User, content });
     isStreaming.value = true;
     nextTick(() => { scrollToLastUserMessage(); });
 
@@ -120,7 +120,7 @@ export function useChatActions(options: UseChatActionsOptions) {
       if (blocks.value[i].kind === "user") { lastUserIdx = i; break; }
     }
     if (lastUserIdx < 0) return;
-    const userBlock = blocks.value[lastUserIdx] as { kind: "user"; content: string };
+    const userBlock = blocks.value[lastUserIdx] as { kind: ChatBlockKind.User; content: string };
     const content = userBlock.content;
 
     const messagesBeforeError = blocks.value.slice(0, lastUserIdx);
@@ -140,12 +140,12 @@ export function useChatActions(options: UseChatActionsOptions) {
     } catch { /* best effort */ }
 
     blocks.value.splice(lastUserIdx);
-    blocks.value.push({ kind: "user", content });
+    blocks.value.push({ kind: ChatBlockKind.User, content });
     isStreaming.value = true;
     await startStream({ content });
   }
 
-  function selectAskUserOption(item: Extract<RenderItem, { kind: "ask_user" }>, qIdx: number, answer: string) {
+  function selectAskUserOption(item: Extract<RenderItem, { kind: ChatBlockKind.AskUser }>, qIdx: number, answer: string) {
     if (item.answered || isStreaming.value) return;
     const q = item.questions[qIdx];
     if (!q) return;
@@ -155,7 +155,7 @@ export function useChatActions(options: UseChatActionsOptions) {
     if (qIdx < item.questions.length - 1) item.activeTab = qIdx + 1;
   }
 
-  function startCustomAskUser(item: Extract<RenderItem, { kind: "ask_user" }>, qIdx: number) {
+  function startCustomAskUser(item: Extract<RenderItem, { kind: ChatBlockKind.AskUser }>, qIdx: number) {
     if (item.answered || isStreaming.value) return;
     const q = item.questions[qIdx];
     if (!q) return;
@@ -168,7 +168,7 @@ export function useChatActions(options: UseChatActionsOptions) {
     });
   }
 
-  async function submitAskUser(item: Extract<RenderItem, { kind: "ask_user" }>) {
+  async function submitAskUser(item: Extract<RenderItem, { kind: ChatBlockKind.AskUser }>) {
     if (item.answered || isStreaming.value) return;
     const answers: string[] = [];
     for (const q of item.questions) {
@@ -179,14 +179,14 @@ export function useChatActions(options: UseChatActionsOptions) {
     await answerAskUser(item, answers);
   }
 
-  async function answerAskUser(item: Extract<RenderItem, { kind: "ask_user" }>, answers: string[]) {
+  async function answerAskUser(item: Extract<RenderItem, { kind: ChatBlockKind.AskUser }>, answers: string[]) {
     item.answered = true;
     const payload = item.questions.map((q, i) => ({ header: q.header || q.question, answer: answers[i] }));
     input.value = `[${item.toolUseId}]${JSON.stringify(payload)}`;
     await send();
   }
 
-  function selectStructuredAskOption(item: Extract<RenderItem, { kind: "structured" }>, qIdx: number, answer: string) {
+  function selectStructuredAskOption(item: Extract<RenderItem, { kind: ChatBlockKind.Structured }>, qIdx: number, answer: string) {
     if (item.data._answered || isStreaming.value) return;
     const q = item.data.questions[qIdx];
     if (!q) return;
@@ -203,7 +203,7 @@ export function useChatActions(options: UseChatActionsOptions) {
     q._customAnswer = "";
   }
 
-  function startStructuredAskCustom(item: Extract<RenderItem, { kind: "structured" }>, qIdx: number) {
+  function startStructuredAskCustom(item: Extract<RenderItem, { kind: ChatBlockKind.Structured }>, qIdx: number) {
     if (item.data._answered || isStreaming.value) return;
     const q = item.data.questions[qIdx];
     if (!q) return;
@@ -212,7 +212,7 @@ export function useChatActions(options: UseChatActionsOptions) {
     q._customAnswer = "";
   }
 
-  async function submitStructuredAsk(item: Extract<RenderItem, { kind: "structured" }>) {
+  async function submitStructuredAsk(item: Extract<RenderItem, { kind: ChatBlockKind.Structured }>) {
     if (item.data._answered || isStreaming.value) return;
     const answers: (string | string[])[] = [];
     for (const q of item.data.questions) {
@@ -236,7 +236,7 @@ export function useChatActions(options: UseChatActionsOptions) {
       return;
     }
     const content = buildApplyPrompt({ changeContext: ctxResult.data.context });
-    blocks.value.push({ kind: "user", content });
+    blocks.value.push({ kind: ChatBlockKind.User, content });
     isStreaming.value = true;
     nextTick(() => scrollToLastUserMessage());
     const body: any = { content, apply_change_id: changeId };
