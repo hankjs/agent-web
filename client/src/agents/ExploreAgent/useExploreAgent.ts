@@ -38,6 +38,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     findings: [],
     uncoveredAreas: [],
     turnCount: 0,
+    filesRead: [],
   });
 
   const isFirstTurn = ref(true);
@@ -133,6 +134,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       maxTurns: HARD_MAX_READS,
       findingsCount: state.value.findings.length,
       elapsedSec: Math.round(elapsed() / 1000),
+      filesRead: state.value.filesRead,
     });
     await logEvent("explore:thought", { prompt_preview: prompt.slice(0, 200) }, "internal");
     // Emit a thinking block that will stream planner output
@@ -263,6 +265,17 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       }
       messages.push({ role: "user", content: toolResults });
 
+      // Track read paths for dedup
+      for (const tc of resp.toolCalls) {
+        if (tc.name === "glob" && tc.input.pattern) {
+          state.value.filesRead.push(`glob:${tc.input.pattern}`);
+        } else if (tc.name === "read_file" && tc.input.path) {
+          state.value.filesRead.push(tc.input.path);
+        } else if (tc.name === "search" && tc.input.query) {
+          state.value.filesRead.push(`search:${tc.input.query}`);
+        }
+      }
+
       // If report_findings was called, we can end early
       if (earlyFindings) {
         state.value.phase = "observing";
@@ -283,7 +296,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   async function applyFindings(findings: Finding[], rawText: string) {
     const newText = findings.length > 0
       ? findings.map(f => `[${f.topic}] ${f.content} (${f.source})`).join("\n")
-      : rawText.slice(0, 300);
+      : `[无新发现] 已读路径: ${state.value.filesRead.slice(-5).join(", ") || "无"}`;
 
     if (findings.length > 0) {
       state.value.findings.push(...findings);

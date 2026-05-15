@@ -15,7 +15,11 @@ export function buildExplorePlannerPrompt(values: {
   maxTurns: number;
   findingsCount: number;
   elapsedSec: number;
+  filesRead?: string[];
 }) {
+  const filesReadStr = values.filesRead?.length
+    ? values.filesRead.join(", ")
+    : "（暂无）";
   return fillTemplate(plannerTemplate, {
     summary: values.summary,
     user_input: values.userInput,
@@ -23,6 +27,7 @@ export function buildExplorePlannerPrompt(values: {
     max_turns: String(values.maxTurns),
     findings_count: String(values.findingsCount),
     elapsed_sec: String(values.elapsedSec),
+    files_read: filesReadStr,
   });
 }
 

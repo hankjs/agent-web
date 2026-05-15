@@ -16,8 +16,10 @@
 - 已用轮次: {{turn_count}}/{{max_turns}}
 - 已发现: {{findings_count}} 条
 - 耗时: {{elapsed_sec}}s
+- 已读文件/路径: {{files_read}}
 
 （如果已用轮次接近上限，应优先 finalize 而非继续探索）
+（如果 read_code 的目标与已读文件/路径高度重叠，应选择不同的目标或直接 finalize）
 
 返回 JSON（不要其他内容）：
 {

@@ -13,6 +13,7 @@ export interface ExploreAgentState {
   findings: Finding[];
   uncoveredAreas: string[];
   turnCount: number;
+  filesRead: string[];
 }
 
 export type AskUserOption = string | { label: string; description?: string };
