@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, reactive, watch } from "vue";
 import { useSession } from "../composables/useSession";
-import { useExploreAgent } from "../agents/ExploreAgent";
+import { useExploreAgent, type Block } from "../agents/ExploreAgent";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
 import { useAgentBlocks } from "../composables/useAgentBlocks";
 import AgentLayout from "../components/AgentLayout.vue";
@@ -14,11 +14,12 @@ import AgentBlockThinking from "../components/AgentBlockThinking.vue";
 import AgentBlockTool from "../components/AgentBlockTool.vue";
 import AgentBlockExploreRound from "../components/AgentBlockExploreRound.vue";
 import AgentBlockAskUser from "../components/AgentBlockAskUser.vue";
+import PageLoading from "../components/PageLoading.vue";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 
 const props = defineProps<{ sessionId: string }>();
 
-const { currentSession, sessions, goBack, updateSessionTitle } = useSession();
+const { currentSession, sessions, fetchSessions, setCurrentSession, goBack, updateSessionTitle } = useSession();
 
 const sessionTitle = computed(() => currentSession.value?.title || "");
 const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
@@ -35,16 +36,17 @@ registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
 const blocksComposable = {} as ReturnType<typeof useAgentBlocks>;
 
 const changesPanelRefreshKey = ref(0);
-
-// Explore agent
-const exploreAgent = useExploreAgent({
+const exploreOptions = reactive({
   sessionId: props.sessionId,
   metadata: currentSession.value?.metadata || null,
   workDir: currentSession.value?.work_dir || "",
-  onBlock: (block) => blocksComposable.onBlock(block),
-  onStreaming: (v) => blocksComposable.onStreaming(v),
+  onBlock: (block: Block) => blocksComposable.onBlock(block),
+  onStreaming: (v: boolean) => blocksComposable.onStreaming(v),
   onComplete: () => { changesPanelRefreshKey.value++; },
 });
+
+// Explore agent
+const exploreAgent = useExploreAgent(exploreOptions);
 
 // Initialize blocks composable
 Object.assign(blocksComposable, useAgentBlocks(props.sessionId, exploreAgent));
@@ -53,6 +55,7 @@ const { blocks, isStreaming, messagesEl, selectOption, submitAskUser, loadHistor
 
 const input = ref("");
 const pendingImages = ref<PendingImage[]>([]);
+const isInitializingSession = ref(true);
 
 function handleImagesChange(images: PendingImage[]) {
   pendingImages.value = images;
@@ -64,9 +67,18 @@ const starters = [
   "按快速探索模式推进，只确认能进入 Spec 和 Task 的最小信息。",
 ];
 
-const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
+const isEmpty = computed(() => !isInitializingSession.value && blocks.value.length === 0 && !isStreaming.value);
+const askUserBusy = computed(() => isStreaming.value && exploreAgent.state.value.phase !== "waiting_user");
+
+function syncExploreContext() {
+  exploreOptions.metadata = currentSession.value?.metadata || null;
+  exploreOptions.workDir = currentSession.value?.work_dir || "";
+}
+
+watch(() => currentSession.value, syncExploreContext, { immediate: true });
 
 async function send() {
+  if (isInitializingSession.value) return;
   if (!input.value.trim() && pendingImages.value.length === 0) return;
   if (isStreaming.value) return;
   const content = input.value.trim();
@@ -79,16 +91,27 @@ async function send() {
 }
 
 function stop() {
-  isStreaming.value = false;
+  exploreAgent.cancel();
+}
+
+async function initializeSession() {
+  isInitializingSession.value = true;
+  try {
+    await fetchSessions();
+    const s = sessions.value.find(s => s.id === props.sessionId);
+    if (s) {
+      setCurrentSession(s);
+      syncExploreContext();
+    }
+    await loadHistory();
+  } finally {
+    isInitializingSession.value = false;
+  }
 }
 
 // Load session on mount
 onMounted(async () => {
-  const s = sessions.value.find(s => s.id === props.sessionId);
-  if (s) {
-    (currentSession as any).value = s;
-  }
-  await loadHistory();
+  await initializeSession();
 });
 </script>
 
@@ -112,7 +135,9 @@ onMounted(async () => {
     </template>
 
     <!-- Messages area -->
-    <div v-if="blocks.length > 0 || isStreaming" ref="messagesEl" class="agent-messages">
+    <PageLoading v-if="isInitializingSession" label="加载会话..." />
+
+    <div v-else-if="blocks.length > 0 || isStreaming" ref="messagesEl" class="agent-messages">
       <div class="agent-messages-inner">
         <template v-for="(block, idx) in blocks" :key="idx">
           <AgentBlockUser v-if="block.kind === 'user'" :content="block.content" />
@@ -124,7 +149,7 @@ onMounted(async () => {
           <AgentBlockAskUser
             v-else-if="block.kind === 'ask_user'"
             :block="block"
-            :is-streaming="isStreaming"
+            :is-streaming="askUserBusy"
             @select-option="(qIdx, opt) => selectOption(block, qIdx, opt)"
             @submit="() => submitAskUser(block)"
           />

@@ -5,6 +5,7 @@ import { listSpecs, updateSpec, deleteSpec, type Spec } from "../api/specs";
 import { listChanges, type Change } from "../api/changes";
 import NewChangeDialog from "../components/NewChangeDialog.vue";
 import ActionBtn from "../components/ActionBtn.vue";
+import PageLoading from "../components/PageLoading.vue";
 
 const { navigateTo, sessions, fetchSessions } = useSession();
 const specs = ref<Spec[]>([]);
@@ -14,6 +15,7 @@ const selectedSpec = ref<Spec | null>(null);
 const editing = ref(false);
 const editContent = ref("");
 const creatingChange = ref(false);
+const isLoading = ref(true);
 
 const workDirs = computed(() => {
   const dirs = new Set<string>();
@@ -29,12 +31,17 @@ const workDirChanges = computed(() => {
 });
 
 async function fetchAll() {
-  await fetchSessions();
-  const [specRes, changeRes] = await Promise.all([listSpecs(), listChanges()]);
-  if (specRes.ok && specRes.data) specs.value = specRes.data;
-  if (changeRes.ok && changeRes.data) changes.value = changeRes.data;
-  if (!selectedWorkDir.value && workDirs.value.length > 0) {
-    selectedWorkDir.value = workDirs.value[0];
+  isLoading.value = true;
+  try {
+    await fetchSessions();
+    const [specRes, changeRes] = await Promise.all([listSpecs(), listChanges()]);
+    if (specRes.ok && specRes.data) specs.value = specRes.data;
+    if (changeRes.ok && changeRes.data) changes.value = changeRes.data;
+    if (!selectedWorkDir.value && workDirs.value.length > 0) {
+      selectedWorkDir.value = workDirs.value[0];
+    }
+  } finally {
+    isLoading.value = false;
   }
 }
 
@@ -102,6 +109,8 @@ onMounted(fetchAll);
     </header>
 
     <div class="specs-body">
+      <PageLoading v-if="isLoading" />
+      <template v-else>
       <!-- Project sidebar -->
       <div class="project-list">
         <div
@@ -173,6 +182,7 @@ onMounted(fetchAll);
         </section>
       </div>
       <div v-else class="detail-area empty-inline">选择项目查看</div>
+      </template>
     </div>
 
     <NewChangeDialog v-if="creatingChange" @close="creatingChange = false" />

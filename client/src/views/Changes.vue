@@ -4,11 +4,13 @@ import { useSession } from "../composables/useSession";
 import { listChanges, type Change } from "../api/changes";
 import NewChangeDialog from "../components/NewChangeDialog.vue";
 import ActionBtn from "../components/ActionBtn.vue";
+import PageLoading from "../components/PageLoading.vue";
 
 const { navigateTo } = useSession();
 const changes = ref<Change[]>([]);
 const statusFilter = ref("all");
 const showCreate = ref(false);
+const isLoading = ref(true);
 
 const filteredChanges = computed(() => {
   if (statusFilter.value === "all") return changes.value;
@@ -16,8 +18,13 @@ const filteredChanges = computed(() => {
 });
 
 async function fetchChanges() {
-  const res = await listChanges();
-  if (res.ok && res.data) changes.value = res.data;
+  isLoading.value = true;
+  try {
+    const res = await listChanges();
+    if (res.ok && res.data) changes.value = res.data;
+  } finally {
+    isLoading.value = false;
+  }
 }
 
 function openDetail(id: string) {
@@ -64,7 +71,8 @@ onMounted(fetchChanges);
     </header>
 
     <div class="view-body">
-      <table v-if="filteredChanges.length" class="changes-table">
+      <PageLoading v-if="isLoading" />
+      <table v-else-if="filteredChanges.length" class="changes-table">
         <thead>
           <tr>
             <th class="col-name">名称</th>
@@ -87,7 +95,7 @@ onMounted(fetchChanges);
         </tbody>
       </table>
 
-      <p v-else class="empty">暂无需求</p>
+      <p v-else-if="!isLoading" class="empty">暂无需求</p>
     </div>
 
     <NewChangeDialog v-if="showCreate" @close="showCreate = false; fetchChanges()" />

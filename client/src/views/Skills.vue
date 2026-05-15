@@ -3,10 +3,12 @@ import { ref, computed, onMounted } from "vue";
 import { useSession } from "../composables/useSession";
 import { listSkills, installSkill, uninstallSkill, type SkillInfo } from "../api/skills";
 import ActionBtn from "../components/ActionBtn.vue";
+import PageLoading from "../components/PageLoading.vue";
 
 const { sessions, fetchSessions } = useSession();
 const skills = ref<SkillInfo[]>([]);
 const loading = ref(false);
+const initialLoading = ref(true);
 const showInstall = ref(false);
 const showScopePicker = ref(false);
 const installSource = ref("");
@@ -98,7 +100,8 @@ onMounted(async () => {
   } catch {
     homeDir.value = "/Users/" + (localStorage.getItem("hank_username") || "admin");
   }
-  fetchSkills();
+  await fetchSkills();
+  initialLoading.value = false;
 });
 </script>
 
@@ -113,6 +116,8 @@ onMounted(async () => {
     </header>
 
     <div class="view-body">
+      <PageLoading v-if="initialLoading" />
+      <template v-else>
       <!-- Install form (inline, not modal) -->
       <div v-if="showInstall" class="install-form">
         <input v-model="installSource" placeholder="GitHub source (owner/repo)" class="form-input" />
@@ -169,6 +174,7 @@ onMounted(async () => {
         </tbody>
       </table>
       <p v-else-if="!loading" class="empty">暂无已安装的 Skills</p>
+      </template>
     </div>
   </div>
 </template>

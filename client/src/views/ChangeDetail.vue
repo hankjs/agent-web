@@ -7,6 +7,7 @@ import {
   getChange, listArtifacts, listTasks, updateTask, archiveChange, startExplore,
   type ChangeDetail as ChangeDetailType, type ChangeArtifact, type TaskGroup,
 } from "../api/changes";
+import PageLoading from "../components/PageLoading.vue";
 
 const route = useRoute();
 const changeId = route.params.changeId as string;
@@ -15,16 +16,22 @@ const change = ref<ChangeDetailType | null>(null);
 const artifacts = ref<ChangeArtifact[]>([]);
 const taskGroups = ref<TaskGroup[]>([]);
 const activeTab = ref<"explore" | "spec" | "task">("explore");
+const isLoading = ref(true);
 
 async function fetchData() {
-  const [changeRes, artifactsRes, tasksRes] = await Promise.all([
-    getChange(changeId),
-    listArtifacts(changeId),
-    listTasks(changeId),
-  ]);
-  if (changeRes.ok && changeRes.data) change.value = changeRes.data;
-  if (artifactsRes.ok && artifactsRes.data) artifacts.value = artifactsRes.data;
-  if (tasksRes.ok && tasksRes.data) taskGroups.value = tasksRes.data;
+  isLoading.value = true;
+  try {
+    const [changeRes, artifactsRes, tasksRes] = await Promise.all([
+      getChange(changeId),
+      listArtifacts(changeId),
+      listTasks(changeId),
+    ]);
+    if (changeRes.ok && changeRes.data) change.value = changeRes.data;
+    if (artifactsRes.ok && artifactsRes.data) artifacts.value = artifactsRes.data;
+    if (tasksRes.ok && tasksRes.data) taskGroups.value = tasksRes.data;
+  } finally {
+    isLoading.value = false;
+  }
 }
 
 function getArtifact(type: string) {
@@ -73,6 +80,8 @@ onMounted(fetchData);
 
 <template>
   <div class="detail-page">
+    <PageLoading v-if="isLoading" />
+    <template v-else>
     <div class="detail-header">
       <button @click="navigateTo('changes')">Back</button>
       <h2>{{ change?.name || "Loading..." }}</h2>
@@ -130,6 +139,7 @@ onMounted(fetchData);
         <div v-if="taskGroups.length === 0 && !getArtifact('tasks')" class="empty">No tasks</div>
       </template>
     </div>
+    </template>
   </div>
 </template>
 
