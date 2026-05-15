@@ -1,18 +1,24 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from "vue";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
-import { useSession, authFetch } from "../composables/useSession";
-import { useExploreAgent, type ExplorePhase } from "../agents/ExploreAgent";
+import { ref, computed, onMounted } from "vue";
+import { useSession } from "../composables/useSession";
+import { useExploreAgent } from "../agents/ExploreAgent";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
+import { useAgentBlocks } from "../composables/useAgentBlocks";
 import AgentLayout from "../components/AgentLayout.vue";
 import AgentHeader from "../components/AgentHeader.vue";
 import AgentInput, { type PendingImage } from "../components/AgentInput.vue";
+import AgentBlockUser from "../components/AgentBlockUser.vue";
+import AgentBlockText from "../components/AgentBlockText.vue";
+import AgentBlockError from "../components/AgentBlockError.vue";
+import AgentBlockThinking from "../components/AgentBlockThinking.vue";
+import AgentBlockTool from "../components/AgentBlockTool.vue";
+import AgentBlockExploreRound from "../components/AgentBlockExploreRound.vue";
+import AgentBlockAskUser from "../components/AgentBlockAskUser.vue";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 
 const props = defineProps<{ sessionId: string }>();
 
-const { currentSession, sessions, goBack, updateSessionTitle, updateSessionWorkDir } = useSession();
+const { currentSession, sessions, goBack, updateSessionTitle } = useSession();
 
 const sessionTitle = computed(() => currentSession.value?.title || "");
 const sessionWorkDir = computed(() => currentSession.value?.work_dir || "");
@@ -22,83 +28,35 @@ async function handleUpdateTitle(newTitle: string) {
 }
 
 // Sidebar
-const { activePanelId, registerPanel, reset: resetPanels } = useSidebarPanels();
+const { activePanelId, registerPanel } = useSidebarPanels();
 registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
 
-// Block types
-type AskUserQuestion = { header: string; question: string; options: string[]; selected?: string; customMode?: boolean; customAnswer?: string };
-type ToolItem = { id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean };
-type Block =
-  | { kind: "user"; content: string }
-  | { kind: "text"; content: string }
-  | { kind: "thinking"; content: string }
-  | { kind: "error"; content: string }
-  | { kind: "tool"; tool: ToolItem }
-  | { kind: "explore_round"; objective: string; reasoning?: string; tools: ToolItem[]; expanded: boolean; isRunning: boolean }
-  | { kind: "ask_user"; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
+// Agent blocks composable (forward-declared, wired after exploreAgent init)
+const blocksComposable = {} as ReturnType<typeof useAgentBlocks>;
 
-const blocks = ref<Block[]>([]);
-const input = ref("");
-const isStreaming = ref(false);
-const messagesEl = ref<HTMLElement | null>(null);
 const changesPanelRefreshKey = ref(0);
-const pendingImages = ref<PendingImage[]>([]);
-
-function handleImagesChange(images: PendingImage[]) {
-  pendingImages.value = images;
-}
 
 // Explore agent
 const exploreAgent = useExploreAgent({
   sessionId: props.sessionId,
   metadata: currentSession.value?.metadata || null,
   workDir: currentSession.value?.work_dir || "",
-  onBlock: (block: Block) => {
-    if (block.kind === "thinking") {
-      // Update existing thinking block in-place
-      const existing = blocks.value.find(b => b.kind === "thinking") as Extract<Block, { kind: "thinking" }> | undefined;
-      if (existing) {
-        existing.content = block.content;
-        return;
-      }
-    }
-    if (block.kind === "tool") {
-      // Try to append to current explore_round
-      const lastBlock = blocks.value[blocks.value.length - 1];
-      if (lastBlock && lastBlock.kind === "explore_round") {
-        const existing = lastBlock.tools.find(t => t.id === block.tool.id);
-        if (existing) {
-          Object.assign(existing, block.tool);
-          if (lastBlock.tools.every(t => !t.isRunning)) {
-            lastBlock.isRunning = false;
-          }
-        } else {
-          lastBlock.tools.push(block.tool);
-        }
-        return;
-      }
-      // Fallback: update existing standalone tool block
-      const existingStandalone = blocks.value.find(
-        (b) => b.kind === "tool" && b.tool.id === block.tool.id
-      ) as Extract<Block, { kind: "tool" }> | undefined;
-      if (existingStandalone) {
-        Object.assign(existingStandalone.tool, block.tool);
-        return;
-      }
-    }
-    // Remove thinking block when transitioning to a new phase
-    if (block.kind === "explore_round" || block.kind === "ask_user" || (block.kind === "text" && block.content.startsWith("探索完成"))) {
-      const thinkingIdx = blocks.value.findIndex(b => b.kind === "thinking");
-      if (thinkingIdx >= 0) {
-        blocks.value.splice(thinkingIdx, 1);
-      }
-    }
-    blocks.value.push(block);
-    nextTick(scrollToBottom);
-  },
-  onStreaming: (v: boolean) => { isStreaming.value = v; },
+  onBlock: (block) => blocksComposable.onBlock(block),
+  onStreaming: (v) => blocksComposable.onStreaming(v),
   onComplete: () => { changesPanelRefreshKey.value++; },
 });
+
+// Initialize blocks composable
+Object.assign(blocksComposable, useAgentBlocks(props.sessionId, exploreAgent));
+
+const { blocks, isStreaming, messagesEl, selectOption, submitAskUser, loadHistory } = blocksComposable;
+
+const input = ref("");
+const pendingImages = ref<PendingImage[]>([]);
+
+function handleImagesChange(images: PendingImage[]) {
+  pendingImages.value = images;
+}
 
 const starters = [
   "从代码库现状开始，帮我找出这个需求还缺哪些关键信息。",
@@ -107,17 +65,6 @@ const starters = [
 ];
 
 const isEmpty = computed(() => blocks.value.length === 0 && !isStreaming.value);
-
-function renderMarkdown(text: string): string {
-  const raw = marked.parse(text, { async: false }) as string;
-  return DOMPurify.sanitize(raw);
-}
-
-function scrollToBottom() {
-  if (messagesEl.value) {
-    messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
-  }
-}
 
 async function send() {
   if (!input.value.trim() && pendingImages.value.length === 0) return;
@@ -132,120 +79,7 @@ async function send() {
 }
 
 function stop() {
-  // Explore agent doesn't have a cancel mechanism yet — just mark not streaming
   isStreaming.value = false;
-}
-
-function selectOption(block: Extract<Block, { kind: "ask_user" }>, qIdx: number, opt: string) {
-  if (block.answered || isStreaming.value) return;
-  const q = block.questions[qIdx];
-  q.selected = opt;
-  q.customMode = false;
-}
-
-async function submitAskUser(block: Extract<Block, { kind: "ask_user" }>) {
-  if (block.answered) return;
-  block.answered = true;
-  const answers = block.questions.map(q => q.customMode ? (q.customAnswer || "") : (q.selected || "")).join("; ");
-  exploreAgent.resume();
-  await exploreAgent.handleUserInput(answers);
-}
-
-// Restore history from persisted events
-async function loadHistory() {
-  try {
-    const res = await authFetch(`/api/sessions/${props.sessionId}/events`);
-    if (!res.ok) return;
-    const json = await res.json();
-    const events: Array<{ event_type: string; payload: any; source: string }> = json.data || json;
-    // Count questions and answers to determine which questions are unanswered
-    const userEvents = events.filter((ev: any) => ev.source !== "remote");
-    const questionIndices: number[] = [];
-    const answerIndices: number[] = [];
-    userEvents.forEach((ev: any, idx: number) => {
-      if (ev.event_type === "explore:question") questionIndices.push(idx);
-      if (ev.event_type === "explore:answer") answerIndices.push(idx);
-    });
-    // First answer is the initial user input (before any question), so questions map to answers after the first
-    // More robust: a question at index Q is answered if there's an answer event after Q
-    const restored: Block[] = [];
-    let currentRound: Extract<Block, { kind: "explore_round" }> | null = null;
-
-    for (const ev of userEvents) {
-      const p = typeof ev.payload === "string" ? JSON.parse(ev.payload) : ev.payload;
-      switch (ev.event_type) {
-        case "explore:answer":
-          currentRound = null;
-          if (p.content) restored.push({ kind: "user", content: p.content });
-          break;
-        case "explore:action":
-          // Start a new explore_round block for read_code actions
-          if (p.action === "read_code" && p.params?.objective) {
-            currentRound = { kind: "explore_round", objective: p.params.objective, reasoning: p.reasoning, tools: [], expanded: false, isRunning: false };
-            restored.push(currentRound);
-          } else {
-            currentRound = null;
-          }
-          break;
-        case "explore:tool_call":
-          if (currentRound && p.tool_name) {
-            currentRound.tools.push({ id: p.tool_name + "_" + (currentRound.tools.length), name: p.tool_name, input: p.input ? JSON.stringify(p.input) : undefined, isRunning: false, expanded: false });
-          }
-          break;
-        case "explore:tool_result":
-          if (currentRound && currentRound.tools.length > 0) {
-            const lastTool = currentRound.tools[currentRound.tools.length - 1];
-            lastTool.result = p.output_preview || "";
-            lastTool.isError = p.is_error || false;
-          }
-          break;
-        case "explore:status":
-          // Skip "正在阅读代码" status if we have an explore_round for it
-          if (p.message && !p.message.startsWith("正在阅读代码:")) {
-            currentRound = null;
-            restored.push({ kind: "text", content: p.message });
-          }
-          break;
-        case "explore:error":
-          currentRound = null;
-          restored.push({ kind: "error", content: p.error || "未知错误" });
-          break;
-        case "explore:question":
-          currentRound = null;
-          if (p.questions) {
-            const questions = p.questions.map((q: any) => ({
-              header: q.header || "",
-              question: q.question || "",
-              options: (q.options || []).map((o: any) => typeof o === "string" ? o : o.label),
-            }));
-            const qPos = userEvents.indexOf(ev);
-            const hasAnswerAfter = answerIndices.some(aIdx => aIdx > qPos);
-            restored.push({ kind: "ask_user", toolUseId: `hist_${Date.now()}_${Math.random()}`, questions, answered: hasAnswerAfter, activeTab: 0 });
-          }
-          break;
-        case "explore:complete":
-          currentRound = null;
-          if (p.title) restored.push({ kind: "text", content: `探索完成: ${p.title}` });
-          break;
-      }
-    }
-    if (restored.length > 0) {
-      blocks.value = restored;
-      // If explore already completed, mark agent as done
-      const hasComplete = events.some((ev: any) => ev.event_type === "explore:complete");
-      if (hasComplete) {
-        exploreAgent.markDone();
-      }
-      // If last event was a question (waiting_user), mark agent phase
-      const lastQuestion = events.filter((ev: any) => ev.event_type === "explore:question").length;
-      const lastAnswer = events.filter((ev: any) => ev.event_type === "explore:answer").length;
-      if (lastQuestion > lastAnswer) {
-        // There's an unanswered question — but since we can't resume mid-loop,
-        // just show history as-is; user can start fresh input
-      }
-      nextTick(scrollToBottom);
-    }
-  } catch { /* best effort */ }
 }
 
 // Load session on mount
@@ -281,90 +115,19 @@ onMounted(async () => {
     <div v-if="blocks.length > 0 || isStreaming" ref="messagesEl" class="agent-messages">
       <div class="agent-messages-inner">
         <template v-for="(block, idx) in blocks" :key="idx">
-          <div v-if="block.kind === 'user'" class="user-block">
-            <pre class="whitespace-pre-wrap text-[13px] leading-relaxed font-medium" style="color: var(--color-text-primary)">{{ block.content }}</pre>
-          </div>
-          <div v-else-if="block.kind === 'text'" class="agent-block">
-            <div class="markdown-body" v-html="renderMarkdown(block.content)"></div>
-          </div>
-          <div v-else-if="block.kind === 'error'" class="error-block">{{ block.content }}</div>
-          <div v-else-if="block.kind === 'thinking'" class="thinking-block">
-            <span class="thinking-indicator"></span>
-            <pre class="thinking-text">{{ block.content || '思考中...' }}</pre>
-          </div>
-          <div v-else-if="block.kind === 'tool'" class="tool-block" @click="block.tool.expanded = !block.tool.expanded">
-            <div class="tool-header">
-              <span class="tool-indicator" :class="{ running: block.tool.isRunning, error: block.tool.isError }"></span>
-              <span class="tool-name">{{ block.tool.name }}</span>
-              <span v-if="block.tool.isRunning" class="tool-running">运行中...</span>
-            </div>
-            <div v-if="block.tool.expanded" class="tool-detail">
-              <pre v-if="block.tool.input" class="tool-input">{{ block.tool.input }}</pre>
-              <pre v-if="block.tool.result" class="tool-result" :class="{ 'tool-error': block.tool.isError }">{{ block.tool.result?.slice(0, 500) }}</pre>
-            </div>
-          </div>
-          <div v-else-if="block.kind === 'explore_round'" class="explore-round" :class="{ running: block.isRunning }">
-            <div class="explore-round-header" @click="block.expanded = !block.expanded">
-              <span class="explore-round-indicator" :class="{ running: block.isRunning }"></span>
-              <span class="explore-round-objective">{{ block.objective }}</span>
-              <span v-if="block.isRunning" class="explore-round-status">探索中...</span>
-              <span v-else class="explore-round-status done">{{ block.tools.length }} 次调用</span>
-              <span class="explore-round-toggle">{{ block.expanded ? '▾' : '▸' }}</span>
-            </div>
-            <div v-if="block.expanded" class="explore-round-body">
-              <div v-if="block.reasoning" class="explore-round-reasoning">{{ block.reasoning }}</div>
-              <div v-for="tool in block.tools" :key="tool.id" class="explore-round-tool" @click.stop="tool.expanded = !tool.expanded">
-                <div class="tool-header">
-                  <span class="tool-indicator" :class="{ running: tool.isRunning, error: tool.isError }"></span>
-                  <span class="tool-name">{{ tool.name }}</span>
-                  <span v-if="tool.isRunning" class="tool-running">运行中...</span>
-                  <span v-else-if="tool.result" class="tool-done">✓</span>
-                </div>
-                <div v-if="tool.expanded" class="tool-detail">
-                  <pre v-if="tool.input" class="tool-input">{{ tool.input }}</pre>
-                  <pre v-if="tool.result" class="tool-result" :class="{ 'tool-error': tool.isError }">{{ tool.result?.slice(0, 500) }}</pre>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div v-else-if="block.kind === 'ask_user'" class="ask-card">
-            <div v-for="(q, qIdx) in block.questions" :key="qIdx" class="ask-question">
-              <div class="ask-header">{{ q.header }}</div>
-              <div class="ask-body">{{ q.question }}</div>
-              <div class="ask-options">
-                <button
-                  v-for="opt in q.options"
-                  :key="opt"
-                  class="ask-option"
-                  :class="{ selected: q.selected === opt }"
-                  :disabled="block.answered"
-                  @click="selectOption(block, qIdx, opt)"
-                >{{ opt }}</button>
-                <button
-                  class="ask-option ask-option-custom"
-                  :class="{ selected: q.customMode }"
-                  :disabled="block.answered"
-                  @click="q.customMode = !q.customMode; if (q.customMode) q.selected = undefined"
-                >自定义</button>
-              </div>
-              <textarea
-                v-if="q.customMode && !block.answered"
-                v-model="q.customAnswer"
-                class="ask-custom-input"
-                rows="2"
-                placeholder="输入自定义回答..."
-              ></textarea>
-            </div>
-            <div class="ask-footer">
-              <div v-if="block.answered" class="ask-answered">已提交</div>
-              <button
-                v-else
-                class="ask-submit"
-                :disabled="isStreaming || !block.questions.every(q => q.customMode ? q.customAnswer?.trim() : q.selected)"
-                @click="submitAskUser(block)"
-              >提交</button>
-            </div>
-          </div>
+          <AgentBlockUser v-if="block.kind === 'user'" :content="block.content" />
+          <AgentBlockText v-else-if="block.kind === 'text'" :content="block.content" />
+          <AgentBlockError v-else-if="block.kind === 'error'" :content="block.content" />
+          <AgentBlockThinking v-else-if="block.kind === 'thinking'" :content="block.content" />
+          <AgentBlockTool v-else-if="block.kind === 'tool'" :tool="block.tool" />
+          <AgentBlockExploreRound v-else-if="block.kind === 'explore_round'" :block="block" />
+          <AgentBlockAskUser
+            v-else-if="block.kind === 'ask_user'"
+            :block="block"
+            :is-streaming="isStreaming"
+            @select-option="(qIdx, opt) => selectOption(block, qIdx, opt)"
+            @submit="() => submitAskUser(block)"
+          />
         </template>
         <div v-if="isStreaming && blocks.length === 0" class="streaming-dot"></div>
         <div class="scroll-spacer"></div>
@@ -409,55 +172,8 @@ onMounted(async () => {
 .agent-messages { flex: 1; overflow-y: auto; }
 .agent-messages-inner { max-width: 720px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
 
-.user-block { padding: 12px 16px; border-radius: 8px; background: var(--color-surface-1); }
-.agent-block { padding: 4px 0; }
-.error-block { padding: 8px 12px; border-radius: 6px; background: var(--color-error-surface); color: var(--color-error); font-size: 13px; }
-
-.tool-block { padding: 6px 10px; border-radius: 6px; background: var(--color-surface-1); cursor: pointer; font-size: 12px; }
-.tool-header { display: flex; align-items: center; gap: 8px; }
-.tool-indicator { width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-muted); }
-.tool-indicator.running { background: var(--color-success); animation: pulse 1s infinite; }
-.tool-indicator.error { background: var(--color-error); }
-.tool-name { font-weight: 500; color: var(--color-text-secondary); }
-.tool-running { color: var(--color-text-muted); font-size: 11px; }
-.tool-detail { margin-top: 8px; }
-.tool-input, .tool-result { font-size: 11px; padding: 6px 8px; border-radius: 4px; background: var(--color-surface-2); overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
-.tool-result { margin-top: 4px; }
-.tool-error { color: var(--color-error); }
-
-.explore-round { border-radius: 8px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); overflow: hidden; }
-.explore-round.running { border-color: color-mix(in srgb, var(--color-accent) 40%, transparent); }
-.explore-round-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; }
-.explore-round-indicator { width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); flex-shrink: 0; }
-.explore-round-indicator.running { background: var(--color-success); animation: pulse 1s infinite; }
-.explore-round-objective { flex: 1; font-size: 13px; font-weight: 500; color: var(--color-text-primary); line-height: 1.4; }
-.explore-round-status { font-size: 11px; color: var(--color-text-muted); flex-shrink: 0; }
-.explore-round-status.done { color: var(--color-text-muted); }
-.explore-round-toggle { font-size: 11px; color: var(--color-text-muted); }
-.explore-round-body { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 6px; }
-.explore-round-reasoning { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; padding: 6px 8px; border-radius: 4px; background: var(--color-surface-2); margin-bottom: 4px; }
-.explore-round-tool { padding: 4px 8px; border-radius: 4px; background: var(--color-surface-2); cursor: pointer; font-size: 12px; }
-.explore-round-tool .tool-header { display: flex; align-items: center; gap: 6px; }
-.explore-round-tool .tool-done { font-size: 10px; color: var(--color-success); }
-
-.thinking-block { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; border-radius: 6px; background: var(--color-surface-1); border-left: 2px solid var(--color-accent); }
-.thinking-indicator { width: 6px; height: 6px; border-radius: 50%; background: var(--color-accent); animation: pulse 1s infinite; flex-shrink: 0; margin-top: 5px; }
-.thinking-text { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; margin: 0; font-family: inherit; }
-
-.ask-card { padding: 16px; border-radius: 8px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); }
-.ask-question { margin-bottom: 12px; }
-.ask-header { font-size: 11px; font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; margin-bottom: 4px; }
-.ask-body { font-size: 14px; color: var(--color-text-primary); margin-bottom: 8px; }
-.ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
-.ask-option { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-2); color: var(--color-text-secondary); font-size: 13px; cursor: pointer; transition: all 0.15s; }
-.ask-option:hover:not(:disabled) { border-color: var(--color-accent); color: var(--color-text-primary); }
-.ask-option.selected { border-color: var(--color-accent); background: var(--color-accent-surface); color: var(--color-text-primary); }
-.ask-option:disabled { opacity: 0.5; cursor: default; }
-.ask-custom-input { width: 100%; margin-top: 8px; padding: 8px; border-radius: 6px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-2); color: var(--color-text-primary); font-size: 13px; resize: vertical; }
-.ask-footer { margin-top: 12px; display: flex; justify-content: flex-end; }
-.ask-submit { padding: 6px 16px; border-radius: 6px; border: none; background: var(--color-accent); color: var(--color-surface-0); font-size: 13px; font-weight: 500; cursor: pointer; }
-.ask-submit:disabled { opacity: 0.4; cursor: default; }
-.ask-answered { font-size: 12px; color: var(--color-text-muted); }
+.streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1s infinite; }
+.scroll-spacer { height: 40px; }
 
 .agent-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 32px 24px; }
 .agent-empty-panel { width: min(720px, 100%); }
@@ -467,14 +183,6 @@ onMounted(async () => {
 .agent-starter { min-height: 76px; padding: 11px 12px; border-radius: 7px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-1); color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; text-align: left; cursor: pointer; transition: background 0.15s, border-color 0.15s, color 0.15s; }
 .agent-starter:hover { background: var(--color-surface-2); border-color: var(--color-accent); color: var(--color-text-primary); }
 
-.streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1s infinite; }
-.scroll-spacer { height: 40px; }
-
-.markdown-body { font-size: 14px; line-height: 1.6; color: var(--color-text-primary); }
-.markdown-body :deep(p) { margin: 0.5em 0; }
-.markdown-body :deep(code) { padding: 2px 5px; border-radius: 3px; background: var(--color-surface-2); font-size: 0.9em; }
-.markdown-body :deep(pre) { padding: 12px; border-radius: 6px; background: var(--color-surface-2); overflow-x: auto; }
-
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 @media (max-width: 760px) { .agent-starters { grid-template-columns: 1fr; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 </style>
