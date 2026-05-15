@@ -1,9 +1,21 @@
 <script setup lang="ts">
 import type { AskUserQuestion } from "../../types/chat";
 
+export type AskOption = string | { label: string; description?: string };
+
+export type AskQuestion = {
+  header?: string;
+  question: string;
+  options: AskOption[];
+  multiSelect?: boolean;
+  selected?: string | string[];
+  customMode?: boolean;
+  customAnswer?: string;
+};
+
 const props = defineProps<{
-  toolUseId: string;
-  questions: AskUserQuestion[];
+  toolUseId?: string;
+  questions: AskQuestion[];
   answered: boolean;
   activeTab: number;
   isStreaming: boolean;
@@ -15,6 +27,36 @@ const emit = defineEmits<{
   submit: [];
   "update:activeTab": [tab: number];
 }>();
+
+function getOptionLabel(opt: AskOption): string {
+  return typeof opt === "string" ? opt : opt.label;
+}
+
+function getOptionDescription(opt: AskOption): string | undefined {
+  return typeof opt === "string" ? undefined : opt.description;
+}
+
+function isSelected(q: AskQuestion, opt: AskOption): boolean {
+  const label = getOptionLabel(opt);
+  if (q.multiSelect) {
+    return Array.isArray(q.selected) && q.selected.includes(label);
+  }
+  return q.selected === label;
+}
+
+function isAnswered(q: AskQuestion): boolean {
+  if (q.multiSelect) {
+    return Array.isArray(q.selected) && q.selected.length > 0;
+  }
+  return !!(q.selected || (q.customMode && q.customAnswer?.trim()));
+}
+function canSubmit(): boolean {
+  return props.questions.every(q => {
+    if (q.customMode) return !!q.customAnswer?.trim();
+    if (q.multiSelect) return Array.isArray(q.selected) && q.selected.length > 0;
+    return !!q.selected;
+  });
+}
 </script>
 
 <template>
@@ -24,7 +66,7 @@ const emit = defineEmits<{
         v-for="(q, qi) in questions" :key="qi"
         class="ask-card-tab" :class="{ active: activeTab === qi }"
         type="button" @click="emit('update:activeTab', qi)"
-      ><span class="ask-card-tab-dot" :class="{ answered: q.selected || (q.customMode && q.customAnswer?.trim()) }"></span>{{ q.header || `问题 ${qi + 1}` }}</button>
+      ><span class="ask-card-tab-dot" :class="{ answered: isAnswered(q) }"></span>{{ q.header || `问题 ${qi + 1}` }}</button>
     </div>
     <div class="ask-card-body">
       <div class="ask-card-question">{{ questions[activeTab].question }}</div>
@@ -32,10 +74,10 @@ const emit = defineEmits<{
         <button
           v-for="(opt, oi) in questions[activeTab].options" :key="oi"
           type="button" class="ask-card-option"
-          :class="{ selected: questions[activeTab].selected === opt }"
+          :class="{ selected: isSelected(questions[activeTab], opt) }"
           :disabled="answered || isStreaming"
-          @click="emit('selectOption', activeTab, opt)"
-        >{{ opt }}</button>
+          @click="emit('selectOption', activeTab, getOptionLabel(opt))"
+        >{{ getOptionLabel(opt) }}<span v-if="getOptionDescription(opt)" class="ask-card-option-desc"> - {{ getOptionDescription(opt) }}</span></button>
         <div v-if="!answered" class="ask-card-custom">
           <input
             v-if="questions[activeTab].customMode"
@@ -50,10 +92,10 @@ const emit = defineEmits<{
             :class="{ selected: questions[activeTab].customMode }"
             :disabled="isStreaming"
             @click="emit('startCustom', activeTab)"
-          >自定义答案</button>
+          >自定义答案...</button>
         </div>
         <button
-          v-if="answered && questions[activeTab].selected && !questions[activeTab].options.includes(questions[activeTab].selected || '')"
+          v-if="answered && questions[activeTab].selected && !questions[activeTab].options.some(o => getOptionLabel(o) === (Array.isArray(questions[activeTab].selected) ? '' : questions[activeTab].selected))"
           type="button" class="ask-card-option selected" disabled
         >{{ questions[activeTab].selected }}</button>
       </div>
@@ -63,7 +105,7 @@ const emit = defineEmits<{
       <div v-else class="ask-card-spacer"></div>
       <button
         v-if="!answered" type="button" class="ask-card-submit"
-        :disabled="isStreaming || !questions.every(q => q.customMode ? q.customAnswer?.trim() : q.selected)"
+        :disabled="isStreaming || !canSubmit()"
         @click="emit('submit')"
       >提交</button>
     </div>
@@ -84,6 +126,7 @@ const emit = defineEmits<{
 .ask-card-option:hover:not(:disabled) { color: var(--color-text-primary); border-color: var(--color-accent); background: var(--color-surface-2); }
 .ask-card-option.selected { color: var(--color-text-primary); border-color: var(--color-accent); background: color-mix(in oklch, var(--color-accent) 16%, var(--color-surface-1)); }
 .ask-card-option:disabled { cursor: default; opacity: 0.65; }
+.ask-card-option-desc { font-size: 12px; color: var(--color-text-tertiary); font-weight: 400; }
 .ask-card-custom { min-height: 38px; }
 .ask-card-custom-input { width: 100%; min-height: 38px; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--color-accent); background: var(--color-surface-0); color: var(--color-text-primary); font-size: 13px; outline: none; }
 .ask-card-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--color-border-subtle); background: color-mix(in oklch, var(--color-surface-0) 75%, transparent); }

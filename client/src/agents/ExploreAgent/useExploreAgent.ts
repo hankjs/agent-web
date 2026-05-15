@@ -240,7 +240,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           const questions = (tc.input.questions || []).map((q: any) => ({
             header: q.header,
             question: q.question,
-            options: (q.options || []).map((o: any) => typeof o === "string" ? o : o.label),
+            options: (q.options || []).map((o: any) => typeof o === "string" ? o : { label: o.label, description: o.description }),
           }));
           options.onBlock({ kind: "ask_user", toolUseId: tc.id, questions, answered: false, activeTab: 0 });
           options.onBlock({ kind: "tool", tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: false, expanded: false } });
@@ -330,7 +330,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     const questionsForUI = params.questions.map(q => ({
       header: q.header,
       question: q.question,
-      options: q.options.map(o => typeof o === "string" ? o : o.label),
+      options: q.options.map(o => typeof o === "string" ? o : { label: o.label, description: o.description }),
     }));
     options.onBlock({ kind: "ask_user", toolUseId: `explore_ask_${Date.now()}`, questions: questionsForUI, answered: false, activeTab: 0 });
     logEvent("explore:question", { questions: params.questions }, "user");

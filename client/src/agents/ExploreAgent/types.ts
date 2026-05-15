@@ -15,10 +15,12 @@ export interface ExploreAgentState {
   turnCount: number;
 }
 
+export type AskUserOption = string | { label: string; description?: string };
+
 export type AskUserQuestion = {
   header: string;
   question: string;
-  options: string[];
+  options: AskUserOption[];
   selected?: string;
   customMode?: boolean;
   customAnswer?: string;

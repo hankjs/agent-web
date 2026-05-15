@@ -95,36 +95,16 @@ defineExpose({ messagesEl, scrollToBottom, scrollToMessageId, scrollToLastUserMe
         />
         <TextBlock v-else-if="item.kind === 'text'" :content="item.content" />
         <StructuredResultCard v-else-if="item.kind === 'structured' && item.cardType === 'result'" :data="item.data" />
-        <div v-else-if="item.kind === 'structured' && item.cardType === 'ask'" class="ask-card">
-          <div class="ask-card-tabs" v-if="item.data.questions && item.data.questions.length > 1">
-            <button v-for="(q, qi) in item.data.questions" :key="qi" class="ask-card-tab" :class="{ active: (item.data._activeTab || 0) === qi }" type="button" @click="item.data._activeTab = qi">
-              <span class="ask-card-tab-dot" :class="{ answered: q.multiSelect ? (q._selected || []).length > 0 : (q._selected || (q._customMode && q._customAnswer?.trim())) }"></span>{{ q.header || `问题 ${qi + 1}` }}
-            </button>
-          </div>
-          <div class="ask-card-body">
-            <div class="ask-card-question">{{ item.data.questions[item.data._activeTab || 0].question }}</div>
-            <div class="ask-card-options">
-              <button v-for="(opt, oi) in item.data.questions[item.data._activeTab || 0].options" :key="oi" type="button" class="ask-card-option"
-                :class="{ selected: item.data.questions[item.data._activeTab || 0].multiSelect ? (item.data.questions[item.data._activeTab || 0]._selected || []).includes(opt.label || opt) : item.data.questions[item.data._activeTab || 0]._selected === (opt.label || opt) }"
-                :disabled="item.data._answered || isStreaming"
-                @click="emit('selectStructuredOption', item, item.data._activeTab || 0, opt.label || opt)">
-                <span>{{ opt.label || opt }}</span>
-                <span v-if="opt.description" class="ask-card-option-desc">{{ opt.description }}</span>
-              </button>
-              <div v-if="!item.data._answered" class="ask-card-custom">
-                <input v-if="item.data.questions[item.data._activeTab || 0]._customMode" v-model="item.data.questions[item.data._activeTab || 0]._customAnswer" type="text" class="ask-card-custom-input" placeholder="输入自己的答案..." :disabled="isStreaming" @keyup.enter="emit('submitStructured', item)" />
-                <button v-else type="button" class="ask-card-option" :disabled="isStreaming" @click="emit('startStructuredCustom', item, item.data._activeTab || 0)">自定义答案...</button>
-              </div>
-            </div>
-          </div>
-          <div class="ask-card-footer">
-            <div v-if="item.data._answered" class="ask-card-answered">已提交</div>
-            <div v-else class="ask-card-spacer"></div>
-            <button v-if="!item.data._answered" type="button" class="ask-card-submit"
-              :disabled="isStreaming || !item.data.questions.every((q: any) => q._customMode ? q._customAnswer?.trim() : q.multiSelect ? (q._selected || []).length > 0 : q._selected)"
-              @click="emit('submitStructured', item)">提交</button>
-          </div>
-        </div>
+        <AskUserCard v-else-if="item.kind === 'structured' && item.cardType === 'ask'"
+          :questions="item.data.questions.map((q: any) => ({ header: q.header, question: q.question, options: q.options, multiSelect: q.multiSelect, selected: q._selected, customMode: q._customMode, customAnswer: q._customAnswer }))"
+          :answered="item.data._answered"
+          :active-tab="item.data._activeTab || 0"
+          :is-streaming="isStreaming"
+          @select-option="(qIdx: number, answer: string) => emit('selectStructuredOption', item, qIdx, answer)"
+          @start-custom="(qIdx: number) => emit('startStructuredCustom', item, qIdx)"
+          @submit="emit('submitStructured', item)"
+          @update:active-tab="item.data._activeTab = $event"
+        />
         <ErrorBlock v-else-if="item.kind === 'error'" :content="item.content"
           @retry="item.content.includes('not configured') ? emit('navigateSettings') : emit('retry')" />
         <ToolBlock v-else-if="item.kind === 'tool'" :tool="item.tool" @toggle="emit('toggleTool', $event)" />
@@ -147,26 +127,4 @@ defineExpose({ messagesEl, scrollToBottom, scrollToMessageId, scrollToLastUserMe
 .streaming-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent); animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 .scroll-spacer { min-height: 60vh; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-/* Structured ask card styles (inline since it's rendered directly) */
-.ask-card { margin: 10px 0; border: 1px solid color-mix(in oklch, var(--color-accent) 30%, transparent); border-radius: 8px; background: var(--color-surface-1); overflow: hidden; }
-.ask-card-tabs { display: flex; min-height: 38px; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-surface-0); overflow-x: auto; }
-.ask-card-tab { min-width: 96px; padding: 9px 14px; border: 0; border-right: 1px solid var(--color-border-subtle); background: transparent; color: var(--color-text-muted); font-size: 12px; font-weight: 600; cursor: default; white-space: nowrap; }
-.ask-card-tab.active { color: var(--color-text-primary); background: color-mix(in oklch, var(--color-accent) 12%, var(--color-surface-1)); }
-.ask-card-tab-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-muted); margin-right: 6px; vertical-align: middle; }
-.ask-card-tab-dot.answered { background: var(--color-accent); }
-.ask-card-body { padding: 14px 16px; }
-.ask-card-question { color: var(--color-text-primary); font-size: 14px; font-weight: 600; line-height: 1.55; margin-bottom: 12px; }
-.ask-card-options { display: flex; flex-direction: column; gap: 8px; }
-.ask-card-option { width: 100%; min-height: 38px; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--color-border-subtle); background: var(--color-surface-0); color: var(--color-text-secondary); font-size: 13px; line-height: 1.45; text-align: left; cursor: pointer; transition: background 0.15s, border-color 0.15s, color 0.15s; }
-.ask-card-option:hover:not(:disabled) { color: var(--color-text-primary); border-color: var(--color-accent); background: var(--color-surface-2); }
-.ask-card-option.selected { color: var(--color-text-primary); border-color: var(--color-accent); background: color-mix(in oklch, var(--color-accent) 16%, var(--color-surface-1)); }
-.ask-card-option:disabled { cursor: default; opacity: 0.65; }
-.ask-card-option-desc { display: block; font-size: 12px; color: var(--color-text-tertiary); font-weight: 400; margin-top: 2px; }
-.ask-card-custom { min-height: 38px; }
-.ask-card-custom-input { width: 100%; min-height: 38px; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--color-accent); background: var(--color-surface-0); color: var(--color-text-primary); font-size: 13px; outline: none; }
-.ask-card-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--color-border-subtle); background: color-mix(in oklch, var(--color-surface-0) 75%, transparent); }
-.ask-card-spacer { flex: 1; }
-.ask-card-answered { flex: 1; min-width: 0; color: var(--color-text-muted); font-size: 12px; }
-.ask-card-submit { min-width: 82px; padding: 7px 16px; border: 1px solid var(--color-accent); border-radius: 6px; background: var(--color-accent); color: var(--color-surface-0); font-size: 13px; font-weight: 650; cursor: pointer; }
-.ask-card-submit:disabled { opacity: 0.45; cursor: not-allowed; }
 </style>
