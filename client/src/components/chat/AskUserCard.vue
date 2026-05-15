@@ -57,6 +57,17 @@ function canSubmit(): boolean {
     return !!q.selected;
   });
 }
+
+function handleSelectOption(qIdx: number, opt: AskOption) {
+  if (props.answered || props.isStreaming) return;
+  const q = props.questions[qIdx];
+  if (!q) return;
+
+  emit("selectOption", qIdx, getOptionLabel(opt));
+  if (!q.multiSelect && qIdx < props.questions.length - 1) {
+    emit("update:activeTab", qIdx + 1);
+  }
+}
 </script>
 
 <template>
@@ -76,7 +87,7 @@ function canSubmit(): boolean {
           type="button" class="ask-card-option"
           :class="{ selected: isSelected(questions[activeTab], opt), 'has-desc': !!getOptionDescription(opt) }"
           :disabled="answered || isStreaming"
-          @click="emit('selectOption', activeTab, getOptionLabel(opt))"
+          @click="handleSelectOption(activeTab, opt)"
         >
           <span class="ask-card-option-label">{{ getOptionLabel(opt) }}</span>
           <span v-if="getOptionDescription(opt)" class="ask-card-option-desc">{{ getOptionDescription(opt) }}</span>

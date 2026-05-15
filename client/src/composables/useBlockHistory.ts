@@ -19,8 +19,8 @@ export function useBlockHistory(
             const res = await authFetch(`/api/sessions/${sessionId}/events`);
             if (!res.ok) return;
             const json = await res.json();
-            const events: Array<{ event_type: string; payload: any; source: string }> = json.data || json;
-            const userEvents = events.filter((ev: any) => ev.source !== "remote");
+            const events: RawEvent[] = json.data || json;
+            const userEvents = events.filter((ev: RawEvent) => ev.source !== "remote" && ev.visibility !== "internal");
 
             const answerIndices: number[] = [];
             userEvents.forEach((ev: any, idx: number) => {
@@ -44,7 +44,7 @@ export function useBlockHistory(
     return { loadHistory };
 }
 
-type RawEvent = { event_type: string; payload: any; source: string };
+type RawEvent = { event_type: string; payload: any; source: string; visibility?: "user" | "internal" };
 
 function restoreBlocks(userEvents: RawEvent[], answerIndices: number[]): Block[] {
     const restored: Block[] = [];
@@ -91,7 +91,7 @@ function restoreBlocks(userEvents: RawEvent[], answerIndices: number[]): Block[]
                 }
                 break;
             case ExploreEvent.Status:
-                if (p.message && !p.message.startsWith("正在阅读代码:")) {
+                if (p.message && !p.message.startsWith("正在阅读代码:") && !p.message.startsWith("探索完成:")) {
                     currentRound = null;
                     restored.push({ kind: BlockKind.Text, content: p.message });
                 }

@@ -141,6 +141,10 @@ function selectSession(session: Session, router: ReturnType<typeof useRouter>) {
   router.push({ name: routeName, params: { sessionId: session.id } });
 }
 
+function setCurrentSession(session: Session | null) {
+  currentSession.value = session;
+}
+
 async function login(username?: string, password?: string): Promise<{ ok: boolean; error?: string }> {
   const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
@@ -202,6 +206,7 @@ export function useSession() {
       createSession(router, workDir, environment, sessionType, options),
     createExploreSession: (workDir?: string, options?: NewSessionOptions) => createSession(router, workDir, "remote", "explore", options),
     queueSessionInitialPrompt,
+    setCurrentSession,
     selectSession: (session: Session) => selectSession(session, router),
     deleteSession: (id: string) => deleteSession(id, router),
     goBack: () => { currentSession.value = null; router.push({ name: "sessions" }); fetchSessions(); },

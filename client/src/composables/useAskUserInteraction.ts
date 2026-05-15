@@ -10,8 +10,12 @@ export function useAskUserInteraction(
     isStreaming: Ref<boolean>,
     exploreAgent: ReturnType<typeof useExploreAgent>
 ) {
+    function isWaitingForAnswer() {
+        return exploreAgent.state.value.phase === "waiting_user";
+    }
+
     function selectOption(block: Extract<Block, { kind: BlockKind.AskUser }>, qIdx: number, opt: string) {
-        if (block.answered || isStreaming.value) return;
+        if (block.answered || (isStreaming.value && !isWaitingForAnswer())) return;
         const q = block.questions[qIdx];
         q.selected = opt;
         q.customMode = false;

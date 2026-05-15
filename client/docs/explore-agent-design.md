@@ -61,6 +61,16 @@ handleUserInput(content, images?)
        └─ action="finalize" → executeFinalize(params)
 ```
 
+如果当前处于 Reader 工具循环内的 `AskUserQuestion` 暂停点，`handleUserInput` 不启动新一轮
+`reactLoop`，而是:
+
+```
+answerResolver 存在
+  ├─ onBlock({ kind: "user", content })
+  ├─ logEvent("explore:answer", { content })
+  └─ resolveAnswer(content) → 恢复 Reader 工具循环
+```
+
 ### executeReadCode 数据流
 
 ```
@@ -89,7 +99,11 @@ executeReadCode({ objective, files_hint }, reasoning)
        │
        ├─ 执行每个 tool:
        │    ├─ report_findings → 直接提取 input.findings → earlyFindings
-       │    ├─ AskUserQuestion → onBlock(ask_user) → waitForAnswer() 暂停
+       │    ├─ AskUserQuestion
+       │    │    ├─ onBlock(ask_user)
+       │    │    ├─ logEvent("explore:question", { questions })
+       │    │    ├─ onStreaming(false) → 允许用户操作问答卡片
+       │    │    └─ waitForAnswer() 暂停 → 收到回答后 onStreaming(true)
        │    └─ 其他 → execTool(name, input, workDir)
        │         返回: { content: string, is_error: boolean, duration_ms }
        │         onBlock(tool) 更新结果
@@ -149,7 +163,23 @@ executeFinalize({ title })
          explore_summary: state.runningSummary,
          session_id: options.sessionId,
        }
+      成功后 logEvent("explore:complete", { title, summary })
 ```
+
+`executeFinalize` 不再额外写入 `explore:status` 的完成消息，避免历史还原时和
+`explore:complete` 重复。
+
+### 运行控制与保护
+
+当前实现包含几类保护逻辑:
+
+- `cancel()` 会 abort 当前 LLM 请求，设置 `phase="cancelled"`，追加“探索已取消。”文本，并触发 `onComplete()`。
+- Planner 最多重试 2 次；空响应、无 JSON、JSON 解析失败都会记录 `explore:planner_retry` / `explore:error`。
+- LLM 通信层对 retryable 错误最多重试 3 次，使用指数退避和 jitter。
+- 读取轮数受 `metadata.depth` 限制: `quick=4`、`standard=8`、`deep=15`，硬上限 `HARD_MAX_READS=20`。
+- 连续两轮无新增 findings 会询问用户是否继续。
+- Reader 连续错误达到阈值会跳过当前 objective，多次降级后询问用户是否继续。
+- Reader 工具消息使用 sliding window，仅保留最近 `MAX_FULL_ROUNDS=3` 轮完整工具上下文，旧轮次压缩成工具名摘要。
 
 ---
 
@@ -176,6 +206,11 @@ SSE 事件流 → 解析:
 
 输出: { text, meta: { tokens_in, tokens_out, latency_ms }, httpStatus }
 ```
+
+通信通道:
+
+- Tauri 环境通过 `llm_stream` invoke + `llm-stream-event` 事件流式接收。
+- 浏览器开发环境通过 XHR 读取 `text/event-stream`。
 
 ### callLLMWithTools (带工具)
 
@@ -260,7 +295,18 @@ onBlock 接收 Block 时的处理规则:
 | explore:question | { kind:"ask_user", questions, answered: 后续是否有 answer 事件 } |
 | explore:complete | { kind:"text", content: "探索完成: ${title}" } |
 
-options 格式化: `string → { label: string }` 统一为对象形式
+`explore:status` 还会排除旧数据中的 `"探索完成:"` 前缀，避免和 `explore:complete`
+重复显示。
+
+options 格式化: `string → { label: string }` 统一为对象形式。
+
+历史加载过滤条件:
+
+```
+source !== "remote" && visibility !== "internal"
+```
+
+即 client 侧、非 internal 的事件参与还原；internal 事件仅用于调试和指标。
 
 ---
 
@@ -292,4 +338,14 @@ logEvent 写入后端 `POST /api/sessions/:id/local-events`:
 }]
 ```
 
-visibility="internal" 的事件不参与历史还原 (loadHistory 过滤 source !== "remote")。
+visibility="internal" 的事件不参与历史还原；`source="remote"` 的事件也不参与
+ExploreAgent 本地事件还原。
+
+---
+
+## 8. Agent.vue 集成要点
+
+- `useExploreAgent` 接收一个 reactive options 对象，`metadata` 和 `workDir` 会随 `currentSession` 同步，避免直接打开 `/agent/:sessionId` 时初始化为空。
+- `Agent.vue` mount 时会先 `fetchSessions()`，再按 `sessionId` 找到 session 并同步上下文。
+- 输入框 stop 调用 `exploreAgent.cancel()`，不是只清 UI streaming 状态。
+- `ask_user` 卡片在 `phase="waiting_user"` 时可交互，即使前一轮 agent 流程曾处于 streaming 状态。

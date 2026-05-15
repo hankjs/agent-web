@@ -245,8 +245,11 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           }));
           options.onBlock({ kind: BlockKind.AskUser, toolUseId: tc.id, questions, answered: false, activeTab: 0 });
           options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: false, expanded: false } });
+          await logEvent("explore:question", { questions }, "user");
           state.value.phase = "waiting_user";
+          options.onStreaming(false);
           const answer = await waitForAnswer();
+          options.onStreaming(true);
           state.value.phase = "acting";
           toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: answer });
         } else {
@@ -341,7 +344,6 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     state.value.phase = "done";
     const statusMsg = `探索完成: ${params.title}`;
     options.onBlock({ kind: BlockKind.Text, content: statusMsg });
-    await logEvent("explore:status", { message: statusMsg }, "user");
 
     try {
       const res = await authFetch("/api/changes", {
@@ -435,6 +437,8 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
     // If waiting for user answer (from AskUserQuestion in tool loop), resolve the pending promise
     if (answerResolver) {
+      options.onBlock({ kind: BlockKind.User, content });
+      await logEvent("explore:answer", { content }, "user");
       resolveAnswer(content);
       return;
     }
