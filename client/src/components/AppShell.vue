@@ -95,6 +95,10 @@ function displayTitle(title: string, workDir: string | null): string {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  // 阻止 Backspace 键触发浏览器后退导航
+  if (e.key === "Backspace" && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target as HTMLElement)?.isContentEditable)) {
+    e.preventDefault();
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === "b" && !e.shiftKey) {
     e.preventDefault();
     navCollapsed.value = !navCollapsed.value;

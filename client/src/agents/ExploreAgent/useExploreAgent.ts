@@ -43,6 +43,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   const isFirstTurn = ref(true);
   const startTime = Date.now();
   let abortController = new AbortController();
+  let consecutiveAsksTotal = 0; // 跨 reactLoop 调用追踪连续 ask_user 次数
 
   function elapsed() { return Date.now() - startTime; }
 
@@ -151,7 +152,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           thinkingBlock.content += delta;
           options.onBlock({ kind: BlockKind.Thinking, content: thinkingBlock.content });
         });
-        await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "planner", attempt, tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(), httpStatus }, "internal");
+        await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "planner", attempt, tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(), httpStatus, system: systemPrompt, messages: prompt }, "internal");
 
         if (!response || response.trim().length === 0) {
           lastError = "LLM 返回空响应";
@@ -170,6 +171,9 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
         const action: PlannerAction = JSON.parse(jsonMatch[0]);
         await logEvent("explore:action", action, "user");
+        // Emit persistent PlannerDecision block (thinking will be cleared by clearThinkingIfNeeded)
+        const actionLabel = action.action === "read_code" ? "阅读代码" : action.action === "ask_user" ? "向用户提问" : "完成探索";
+        options.onBlock({ kind: BlockKind.PlannerDecision, reasoning: action.reasoning, action: actionLabel, objective: action.params?.objective, expanded: false });
         return action;
       } catch (e: any) {
         if (e.name === "AbortError") return null;
@@ -192,7 +196,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     state.value.phase = "acting";
     const statusMsg = `正在阅读代码: ${params.objective}`;
     // Emit an explore_round block that groups all tool calls for this read
-    options.onBlock({ kind: BlockKind.ExploreRound, objective: params.objective, reasoning, tools: [], expanded: true, isRunning: true } as any);
+    options.onBlock({ kind: BlockKind.ExploreRound, objective: params.objective, reasoning, tools: [], expanded: false, isRunning: true } as any);
     await logEvent("explore:status", { message: statusMsg }, "user");
 
     const system = buildExploreReaderPrompt({
@@ -207,7 +211,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const trimmed = trimMessages(messages);
       const resp = await callLLMWithTools(system, trimmed, READER_TOOLS, abortController.signal);
-      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "reader", round, tokens_in: resp.meta.tokens_in, tokens_out: resp.meta.tokens_out, latency_ms: resp.meta.latency_ms, tools_count: resp.toolCalls.length, elapsed_ms: elapsed() }, "internal");
+      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "reader", round, tokens_in: resp.meta.tokens_in, tokens_out: resp.meta.tokens_out, latency_ms: resp.meta.latency_ms, tools_count: resp.toolCalls.length, elapsed_ms: elapsed(), system, messages: trimmed }, "internal");
 
       if (resp.toolCalls.length === 0) {
         state.value.phase = "observing";
@@ -306,7 +310,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     });
     try {
       const { text: compressed, meta } = await callLLM("你是一个文本压缩助手。", prompt, undefined, abortController.signal);
-      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "summarizer", tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed() }, "internal");
+      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "summarizer", tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(), system: "你是一个文本压缩助手。", messages: prompt }, "internal");
 
       // Dynamic threshold calibration
       const actualIn = meta.tokens_in;
@@ -334,6 +338,10 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     }));
     options.onBlock({ kind: BlockKind.AskUser, toolUseId: `explore_ask_${Date.now()}`, questions: questionsForUI, answered: false, activeTab: 0 });
     logEvent("explore:question", { questions: params.questions }, "user");
+
+    // 将提问内容追加到 runningSummary，保持对话连贯性
+    const questionsSummary = params.questions.map(q => `[提问] ${q.question}`).join("\n");
+    state.value.runningSummary = (state.value.runningSummary ? state.value.runningSummary + "\n" : "") + questionsSummary;
   }
 
   async function executeFinalize(params: { title: string }) {
@@ -361,6 +369,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     let consecutiveErrors = 0;
     let degradeCount = 0;
     let noGainCount = 0;
+    let consecutiveAsks = 0;
     let lastFindingsCount = state.value.findings.length;
 
     while (state.value.phase !== "done" && state.value.phase !== "waiting_user" && state.value.phase !== "cancelled") {
@@ -375,6 +384,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       switch (action.action) {
         case "read_code":
           consecutiveReads++;
+          consecutiveAsksTotal = 0; // planner 开始读代码，重置连续提问计数
           if (consecutiveReads > HARD_MAX_READS) {
             await executeFinalize({ title: "探索达到上限，自动结束" });
             return;
@@ -416,6 +426,20 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           break;
         case "ask_user":
           consecutiveReads = 0;
+          consecutiveAsks++;
+          consecutiveAsksTotal++;
+          // 极端保护：连续 ask_user 超过 5 轮，强制进入 read_code
+          if (consecutiveAsksTotal > 5) {
+            options.onBlock({ kind: BlockKind.Text, content: "已多轮提问，开始基于已有信息探索代码..." });
+            consecutiveAsksTotal = 0;
+            // 强制转为 read_code
+            try {
+              await executeReadCode({ objective: "基于已有需求信息，了解项目整体结构和相关模块" }, "连续提问过多，自动转为代码探索");
+            } catch (e: any) {
+              if (e.name === "AbortError") return;
+            }
+            break;
+          }
           emitAskUser(action.params);
           return;
         case "finalize":
@@ -448,6 +472,15 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     }
 
     await logEvent("explore:answer", { content }, "user");
+
+    // 将用户输入累积到 runningSummary，确保 planner 始终有完整上下文
+    const entry = `[用户输入] ${content}`;
+    const combined = (state.value.runningSummary ? state.value.runningSummary + "\n" : "") + entry;
+    if (estimateTokens(combined) > summarizeThreshold) {
+      await compressSummary(entry);
+    } else {
+      state.value.runningSummary = combined;
+    }
 
     try {
       await reactLoop(content, images);

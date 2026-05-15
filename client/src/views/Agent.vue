@@ -13,6 +13,7 @@ import AgentBlockError from "../components/AgentBlockError.vue";
 import AgentBlockThinking from "../components/AgentBlockThinking.vue";
 import AgentBlockTool from "../components/AgentBlockTool.vue";
 import AgentBlockExploreRound from "../components/AgentBlockExploreRound.vue";
+import AgentBlockPlannerDecision from "../components/AgentBlockPlannerDecision.vue";
 import AgentBlockAskUser from "../components/AgentBlockAskUser.vue";
 import PageLoading from "../components/PageLoading.vue";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
@@ -146,6 +147,7 @@ onMounted(async () => {
           <AgentBlockThinking v-else-if="block.kind === 'thinking'" :content="block.content" />
           <AgentBlockTool v-else-if="block.kind === 'tool'" :tool="block.tool" />
           <AgentBlockExploreRound v-else-if="block.kind === 'explore_round'" :block="block" />
+          <AgentBlockPlannerDecision v-else-if="block.kind === 'planner_decision'" :block="block" />
           <AgentBlockAskUser
             v-else-if="block.kind === 'ask_user'"
             :block="block"

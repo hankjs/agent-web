@@ -119,7 +119,7 @@ export function getRawText(item: TimelineItem): string {
   }
   if (item.type === 'explore:llm_call') {
     info.api = '/api/llm/completion'
-    info.request = { system: '...', messages: '...', tools: `[${item.payload.tools_count} tools]`, max_tokens: 4096 }
+    info.request = { system: item.payload.system ?? '...', messages: item.payload.messages ?? '...', tools: `[${item.payload.tools_count} tools]`, max_tokens: 4096 }
     info.response = { tokens_in: item.payload.tokens_in, tokens_out: item.payload.tokens_out, latency_ms: item.payload.latency_ms, phase: item.payload.phase }
   } else if (item.type === 'explore:tool_call') {
     info.api = item.payload.local ? 'tauri://tool_*' : '/api/llm/tool-exec'

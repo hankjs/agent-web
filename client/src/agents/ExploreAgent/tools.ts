@@ -62,6 +62,18 @@ export const READER_TOOLS = [
     },
   },
   {
+    name: "bash",
+    description: "Execute a read-only shell command. Only use this for curl to fetch web pages or API documentation. Do not use for any write operations.",
+    input_schema: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "Shell command to execute (curl only)" },
+        timeout_ms: { type: "integer", description: "Timeout in milliseconds (default: 30000)" },
+      },
+      required: ["command"],
+    },
+  },
+  {
     name: "AskUserQuestion",
     description: "Ask the user a question when you need clarification or a decision before continuing.",
     input_schema: {

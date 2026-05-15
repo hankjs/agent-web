@@ -51,6 +51,7 @@ export function useBlockEvents() {
 
     function clearThinkingIfNeeded(block: Block) {
         const shouldClear =
+            block.kind === BlockKind.PlannerDecision ||
             block.kind === BlockKind.ExploreRound ||
             block.kind === BlockKind.AskUser ||
             block.kind === BlockKind.Error ||

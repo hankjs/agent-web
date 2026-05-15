@@ -93,15 +93,15 @@ function handleSelectOption(qIdx: number, opt: AskOption) {
           <span v-if="getOptionDescription(opt)" class="ask-card-option-desc">{{ getOptionDescription(opt) }}</span>
         </button>
         <div v-if="!answered" class="ask-card-custom">
-          <input
+          <textarea
             v-if="questions[activeTab].customMode"
             v-model="questions[activeTab].customAnswer"
-            type="text" class="ask-card-custom-input"
+            class="ask-card-custom-input"
             placeholder="输入自己的答案..."
             :disabled="isStreaming"
-            @keydown.enter.prevent="emit('submit')"
+            rows="3"
             @keydown.escape="questions[activeTab].customMode = false"
-          />
+          ></textarea>
           <button v-else type="button" class="ask-card-option"
             :class="{ selected: questions[activeTab].customMode }"
             :disabled="isStreaming"
@@ -146,7 +146,7 @@ function handleSelectOption(qIdx: number, opt: AskOption) {
 .ask-card-option:hover:not(:disabled) .ask-card-option-desc { color: var(--color-text-secondary); }
 .ask-card-option.selected .ask-card-option-desc { color: var(--color-text-secondary); }
 .ask-card-custom { min-height: 38px; }
-.ask-card-custom-input { width: 100%; min-height: 38px; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--color-accent); background: var(--color-surface-0); color: var(--color-text-primary); font-size: 13px; outline: none; }
+.ask-card-custom-input { width: 100%; min-height: 38px; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--color-accent); background: var(--color-surface-0); color: var(--color-text-primary); font-size: 13px; outline: none; resize: vertical; font-family: inherit; line-height: 1.5; }
 .ask-card-footer { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--color-border-subtle); background: color-mix(in oklch, var(--color-surface-0) 75%, transparent); }
 .ask-card-spacer { flex: 1; }
 .ask-card-answered { flex: 1; min-width: 0; color: var(--color-text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

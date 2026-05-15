@@ -34,6 +34,7 @@ export const enum BlockKind {
   Error = "error",
   Tool = "tool",
   ExploreRound = "explore_round",
+  PlannerDecision = "planner_decision",
   AskUser = "ask_user",
 }
 
@@ -56,6 +57,7 @@ export type Block =
   | { kind: BlockKind.Error; content: string }
   | { kind: BlockKind.Tool; tool: { id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean } }
   | { kind: BlockKind.ExploreRound; objective: string; reasoning?: string; tools: Array<{ id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean }>; expanded: boolean; isRunning: boolean }
+  | { kind: BlockKind.PlannerDecision; reasoning: string; action: string; objective?: string; expanded: boolean }
   | { kind: BlockKind.AskUser; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number };
 
 export interface ExploreAgentOptions {
