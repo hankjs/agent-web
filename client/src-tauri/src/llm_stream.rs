@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use tauri::{command, AppHandle, Emitter};
+use tauri::ipc::Channel;
+use tauri::command;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
@@ -9,31 +10,26 @@ pub struct LlmStreamRequest {
     pub url: String,
     pub token: String,
     pub body: String,
-    /// Unique stream ID so the frontend can correlate events
-    pub stream_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SseEvent {
-    pub stream_id: String,
     pub data: String,
     pub done: bool,
 }
 
-/// Mock command: emits 10 events with 200ms delay each, to test real-time delivery.
+/// Mock command: sends 10 events with 200ms delay each, to test real-time delivery.
 #[command]
-pub async fn llm_stream_test(app: AppHandle, stream_id: String) -> Result<(), String> {
+pub async fn llm_stream_test(on_event: Channel<SseEvent>) -> Result<(), String> {
     for i in 1..=10 {
-        let _ = app.emit("llm-stream-event", SseEvent {
-            stream_id: stream_id.clone(),
+        let _ = on_event.send(SseEvent {
             data: format!("mock event #{}", i),
             done: false,
         });
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
-    let _ = app.emit("llm-stream-event", SseEvent {
-        stream_id: stream_id.clone(),
+    let _ = on_event.send(SseEvent {
         data: String::new(),
         done: true,
     });
@@ -54,11 +50,10 @@ fn parse_url(url: &str) -> Result<(String, u16, String), String> {
 }
 
 /// Tauri command: stream LLM completion via raw TCP, bypassing reqwest buffering.
-/// Uses app.emit() for real-time event delivery.
+/// Uses Channel for real-time event delivery directly to the calling frontend.
 #[command]
-pub async fn llm_stream(app: AppHandle, req: LlmStreamRequest) -> Result<(), String> {
+pub async fn llm_stream(req: LlmStreamRequest, on_event: Channel<SseEvent>) -> Result<(), String> {
     let (host, port, path) = parse_url(&req.url)?;
-    let stream_id = req.stream_id;
 
     // Connect via raw TCP with NODELAY for real-time streaming
     let addr = format!("{}:{}", host, port);
@@ -66,7 +61,7 @@ pub async fn llm_stream(app: AppHandle, req: LlmStreamRequest) -> Result<(), Str
         .map_err(|e| format!("TCP connect failed: {}", e))?;
     tcp.set_nodelay(true).map_err(|e| format!("set_nodelay failed: {}", e))?;
 
-    // Build raw HTTP/1.1 request
+    // Build raw HTTP/1.1 request (Connection: close so server closes after response)
     let http_req = format!(
         "POST {} HTTP/1.1\r\n\
          Host: {}\r\n\
@@ -74,7 +69,7 @@ pub async fn llm_stream(app: AppHandle, req: LlmStreamRequest) -> Result<(), Str
          Authorization: Bearer {}\r\n\
          Accept: text/event-stream\r\n\
          Cache-Control: no-cache\r\n\
-         Connection: keep-alive\r\n\
+         Connection: close\r\n\
          Content-Length: {}\r\n\
          \r\n\
          {}",
@@ -107,16 +102,19 @@ pub async fn llm_stream(app: AppHandle, req: LlmStreamRequest) -> Result<(), Str
         let line = line_buf.trim_end();
         if line.starts_with("data: ") {
             let data = line[6..].to_string();
-            let _ = app.emit("llm-stream-event", SseEvent {
-                stream_id: stream_id.clone(),
+            // Detect end-of-stream marker and break early (don't wait for TCP close)
+            let is_end = data.contains("\"type\":\"message_end\"");
+            let _ = on_event.send(SseEvent {
                 data,
                 done: false,
             });
+            if is_end {
+                break;
+            }
         }
     }
 
-    let _ = app.emit("llm-stream-event", SseEvent {
-        stream_id: stream_id.clone(),
+    let _ = on_event.send(SseEvent {
         data: String::new(),
         done: true,
     });

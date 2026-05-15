@@ -13,27 +13,23 @@ async function runMockTest() {
   running.value = true;
 
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const { listen } = await import("@tauri-apps/api/event");
+    const { invoke, Channel } = await import("@tauri-apps/api/core");
 
-    const streamId = "test_" + Date.now();
-    log(`Starting mock test, streamId=${streamId}`);
+    log(`Starting mock test`);
 
-    const unlisten = await listen<{ streamId: string; data: string; done: boolean }>("llm-stream-event", (event) => {
-      const p = event.payload;
-      if (p.streamId !== streamId) return;
-      if (p.done) {
+    const onEvent = new Channel<{ data: string; done: boolean }>();
+    onEvent.onmessage = (event) => {
+      if (event.done) {
         log(`✓ DONE received`);
       } else {
-        log(`Event: "${p.data}"`);
+        log(`Event: "${event.data}"`);
       }
-    });
+    };
 
-    log("Listener registered, calling invoke...");
+    log("Calling invoke...");
     const startTime = Date.now();
-    await invoke("llm_stream_test", { streamId });
+    await invoke("llm_stream_test", { onEvent });
     log(`invoke resolved after ${Date.now() - startTime}ms`);
-    unlisten();
   } catch (err: any) {
     log(`ERROR: ${err.message || err}`);
   }
@@ -46,10 +42,8 @@ async function runRealTest() {
   running.value = true;
 
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const { listen } = await import("@tauri-apps/api/event");
+    const { invoke, Channel } = await import("@tauri-apps/api/core");
 
-    const streamId = "real_" + Date.now();
     const token = localStorage.getItem("hank_client_token") || "";
 
     // Minimal LLM request
@@ -65,28 +59,26 @@ async function runRealTest() {
     const url = `${apiBase}/api/llm/completion`;
 
     log(`Starting real SSE test → ${url}`);
-    log(`streamId=${streamId}`);
 
     let eventCount = 0;
-    const unlisten = await listen<{ streamId: string; data: string; done: boolean }>("llm-stream-event", (event) => {
-      const p = event.payload;
-      if (p.streamId !== streamId) return;
+    const onEvent = new Channel<{ data: string; done: boolean }>();
+    onEvent.onmessage = (event) => {
       eventCount++;
-      if (p.done) {
+      if (event.done) {
         log(`✓ DONE (total events: ${eventCount})`);
       } else {
-        const preview = p.data.length > 80 ? p.data.slice(0, 80) + "..." : p.data;
+        const preview = event.data.length > 80 ? event.data.slice(0, 80) + "..." : event.data;
         log(`#${eventCount} ${preview}`);
       }
-    });
+    };
 
-    log("Listener registered, calling invoke...");
+    log("Calling invoke...");
     const startTime = Date.now();
     await invoke("llm_stream", {
-      req: { url, token, body, streamId },
+      req: { url, token, body },
+      onEvent,
     });
     log(`invoke resolved after ${Date.now() - startTime}ms, events=${eventCount}`);
-    unlisten();
   } catch (err: any) {
     log(`ERROR: ${err.message || err}`);
   }
