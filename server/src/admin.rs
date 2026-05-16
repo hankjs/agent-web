@@ -41,6 +41,7 @@ pub struct PaginatedResponse<T: Serialize> {
 pub struct PromptTemplateRequest {
     pub name: String,
     pub content: String,
+    pub category: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -211,16 +212,27 @@ pub async fn create_prompt_template(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PromptTemplateRequest>,
 ) -> impl IntoResponse {
-    match state.db.save_prompt_template(&body.name, &body.content).await {
+    match state.db.save_prompt_template(&body.name, &body.content, body.category.as_deref()).await {
         Ok(id) => R::created(serde_json::json!({"id": id})),
         Err(e) => R::internal_error(e),
     }
 }
 
+#[derive(Deserialize)]
+pub struct TemplateListQuery {
+    pub category: Option<String>,
+}
+
 pub async fn list_prompt_templates(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<TemplateListQuery>,
 ) -> impl IntoResponse {
-    match state.db.list_prompt_templates().await {
+    let result = if let Some(ref cat) = query.category {
+        state.db.get_templates_by_category(cat).await
+    } else {
+        state.db.list_prompt_templates().await
+    };
+    match result {
         Ok(templates) => R::ok(templates),
         Err(e) => R::internal_error(e),
     }

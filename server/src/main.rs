@@ -128,6 +128,8 @@ async fn main() -> Result<()> {
         .route("/api/llm/completion", post(llm::completion_handler))
         .route("/api/llm/tool-exec", post(llm::tool_exec_handler))
         .route("/api/fs/list", get(routes::list_directory))
+        // Templates (client-accessible, read-only)
+        .route("/api/templates", get(routes::list_templates))
         // Specs routes
         .route("/api/specs", get(specs::list_specs))
         .route("/api/specs", post(specs::create_spec))

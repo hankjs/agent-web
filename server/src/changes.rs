@@ -21,6 +21,8 @@ use crate::response as R;
 pub struct CreateChangeRequest {
     pub name: String,
     pub work_dir: Option<String>,
+    pub requirement_path: Option<String>,
+    pub tasks_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -66,7 +68,7 @@ pub async fn create_change(
     Extension(_claims): Extension<Claims>,
     Json(body): Json<CreateChangeRequest>,
 ) -> impl IntoResponse {
-    match state.db.create_change(&body.name, body.work_dir.as_deref()).await {
+    match state.db.create_change(&body.name, body.work_dir.as_deref(), body.requirement_path.as_deref(), body.tasks_path.as_deref()).await {
         Ok(change) => R::created(change),
         Err(e) => {
             let msg = e.to_string();

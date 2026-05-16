@@ -6,6 +6,8 @@ export interface Change {
   status: string;
   work_dir: string | null;
   explore_summary: string | null;
+  requirement_path: string | null;
+  tasks_path: string | null;
   created_at: string;
   updated_at: string;
   archived_at: string | null;

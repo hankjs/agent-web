@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useRoute } from "vue-router";
+import { invoke } from "@tauri-apps/api/core";
 import { useSession } from "../composables/useSession";
 import { buildExploreContinuePrompt } from "../agents/ExploreAgent";
 import {
@@ -17,6 +18,8 @@ const artifacts = ref<ChangeArtifact[]>([]);
 const taskGroups = ref<TaskGroup[]>([]);
 const activeTab = ref<"explore" | "spec" | "task">("explore");
 const isLoading = ref(true);
+const requirementContent = ref<string>("");
+const tasksContent = ref<string>("");
 
 async function fetchData() {
   isLoading.value = true;
@@ -29,8 +32,25 @@ async function fetchData() {
     if (changeRes.ok && changeRes.data) change.value = changeRes.data;
     if (artifactsRes.ok && artifactsRes.data) artifacts.value = artifactsRes.data;
     if (tasksRes.ok && tasksRes.data) taskGroups.value = tasksRes.data;
+
+    // 尝试从文件系统读取需求文档和任务文档
+    if (change.value?.requirement_path) {
+      requirementContent.value = await readFileContent(change.value.requirement_path);
+    }
+    if (change.value?.tasks_path) {
+      tasksContent.value = await readFileContent(change.value.tasks_path);
+    }
   } finally {
     isLoading.value = false;
+  }
+}
+
+async function readFileContent(path: string): Promise<string> {
+  try {
+    const result = await invoke<{ content: string; is_error: boolean }>("tool_read_file", { path, workDir: change.value?.work_dir || "" });
+    return result.is_error ? "" : result.content;
+  } catch {
+    return "";
   }
 }
 
@@ -99,7 +119,11 @@ onMounted(fetchData);
     <div class="tab-content">
       <!-- Explore Tab -->
       <template v-if="activeTab === 'explore'">
-        <div v-if="change?.explore_summary" class="explore-summary">
+        <div v-if="requirementContent" class="explore-summary">
+          <div class="doc-label">需求文档</div>
+          <pre class="content">{{ requirementContent }}</pre>
+        </div>
+        <div v-else-if="change?.explore_summary" class="explore-summary">
           <pre class="content">{{ change.explore_summary }}</pre>
         </div>
         <div v-else class="empty">
@@ -120,6 +144,10 @@ onMounted(fetchData);
 
       <!-- Task Tab -->
       <template v-if="activeTab === 'task'">
+        <div v-if="tasksContent" class="explore-summary">
+          <div class="doc-label">任务文档</div>
+          <pre class="content">{{ tasksContent }}</pre>
+        </div>
         <div v-for="group in taskGroups" :key="group.group_name" class="task-group">
           <div class="group-header">
             <span class="group-name">{{ group.group_name }}</span>
@@ -135,8 +163,8 @@ onMounted(fetchData);
             <span class="task-status-badge" :class="task.status">{{ task.status }}</span>
           </div>
         </div>
-        <pre v-if="taskGroups.length === 0 && getArtifact('tasks')" class="content">{{ getArtifact('tasks')!.content }}</pre>
-        <div v-if="taskGroups.length === 0 && !getArtifact('tasks')" class="empty">No tasks</div>
+        <pre v-if="!tasksContent && taskGroups.length === 0 && getArtifact('tasks')" class="content">{{ getArtifact('tasks')!.content }}</pre>
+        <div v-if="!tasksContent && taskGroups.length === 0 && !getArtifact('tasks')" class="empty">No tasks</div>
       </template>
     </div>
     </template>
@@ -180,4 +208,5 @@ button { padding: 6px 12px; border-radius: 4px; border: 1px solid var(--color-bo
 button:hover { background: var(--color-surface-2, #252525); }
 button.primary { background: var(--color-accent, #3b82f6); border-color: var(--color-accent, #3b82f6); color: white; }
 .empty { color: var(--color-text-muted, #888); padding: 24px; text-align: center; }
+.doc-label { font-size: 11px; font-weight: 600; color: var(--color-accent, #3b82f6); text-transform: uppercase; margin-bottom: 6px; }
 </style>

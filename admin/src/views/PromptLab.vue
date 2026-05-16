@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { api, type PromptTemplate } from '../composables/api'
 import { useAiGenerate } from '../composables/useAiGenerate'
 
@@ -8,6 +8,19 @@ const { open } = useAiGenerate()
 const templates = ref<PromptTemplate[]>([])
 const name = ref('')
 const content = ref('')
+const category = ref<'prompt' | 'requirement' | 'task'>('prompt')
+const filterCategory = ref<string>('')
+
+const CATEGORIES = [
+  { value: 'prompt', label: 'Prompt' },
+  { value: 'requirement', label: '需求模板' },
+  { value: 'task', label: '任务模板' },
+]
+
+const filteredTemplates = computed(() => {
+  if (!filterCategory.value) return templates.value
+  return templates.value.filter(t => t.category === filterCategory.value)
+})
 
 // Replay state
 const replaySessionId = ref('')
@@ -42,7 +55,7 @@ async function loadTemplates() {
 
 async function saveTemplate() {
   if (!name.value || !content.value) return
-  await api.createPromptTemplate(name.value, content.value)
+  await api.createPromptTemplate(name.value, content.value, category.value)
   name.value = ''
   content.value = ''
   await loadTemplates()
@@ -146,6 +159,12 @@ onMounted(loadTemplates)
             placeholder="Template name"
             class="w-full bg-transparent border border-border rounded-md px-3 py-2 text-[13px] placeholder:text-text-tertiary focus:outline-none focus:border-accent transition-colors"
           />
+          <select
+            v-model="category"
+            class="w-full bg-transparent border border-border rounded-md px-3 py-2 text-[13px] text-text-primary focus:outline-none focus:border-accent transition-colors"
+          >
+            <option v-for="c in CATEGORIES" :key="c.value" :value="c.value">{{ c.label }}</option>
+          </select>
           <textarea
             v-model="content"
             placeholder="System prompt..."
@@ -166,14 +185,23 @@ onMounted(loadTemplates)
         </div>
 
         <div v-if="templates.length">
-          <div class="text-[13px] text-text-tertiary font-medium mb-3">Saved</div>
+          <div class="flex items-center gap-3 mb-3">
+            <div class="text-[13px] text-text-tertiary font-medium">Saved</div>
+            <select
+              v-model="filterCategory"
+              class="ml-auto bg-transparent border border-border rounded px-2 py-1 text-[11px] text-text-tertiary focus:outline-none focus:border-accent transition-colors"
+            >
+              <option value="">All</option>
+              <option v-for="c in CATEGORIES" :key="c.value" :value="c.value">{{ c.label }}</option>
+            </select>
+          </div>
           <div class="divide-y divide-border-subtle">
-            <div v-for="t in templates" :key="t.id" class="flex items-center justify-between py-2.5">
+            <div v-for="t in filteredTemplates" :key="t.id" class="flex items-center justify-between py-2.5">
               <div class="min-w-0">
-                <div class="text-[13px] text-text-primary">{{ t.name }} <span class="text-text-tertiary">v{{ t.version }}</span></div>
+                <div class="text-[13px] text-text-primary">{{ t.name }} <span class="text-text-tertiary">v{{ t.version }}</span> <span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-raised text-text-tertiary">{{ t.category }}</span></div>
                 <div class="text-[12px] text-text-tertiary truncate mt-0.5">{{ t.content.slice(0, 60) }}</div>
               </div>
-              <button @click="content = t.content; name = t.name" class="text-[12px] text-accent hover:text-accent-hover shrink-0 ml-3 transition-colors">Load</button>
+              <button @click="content = t.content; name = t.name; category = t.category as any" class="text-[12px] text-accent hover:text-accent-hover shrink-0 ml-3 transition-colors">Load</button>
               <button @click="deleteTemplate(t.id)" class="text-[12px] text-text-tertiary hover:text-red-500 shrink-0 ml-2 transition-colors">删除</button>
             </div>
           </div>

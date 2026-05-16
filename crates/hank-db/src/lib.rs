@@ -122,6 +122,7 @@ pub struct PromptTemplate {
     pub id: String,
     pub name: String,
     pub content: String,
+    pub category: String,
     pub version: i32,
     pub created_at: DateTime<Utc>,
 }
@@ -214,6 +215,8 @@ pub struct Change {
     pub status: String,
     pub work_dir: Option<String>,
     pub explore_summary: Option<String>,
+    pub requirement_path: Option<String>,
+    pub tasks_path: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
@@ -377,9 +380,11 @@ impl Database {
                 id VARCHAR(36) PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
                 content MEDIUMTEXT NOT NULL,
+                category VARCHAR(32) NOT NULL DEFAULT 'prompt',
                 version INT NOT NULL DEFAULT 1,
                 created_at DATETIME NOT NULL DEFAULT NOW(),
-                INDEX idx_prompt_templates_name (name)
+                INDEX idx_prompt_templates_name (name),
+                INDEX idx_prompt_templates_category (category)
             ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
@@ -513,6 +518,8 @@ impl Database {
                 status VARCHAR(32) NOT NULL DEFAULT 'draft',
                 work_dir VARCHAR(512) DEFAULT NULL,
                 explore_summary TEXT DEFAULT NULL,
+                requirement_path VARCHAR(512) DEFAULT NULL,
+                tasks_path VARCHAR(512) DEFAULT NULL,
                 created_at DATETIME NOT NULL DEFAULT NOW(),
                 updated_at DATETIME NOT NULL DEFAULT NOW(),
                 archived_at DATETIME DEFAULT NULL,
@@ -562,6 +569,22 @@ impl Database {
         )
         .execute(&pool)
         .await?;
+
+        // Migrations for existing databases
+        // Add category column to prompt_templates if not exists
+        let _ = sqlx::query(
+            "ALTER TABLE prompt_templates ADD COLUMN category VARCHAR(32) NOT NULL DEFAULT 'prompt' AFTER content"
+        ).execute(&pool).await;
+        let _ = sqlx::query(
+            "ALTER TABLE prompt_templates ADD INDEX idx_prompt_templates_category (category)"
+        ).execute(&pool).await;
+        // Add requirement_path and tasks_path to changes if not exists
+        let _ = sqlx::query(
+            "ALTER TABLE changes ADD COLUMN requirement_path VARCHAR(512) DEFAULT NULL AFTER explore_summary"
+        ).execute(&pool).await;
+        let _ = sqlx::query(
+            "ALTER TABLE changes ADD COLUMN tasks_path VARCHAR(512) DEFAULT NULL AFTER requirement_path"
+        ).execute(&pool).await;
 
         Ok(Self { pool })
     }
@@ -973,8 +996,9 @@ impl Database {
     }
 
     // Prompt Templates
-    pub async fn save_prompt_template(&self, name: &str, content: &str) -> Result<String> {
+    pub async fn save_prompt_template(&self, name: &str, content: &str, category: Option<&str>) -> Result<String> {
         let id = Uuid::new_v4().to_string();
+        let cat = category.unwrap_or("prompt");
         // Get next version for this name
         let max_version: Option<(i32,)> = sqlx::query_as(
             "SELECT COALESCE(MAX(version), 0) FROM prompt_templates WHERE name = ?"
@@ -986,11 +1010,12 @@ impl Database {
 
         db_retry!(
             sqlx::query(
-                "INSERT INTO prompt_templates (id, name, content, version) VALUES (?, ?, ?, ?)"
+                "INSERT INTO prompt_templates (id, name, content, category, version) VALUES (?, ?, ?, ?, ?)"
             )
             .bind(&id)
             .bind(name)
             .bind(content)
+            .bind(cat)
             .bind(version)
             .execute(&self.pool)
         )?;
@@ -1000,8 +1025,19 @@ impl Database {
     pub async fn list_prompt_templates(&self) -> Result<Vec<PromptTemplate>> {
         let rows = db_retry!(
             sqlx::query_as::<_, PromptTemplate>(
-                "SELECT id, name, content, version, created_at FROM prompt_templates ORDER BY name ASC, version DESC"
+                "SELECT id, name, content, category, version, created_at FROM prompt_templates ORDER BY name ASC, version DESC"
             )
+            .fetch_all(&self.pool)
+        )?;
+        Ok(rows)
+    }
+
+    pub async fn get_templates_by_category(&self, category: &str) -> Result<Vec<PromptTemplate>> {
+        let rows = db_retry!(
+            sqlx::query_as::<_, PromptTemplate>(
+                "SELECT id, name, content, category, version, created_at FROM prompt_templates WHERE category = ? ORDER BY name ASC, version DESC"
+            )
+            .bind(category)
             .fetch_all(&self.pool)
         )?;
         Ok(rows)
@@ -1010,7 +1046,7 @@ impl Database {
     pub async fn get_prompt_template(&self, id: &str) -> Result<Option<PromptTemplate>> {
         let row = db_retry!(
             sqlx::query_as::<_, PromptTemplate>(
-                "SELECT id, name, content, version, created_at FROM prompt_templates WHERE id = ?"
+                "SELECT id, name, content, category, version, created_at FROM prompt_templates WHERE id = ?"
             )
             .bind(id)
             .fetch_optional(&self.pool)
@@ -1498,21 +1534,23 @@ impl Database {
 
     // ─── Changes ─────────────────────────────────────────────────────────
 
-    pub async fn create_change(&self, name: &str, work_dir: Option<&str>) -> Result<Change> {
+    pub async fn create_change(&self, name: &str, work_dir: Option<&str>, requirement_path: Option<&str>, tasks_path: Option<&str>) -> Result<Change> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         db_retry!(
             sqlx::query(
-                "INSERT INTO changes (id, name, status, work_dir, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?, ?)"
+                "INSERT INTO changes (id, name, status, work_dir, requirement_path, tasks_path, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?)"
             )
             .bind(&id)
             .bind(name)
             .bind(work_dir)
+            .bind(requirement_path)
+            .bind(tasks_path)
             .bind(now)
             .bind(now)
             .execute(&self.pool)
         )?;
-        Ok(Change { id, name: name.to_string(), status: "draft".to_string(), work_dir: work_dir.map(|s| s.to_string()), explore_summary: None, created_at: now, updated_at: now, archived_at: None })
+        Ok(Change { id, name: name.to_string(), status: "draft".to_string(), work_dir: work_dir.map(|s| s.to_string()), explore_summary: None, requirement_path: requirement_path.map(|s| s.to_string()), tasks_path: tasks_path.map(|s| s.to_string()), created_at: now, updated_at: now, archived_at: None })
     }
 
     pub async fn list_changes(&self, status: Option<&str>) -> Result<Vec<Change>> {

@@ -507,3 +507,24 @@ pub async fn get_session_events(
 
     R::ok(serde_json::json!(unified))
 }
+
+// GET /api/templates?category=requirement — client-accessible template listing
+#[derive(Deserialize)]
+pub struct TemplateQuery {
+    pub category: Option<String>,
+}
+
+pub async fn list_templates(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TemplateQuery>,
+) -> impl IntoResponse {
+    let result = if let Some(ref cat) = query.category {
+        state.db.get_templates_by_category(cat).await
+    } else {
+        state.db.list_prompt_templates().await
+    };
+    match result {
+        Ok(templates) => R::ok(templates),
+        Err(e) => R::internal_error(e),
+    }
+}

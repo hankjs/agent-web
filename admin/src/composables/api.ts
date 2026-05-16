@@ -86,6 +86,7 @@ export interface PromptTemplate {
   id: string
   name: string
   content: string
+  category: string
   version: number
   created_at: string
 }
@@ -165,14 +166,15 @@ export const api = {
     )
   },
 
-  listPromptTemplates() {
-    return request<PromptTemplate[]>('/api/admin/prompt-templates')
+  listPromptTemplates(category?: string) {
+    const query = category ? `?category=${category}` : ''
+    return request<PromptTemplate[]>(`/api/admin/prompt-templates${query}`)
   },
 
-  createPromptTemplate(name: string, content: string) {
+  createPromptTemplate(name: string, content: string, category?: string) {
     return request<{ id: string }>('/api/admin/prompt-templates', {
       method: 'POST',
-      body: JSON.stringify({ name, content }),
+      body: JSON.stringify({ name, content, category: category || 'prompt' }),
     })
   },
 

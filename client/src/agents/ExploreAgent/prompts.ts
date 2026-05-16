@@ -3,6 +3,8 @@ import readerTemplate from "./prompts/explore-reader.md?raw";
 import summarizerTemplate from "./prompts/explore-summarizer.md?raw";
 import exploreTemplate from "./prompts/explore.md?raw";
 import exploreContinueTemplate from "./prompts/explore-continue.md?raw";
+import docUpdaterTemplate from "./prompts/doc-updater.md?raw";
+import taskGeneratorTemplate from "./prompts/task-generator.md?raw";
 
 function fillTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => values[key] ?? "");
@@ -16,6 +18,7 @@ export function buildExplorePlannerPrompt(values: {
   findingsCount: number;
   elapsedSec: number;
   filesRead?: string[];
+  docProgress?: string;
 }) {
   const filesReadStr = values.filesRead?.length
     ? values.filesRead.join(", ")
@@ -28,6 +31,7 @@ export function buildExplorePlannerPrompt(values: {
     findings_count: String(values.findingsCount),
     elapsed_sec: String(values.elapsedSec),
     files_read: filesReadStr,
+    doc_progress: values.docProgress || "无文档模式",
   });
 }
 
@@ -74,5 +78,27 @@ export function buildExploreContinuePrompt(values: {
     change_name: values.changeName,
     work_dir: values.workDir,
     explore_summary: values.exploreSummary || "暂无",
+  });
+}
+
+export function buildDocUpdaterPrompt(values: {
+  documentSections: string;
+  newFindings: string;
+  runningSummary: string;
+}) {
+  return fillTemplate(docUpdaterTemplate, {
+    document_sections: values.documentSections,
+    new_findings: values.newFindings,
+    running_summary: values.runningSummary,
+  });
+}
+
+export function buildTaskGeneratorPrompt(values: {
+  requirementContent: string;
+  workDir: string;
+}) {
+  return fillTemplate(taskGeneratorTemplate, {
+    requirement_content: values.requirementContent,
+    work_dir: values.workDir,
   });
 }
