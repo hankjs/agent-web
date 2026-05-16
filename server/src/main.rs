@@ -7,6 +7,7 @@ mod config;
 mod llm;
 pub mod provider_registry;
 pub mod response;
+mod requirement_docs;
 mod routes;
 mod skills;
 mod specs;
@@ -167,6 +168,10 @@ async fn main() -> Result<()> {
         .route("/api/skills", get(skills::list_skills))
         .route("/api/skills/install", post(skills::install_skill))
         .route("/api/skills/{name}", delete(skills::uninstall_skill))
+        // Requirement docs routes (client)
+        .route("/api/requirement-docs", post(requirement_docs::create_doc))
+        .route("/api/requirement-docs/{id}", put(requirement_docs::update_doc))
+        .route("/api/requirement-docs/by-change/{changeId}", get(requirement_docs::get_doc_by_change))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Admin API routes (also protected)
@@ -189,6 +194,10 @@ async fn main() -> Result<()> {
         .route("/api/admin/providers", post(admin::create_provider))
         .route("/api/admin/providers/{id}", put(admin::update_provider))
         .route("/api/admin/providers/{id}", delete(admin::delete_provider))
+        // Admin requirement docs & tasks
+        .route("/api/admin/requirement-docs", get(requirement_docs::admin_list_docs))
+        .route("/api/admin/requirement-docs/{id}", get(requirement_docs::admin_get_doc))
+        .route("/api/admin/tasks", get(requirement_docs::admin_list_tasks))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Static file serving for admin SPA

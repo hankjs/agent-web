@@ -252,6 +252,30 @@ pub struct ChangeTask {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct RequirementDoc {
+    pub id: String,
+    pub change_id: String,
+    pub session_id: Option<String>,
+    pub name: String,
+    pub content: String,
+    pub version: i32,
+    pub progress_json: Option<String>,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct RequirementDocVersion {
+    pub id: String,
+    pub doc_id: String,
+    pub version: i32,
+    pub content: String,
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsOverview {
     pub total_input_tokens: u64,
@@ -565,6 +589,42 @@ impl Database {
                 updated_at DATETIME NOT NULL DEFAULT NOW(),
                 FOREIGN KEY (change_id) REFERENCES changes(id) ON DELETE CASCADE,
                 INDEX idx_change_tasks_change (change_id, group_order, task_order)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
+        // Requirement docs table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS requirement_docs (
+                id VARCHAR(36) PRIMARY KEY,
+                change_id VARCHAR(36) NOT NULL,
+                session_id VARCHAR(36) DEFAULT NULL,
+                name VARCHAR(255) NOT NULL,
+                content MEDIUMTEXT NOT NULL,
+                version INT NOT NULL DEFAULT 1,
+                progress_json TEXT DEFAULT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'draft',
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                updated_at DATETIME NOT NULL DEFAULT NOW(),
+                INDEX idx_rd_change (change_id),
+                INDEX idx_rd_session (session_id)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
+        // Requirement doc versions table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS requirement_doc_versions (
+                id VARCHAR(36) PRIMARY KEY,
+                doc_id VARCHAR(36) NOT NULL,
+                version INT NOT NULL,
+                content MEDIUMTEXT NOT NULL,
+                source VARCHAR(64) NOT NULL DEFAULT 'system',
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                FOREIGN KEY (doc_id) REFERENCES requirement_docs(id) ON DELETE CASCADE,
+                INDEX idx_rdv_doc (doc_id, version)
             ) DEFAULT CHARSET=utf8mb4",
         )
         .execute(&pool)
@@ -1977,6 +2037,149 @@ impl Database {
                 .execute(&self.pool)
         )?;
         Ok(())
+    }
+
+    // ─── Requirement Docs ───────────────────────────────────────────────
+
+    pub async fn create_requirement_doc(&self, change_id: &str, session_id: Option<&str>, name: &str, content: &str, progress_json: Option<&str>) -> Result<RequirementDoc> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO requirement_docs (id, change_id, session_id, name, content, version, progress_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, 'draft', ?, ?)"
+            )
+            .bind(&id)
+            .bind(change_id)
+            .bind(session_id)
+            .bind(name)
+            .bind(content)
+            .bind(progress_json)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
+        // Also save version 1
+        let vid = Uuid::new_v4().to_string();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO requirement_doc_versions (id, doc_id, version, content, source, created_at) VALUES (?, ?, 1, ?, 'system', ?)"
+            )
+            .bind(&vid)
+            .bind(&id)
+            .bind(content)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
+        Ok(RequirementDoc { id, change_id: change_id.to_string(), session_id: session_id.map(|s| s.to_string()), name: name.to_string(), content: content.to_string(), version: 1, progress_json: progress_json.map(|s| s.to_string()), status: "draft".to_string(), created_at: now, updated_at: now })
+    }
+
+    pub async fn update_requirement_doc(&self, id: &str, content: &str, progress_json: Option<&str>, status: Option<&str>, source: &str) -> Result<()> {
+        let now = Utc::now();
+        // Increment version
+        db_retry!(
+            sqlx::query(
+                "UPDATE requirement_docs SET content = ?, version = version + 1, progress_json = COALESCE(?, progress_json), status = COALESCE(?, status), updated_at = ? WHERE id = ?"
+            )
+            .bind(content)
+            .bind(progress_json)
+            .bind(status)
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+        )?;
+        // Get new version number
+        let row: (i32,) = db_retry!(
+            sqlx::query_as("SELECT version FROM requirement_docs WHERE id = ?")
+                .bind(id)
+                .fetch_one(&self.pool)
+        )?;
+        // Save version snapshot
+        let vid = Uuid::new_v4().to_string();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO requirement_doc_versions (id, doc_id, version, content, source, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&vid)
+            .bind(id)
+            .bind(row.0)
+            .bind(content)
+            .bind(source)
+            .bind(now)
+            .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn get_requirement_doc(&self, id: &str) -> Result<Option<RequirementDoc>> {
+        let doc = db_retry!(
+            sqlx::query_as::<_, RequirementDoc>(
+                "SELECT id, change_id, session_id, name, content, version, progress_json, status, created_at, updated_at FROM requirement_docs WHERE id = ?"
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(doc)
+    }
+
+    pub async fn get_requirement_doc_by_change(&self, change_id: &str) -> Result<Option<RequirementDoc>> {
+        let doc = db_retry!(
+            sqlx::query_as::<_, RequirementDoc>(
+                "SELECT id, change_id, session_id, name, content, version, progress_json, status, created_at, updated_at FROM requirement_docs WHERE change_id = ? ORDER BY created_at DESC LIMIT 1"
+            )
+            .bind(change_id)
+            .fetch_optional(&self.pool)
+        )?;
+        Ok(doc)
+    }
+
+    pub async fn list_requirement_docs(&self, search: Option<&str>, status: Option<&str>, page: u32, page_size: u32) -> Result<(Vec<RequirementDoc>, u64)> {
+        let offset = (page.saturating_sub(1)) * page_size;
+        let mut where_clauses = Vec::new();
+        if search.is_some() { where_clauses.push("(name LIKE CONCAT('%', ?, '%') OR content LIKE CONCAT('%', ?, '%'))"); }
+        if status.is_some() { where_clauses.push("status = ?"); }
+        let where_sql = if where_clauses.is_empty() { String::new() } else { format!("WHERE {}", where_clauses.join(" AND ")) };
+
+        let count_sql = format!("SELECT COUNT(*) FROM requirement_docs {}", where_sql);
+        let list_sql = format!("SELECT id, change_id, session_id, name, content, version, progress_json, status, created_at, updated_at FROM requirement_docs {} ORDER BY updated_at DESC LIMIT ? OFFSET ?", where_sql);
+
+        // Build count query
+        let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+        if let Some(s) = search { count_q = count_q.bind(s).bind(s); }
+        if let Some(st) = status { count_q = count_q.bind(st); }
+        let (total,): (i64,) = count_q.fetch_one(&self.pool).await?;
+
+        // Build list query
+        let mut list_q = sqlx::query_as::<_, RequirementDoc>(&list_sql);
+        if let Some(s) = search { list_q = list_q.bind(s).bind(s); }
+        if let Some(st) = status { list_q = list_q.bind(st); }
+        list_q = list_q.bind(page_size).bind(offset);
+        let docs = list_q.fetch_all(&self.pool).await?;
+
+        Ok((docs, total as u64))
+    }
+
+    pub async fn list_all_tasks(&self, status: Option<&str>, change_id: Option<&str>, page: u32, page_size: u32) -> Result<(Vec<ChangeTask>, u64)> {
+        let offset = (page.saturating_sub(1)) * page_size;
+        let mut where_clauses = Vec::new();
+        if status.is_some() { where_clauses.push("status = ?"); }
+        if change_id.is_some() { where_clauses.push("change_id = ?"); }
+        let where_sql = if where_clauses.is_empty() { String::new() } else { format!("WHERE {}", where_clauses.join(" AND ")) };
+
+        let count_sql = format!("SELECT COUNT(*) FROM change_tasks {}", where_sql);
+        let list_sql = format!("SELECT id, change_id, group_name, group_order, task_order, title, description, status, session_id, created_at, updated_at FROM change_tasks {} ORDER BY created_at DESC LIMIT ? OFFSET ?", where_sql);
+
+        let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+        if let Some(s) = status { count_q = count_q.bind(s); }
+        if let Some(c) = change_id { count_q = count_q.bind(c); }
+        let (total,): (i64,) = count_q.fetch_one(&self.pool).await?;
+
+        let mut list_q = sqlx::query_as::<_, ChangeTask>(&list_sql);
+        if let Some(s) = status { list_q = list_q.bind(s); }
+        if let Some(c) = change_id { list_q = list_q.bind(c); }
+        list_q = list_q.bind(page_size).bind(offset);
+        let tasks = list_q.fetch_all(&self.pool).await?;
+
+        Ok((tasks, total as u64))
     }
 }
 

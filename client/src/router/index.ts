@@ -60,6 +60,16 @@ const router = createRouter({
           name: "debug-stream",
           component: () => import("../views/DebugStream.vue"),
         },
+        {
+          path: "admin/docs",
+          name: "admin-docs",
+          component: () => import("../views/AdminDocs.vue"),
+        },
+        {
+          path: "admin/tasks",
+          name: "admin-tasks",
+          component: () => import("../views/AdminTasks.vue"),
+        },
       ],
     },
   ],

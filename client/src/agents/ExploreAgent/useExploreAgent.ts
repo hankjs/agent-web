@@ -2,6 +2,11 @@ import { ref } from "vue";
 import { encodingForModel } from "js-tiktoken";
 import { authFetch } from "../../composables/useSession";
 import {
+  createRequirementDoc,
+  updateRequirementDoc,
+  getRequirementDocByChange,
+} from "../../api/admin";
+import {
   buildExplorePlannerPrompt,
   buildExploreReaderPrompt,
   buildExploreSummarizerPrompt,
@@ -53,6 +58,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     documentSections: [],
     documentName: "",
     templateId: null,
+    requirementDocId: null,
   });
 
   const isFirstTurn = ref(true);
@@ -442,15 +448,34 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   }
 
   async function writeDocToFile() {
-    if (!state.value.documentName || !options.workDir) return;
+    if (!state.value.documentName) {
+      console.warn("[ExploreAgent] writeDocToFile skipped: no documentName");
+      return;
+    }
     const markdown = assembleMarkdown(state.value.documentSections, state.value.documentName);
-    const dirPath = `${options.workDir}/docs/changes/${state.value.documentName.replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, "-")}`;
-    const filePath = `${dirPath}/requirement.md`;
+    const progressJson = JSON.stringify(getDocProgress(state.value.documentSections));
+
     try {
-      // 使用 Tauri write_file 命令（通过 execTool 的 shell 工具）
-      await execTool("shell", { command: `mkdir -p "${dirPath}" && cat > "${filePath}" << 'HANK_EOF'\n${markdown}\nHANK_EOF` }, options.workDir);
-    } catch {
-      // 写入失败不阻塞流程
+      if (state.value.requirementDocId) {
+        await updateRequirementDoc(state.value.requirementDocId, {
+          content: markdown,
+          progress_json: progressJson,
+          source: "explore",
+        });
+      } else {
+        const res = await createRequirementDoc({
+          change_id: options.changeId || options.sessionId,
+          session_id: options.sessionId,
+          name: state.value.documentName,
+          content: markdown,
+          progress_json: progressJson,
+        });
+        if (res.ok && res.data) {
+          state.value.requirementDocId = res.data.id;
+        }
+      }
+    } catch (e) {
+      console.error("[ExploreAgent] writeDocToFile API error:", e);
     }
   }
 
@@ -482,26 +507,39 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       const requirementContent = assembleMarkdown(state.value.documentSections, title);
       const tasksMarkdown = await runTaskGenerator(requirementContent, options.workDir, abortController.signal);
 
-      // 写入 tasks.md
-      const dirPath = `${options.workDir}/docs/changes/${state.value.documentName.replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, "-")}`;
-      const tasksPath = `${dirPath}/tasks.md`;
-      await execTool("shell", { command: `mkdir -p "${dirPath}" && cat > "${tasksPath}" << 'HANK_EOF'\n${tasksMarkdown}\nHANK_EOF` }, options.workDir);
+      // 确保需求文档已保存到 DB
+      if (!state.value.requirementDocId) {
+        const docRes = await createRequirementDoc({
+          change_id: options.changeId || options.sessionId,
+          session_id: options.sessionId,
+          name: title,
+          content: requirementContent,
+          progress_json: JSON.stringify(getDocProgress(state.value.documentSections)),
+        });
+        if (docRes.ok && docRes.data) {
+          state.value.requirementDocId = docRes.data.id;
+        }
+      } else {
+        await updateRequirementDoc(state.value.requirementDocId, {
+          content: requirementContent,
+          status: "confirmed",
+          source: "confirm",
+        });
+      }
 
-      // 创建 Change 记录
-      const reqPath = `${dirPath}/requirement.md`;
+      // 创建 Change 记录（不再传本地路径）
       const res = await authFetch("/api/changes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: title,
           explore_summary: state.value.runningSummary,
-          requirement_path: reqPath,
-          tasks_path: tasksPath,
           session_id: options.sessionId,
+          tasks_content: tasksMarkdown,
         }),
       });
       if (res.ok) {
-        await logEvent("explore:complete", { title, requirement_path: reqPath, tasks_path: tasksPath }, "user");
+        await logEvent("explore:complete", { title }, "user");
       }
     } catch (e: any) {
       if (e.name === "AbortError") return;
@@ -655,8 +693,10 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
     if (isFirstTurn.value) {
       state.value.uncoveredAreas = getInitialAreas();
-      // 初始化文档模式：从 metadata 获取模板
-      await initDocumentMode();
+      // 初始化文档模式：仅在 documentSections 为空时（非恢复场景）才加载模板
+      if (state.value.documentSections.length === 0) {
+        await initDocumentMode();
+      }
       // 如果没有 documentName，从用户输入生成一个
       if (!state.value.documentName && state.value.documentSections.length > 0) {
         state.value.documentName = content.slice(0, 30).replace(/\n/g, " ").trim() || "需求文档";
@@ -664,7 +704,8 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         persistDocumentName(state.value.documentName);
       }
       // 立即将用户原始需求写入第一个 section，面板即时显示有内容的文档
-      if (state.value.documentSections.length > 0) {
+      // 仅在全新会话时（sections 刚从模板初始化，内容为空）才覆写 section[0]
+      if (state.value.documentSections.length > 0 && !state.value.documentSections.some(s => s.status === "filled")) {
         const oldSections = state.value.documentSections.map(s => ({ ...s }));
         state.value.documentSections = state.value.documentSections.map((sec, idx) =>
           idx === 0
@@ -695,8 +736,15 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       await updateDocFromUserAnswer(content);
     }
 
+    // 用户刚做了关键决策时，追加深入信号防止 planner 过早收敛
+    let plannerInput = content;
+    if (!isFirstTurn.value && state.value.turnCount > 0) {
+      // 非首轮且已有探索历史 = 用户在回答 Agent 的提问，属于关键决策
+      plannerInput = content + "\n（用户刚做了关键决策，请基于此决策继续 read_code 细化技术方案，不要立即收敛）";
+    }
+
     try {
-      await reactLoop(content, images);
+      await reactLoop(plannerInput, images);
     } finally {
       options.onStreaming(false);
     }
@@ -752,27 +800,83 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     state.value.phase = "done";
   }
 
-  /** 从本地文件恢复 documentSections（页面刷新/历史加载时）
-   * 前置条件：session metadata 中必须有 documentName，由 persistDocumentName 写入 */
+  /** 从 API 恢复 documentSections（页面刷新/历史加载时） */
   async function restoreDocFromFile() {
     const meta = options.metadata;
     const docName = meta?.documentName || "";
-    if (!docName || !options.workDir) return;
+    console.log("[ExploreAgent] restoreDocFromFile: metadata=", meta, "docName=", docName);
+    if (!docName) {
+      console.warn("[ExploreAgent] restoreDocFromFile skipped: no docName");
+      return;
+    }
 
     state.value.documentName = docName;
-    const dirName = docName.replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, "-");
-    const filePath = `${options.workDir}/docs/changes/${dirName}/requirement.md`;
+
+    const changeId = options.changeId || options.sessionId;
     try {
-      const result = await execTool("read_file", { path: filePath }, options.workDir);
-      if (!result.is_error && result.content.trim()) {
-        const sections = parseMarkdownToSections(result.content);
+      const res = await getRequirementDocByChange(changeId);
+      if (res.ok && res.data) {
+        state.value.requirementDocId = res.data.id;
+        const sections = parseMarkdownToSections(res.data.content);
         if (sections.length > 0) {
           state.value.documentSections = sections;
           docHistory.initFromSections(sections);
+          isFirstTurn.value = false;
+          console.log("[ExploreAgent] restoreDocFromFile: restored from API, sections:", sections.length);
         }
       }
-    } catch {
-      // 文件尚未创建，面板保持空状态，等待首次用户输入后写入
+    } catch (e) {
+      console.error("[ExploreAgent] restoreDocFromFile error:", e);
+    }
+  }
+
+  /** 从历史事件恢复 agent 运行状态（runningSummary, filesRead, turnCount）
+   * 解决恢复历史后上下文丢失导致重复读文件的问题 */
+  function restoreAgentState(allEvents: Array<{ event_type: string; payload: any }>) {
+    // 找最后一个 summary_update 事件恢复 runningSummary
+    let lastSummary = "";
+    let restoredFilesRead: string[] = [];
+    let readCodeTurns = 0;
+
+    for (const ev of allEvents) {
+      const p = typeof ev.payload === "string" ? JSON.parse(ev.payload) : ev.payload;
+      switch (ev.event_type) {
+        case "explore:summary_update":
+          if (p.after) lastSummary = p.after;
+          break;
+        case "explore:tool_call":
+          if (p.tool_name === "glob" && p.input?.pattern) {
+            restoredFilesRead.push(`glob:${p.input.pattern}`);
+          } else if (p.tool_name === "read_file" && p.input?.path) {
+            restoredFilesRead.push(p.input.path);
+          } else if (p.tool_name === "search" && p.input?.query) {
+            restoredFilesRead.push(`search:${p.input.query}`);
+          }
+          break;
+        case "explore:action":
+          if (p.action === "read_code") readCodeTurns++;
+          break;
+        case "explore:answer":
+          // 如果没有 summary_update（未触发压缩），从用户回答重建摘要
+          if (!lastSummary && p.content) {
+            lastSummary = (lastSummary ? lastSummary + "\n" : "") + `[回答] ${p.content}`;
+          }
+          break;
+      }
+    }
+
+    if (lastSummary) {
+      state.value.runningSummary = lastSummary;
+      console.log("[ExploreAgent] restoreAgentState: runningSummary restored, length=", lastSummary.length);
+    }
+    if (restoredFilesRead.length > 0) {
+      state.value.filesRead = restoredFilesRead;
+      console.log("[ExploreAgent] restoreAgentState: filesRead restored, count=", restoredFilesRead.length);
+    }
+    if (readCodeTurns > 0) {
+      state.value.turnCount = readCodeTurns;
+      isFirstTurn.value = false;
+      console.log("[ExploreAgent] restoreAgentState: turnCount=", readCodeTurns);
     }
   }
 
@@ -805,5 +909,5 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     await saveDocDiff("用户编辑", [{ sectionId, oldContent, newContent }]);
   }
 
-  return { state, handleUserInput, handleRequirementConfirm, resume, cancel, markDone, docHistory, undoDoc, redoDoc, editSection, restoreDocFromFile };
+  return { state, handleUserInput, handleRequirementConfirm, resume, cancel, markDone, docHistory, undoDoc, redoDoc, editSection, restoreDocFromFile, restoreAgentState };
 }

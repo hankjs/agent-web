@@ -79,6 +79,7 @@ export function assembleMarkdown(sections: DocumentSection[], title?: string): s
 
 /**
  * 计算文档进度字符串，如 "3/7 filled"
+ * 包含质量信号：检测"待细化"/"待定"/"TBD"标记和未解答的开放问题
  */
 export function getDocProgress(sections: DocumentSection[]): string {
   if (sections.length === 0) return "无文档模式";
@@ -100,6 +101,33 @@ export function getDocProgress(sections: DocumentSection[]): string {
 
   if (pending.length > 0) {
     result += `\n待填: ${pending.join(", ")}`;
+  }
+
+  // 质量信号：检测未完成标记
+  const INCOMPLETE_MARKERS = /待细化|待定|TBD|待确认|TODO|待补充/g;
+  const qualityIssues: string[] = [];
+  for (const sec of filledSections) {
+    const markers = sec.content.match(INCOMPLETE_MARKERS);
+    if (markers) {
+      qualityIssues.push(`${sec.title}含"${[...new Set(markers)].join("/")}"`);
+    }
+  }
+
+  // 检测"开放问题"章节是否有未解答内容
+  const openQSection = sections.find(s =>
+    s.title.includes("开放问题") || s.title.includes("待决事项") || s.title.toLowerCase().includes("open")
+  );
+  let openQuestionCount = 0;
+  if (openQSection && openQSection.content.trim()) {
+    const lines = openQSection.content.split("\n").filter(l => l.trim().startsWith("-") || l.trim().match(/^\d+\./));
+    openQuestionCount = lines.length;
+    if (openQuestionCount > 0) {
+      qualityIssues.push(`开放问题有${openQuestionCount}条未解答`);
+    }
+  }
+
+  if (qualityIssues.length > 0) {
+    result += `\n⚠ 质量问题: ${qualityIssues.join(", ")}`;
   }
 
   return result;

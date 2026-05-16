@@ -8,6 +8,7 @@ import {
   getChange, listArtifacts, listTasks, updateTask, archiveChange, startExplore,
   type ChangeDetail as ChangeDetailType, type ChangeArtifact, type TaskGroup,
 } from "../api/changes";
+import { getRequirementDocByChange } from "../api/admin";
 import PageLoading from "../components/PageLoading.vue";
 
 const route = useRoute();
@@ -33,10 +34,12 @@ async function fetchData() {
     if (artifactsRes.ok && artifactsRes.data) artifacts.value = artifactsRes.data;
     if (tasksRes.ok && tasksRes.data) taskGroups.value = tasksRes.data;
 
-    // 尝试从文件系统读取需求文档和任务文档
-    if (change.value?.requirement_path) {
-      requirementContent.value = await readFileContent(change.value.requirement_path);
+    // 从 API 读取需求文档
+    const docRes = await getRequirementDocByChange(changeId);
+    if (docRes.ok && docRes.data) {
+      requirementContent.value = docRes.data.content;
     }
+    // tasks 内容暂从本地文件读取（后续可迁移）
     if (change.value?.tasks_path) {
       tasksContent.value = await readFileContent(change.value.tasks_path);
     }

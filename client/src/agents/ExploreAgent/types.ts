@@ -24,6 +24,7 @@ export interface ExploreAgentState {
   documentSections: DocumentSection[];
   documentName: string;
   templateId: string | null;
+  requirementDocId: string | null;
 }
 
 export type AskUserOption = string | { label: string; description?: string };
@@ -75,6 +76,7 @@ export type Block =
 
 export interface ExploreAgentOptions {
   sessionId: string;
+  changeId?: string;
   metadata: Record<string, any> | null;
   workDir: string;
   onBlock: (block: Block) => void;

@@ -41,6 +41,7 @@ const blocksComposable = {} as ReturnType<typeof useAgentBlocks>;
 const changesPanelRefreshKey = ref(0);
 const exploreOptions = reactive({
   sessionId: props.sessionId,
+  changeId: currentSession.value?.change_id || undefined,
   metadata: currentSession.value?.metadata || null,
   workDir: currentSession.value?.work_dir || "",
   onBlock: (block: Block) => blocksComposable.onBlock(block),
@@ -76,6 +77,7 @@ const askUserBusy = computed(() => isStreaming.value && exploreAgent.state.value
 function syncExploreContext() {
   exploreOptions.metadata = currentSession.value?.metadata || null;
   exploreOptions.workDir = currentSession.value?.work_dir || "";
+  exploreOptions.changeId = currentSession.value?.change_id || undefined;
 }
 
 watch(() => currentSession.value, syncExploreContext, { immediate: true });

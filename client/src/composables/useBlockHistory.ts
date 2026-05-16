@@ -20,7 +20,13 @@ export function useBlockHistory(
             if (!res.ok) return;
             const json = await res.json();
             const events: RawEvent[] = json.data || json;
+            console.log("[BlockHistory] loadHistory: total events=", events.length);
+
+            // 从所有事件（含 internal）恢复 agent 运行状态
+            exploreAgent.restoreAgentState(events);
+
             const userEvents = events.filter((ev: RawEvent) => ev.source !== "remote" && ev.visibility !== "internal");
+            console.log("[BlockHistory] loadHistory: userEvents=", userEvents.length);
 
             const answerIndices: number[] = [];
             userEvents.forEach((ev: any, idx: number) => {
@@ -28,6 +34,7 @@ export function useBlockHistory(
             });
 
             const restored = restoreBlocks(userEvents, answerIndices);
+            console.log("[BlockHistory] loadHistory: restored blocks=", restored.length);
 
             if (restored.length > 0) {
                 blocks.value = restored;
@@ -38,9 +45,11 @@ export function useBlockHistory(
             }
 
             // 从本地文件恢复文档面板
+            console.log("[BlockHistory] calling restoreDocFromFile...");
             await exploreAgent.restoreDocFromFile();
-        } catch {
-            /* best effort */
+            console.log("[BlockHistory] restoreDocFromFile done, documentSections=", exploreAgent.state.value.documentSections?.length);
+        } catch (e) {
+            console.error("[BlockHistory] loadHistory error:", e);
         }
     }
 

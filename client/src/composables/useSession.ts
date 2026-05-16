@@ -10,6 +10,7 @@ export interface Session {
   work_dir: string | null;
   environment: "remote" | "local";
   session_type: "chat" | "explore";
+  change_id: string | null;
   active_leaf_id: string | null;
   metadata: Record<string, any> | null;
   created_at: string;
