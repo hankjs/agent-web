@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useSession } from "../composables/useSession";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
@@ -9,8 +9,13 @@ import ContextMenu from "./ContextMenu.vue";
 const router = useRouter();
 const route = useRoute();
 const { sessions, fetchSessions, selectSession, deleteSession, updateSessionTitle, logout } = useSession();
-const { panels: sidebarPanels, activePanelId, togglePanel, closePanel } = useSidebarPanels();
+const { panels: sidebarPanels, activePanelId, togglePanel, closePanel, reset: resetPanels } = useSidebarPanels();
 const { visible: ctxVisible, position: ctxPosition, items: ctxItems, open: ctxOpen, close: ctxClose } = useContextMenu();
+
+// 路由切换时重置面板状态，由新页面重新注册
+watch(() => route.fullPath, (_, oldPath) => {
+  if (oldPath) resetPanels();
+});
 
 const renamingSessionId = ref<string | null>(null);
 const renameInput = ref("");
@@ -141,14 +146,14 @@ function startResize(e: MouseEvent) {
 function onResize(e: MouseEvent) {
   if (!shellEl.value) return;
   const shell = shellEl.value;
-  const nav = shell.querySelector(".nav") as HTMLElement;
+  const wrapper = shell.querySelector(".content-panel-area") as HTMLElement;
+  if (!wrapper) return;
   const activityBar = shell.querySelector(".activity-bar") as HTMLElement;
-  const navWidth = nav?.offsetWidth || 0;
   const actBarWidth = activityBar?.offsetWidth || 0;
-  const availableWidth = shell.offsetWidth - navWidth - actBarWidth;
+  const availableWidth = wrapper.offsetWidth;
   if (availableWidth <= 0) return;
-  const panelRight = shell.getBoundingClientRect().right - actBarWidth;
-  const panelWidth = panelRight - e.clientX;
+  const wrapperRight = wrapper.getBoundingClientRect().right - actBarWidth;
+  const panelWidth = wrapperRight - e.clientX;
   const percent = Math.min(80, Math.max(20, (panelWidth / availableWidth) * 100));
   panelWidthPercent.value = percent;
 }
@@ -382,28 +387,30 @@ defineExpose({ rightPanelOpen, navCollapsed });
       </div>
     </nav>
 
-    <!-- Center Content -->
-    <main class="content" :style="contentStyle">
-      <router-view v-slot="{ Component, route }">
-        <component :is="Component" :key="route.fullPath" />
-      </router-view>
-    </main>
+    <!-- Content + Panel wrapper (flex percentages apply within this area) -->
+    <div class="content-panel-area">
+      <main class="content" :style="contentStyle">
+        <router-view v-slot="{ Component, route }">
+          <component :is="Component" :key="route.fullPath" />
+        </router-view>
+      </main>
 
-    <!-- Resize Handle -->
-    <div v-if="rightPanelOpen" class="panel-resize-handle" @mousedown="startResize"></div>
+      <!-- Resize Handle -->
+      <div v-if="rightPanelOpen" class="panel-resize-handle" @mousedown="startResize"></div>
 
-    <!-- Right Panel (driven by useSidebarPanels) -->
-    <aside v-if="rightPanelOpen" class="panel" :style="panelStyle">
-      <div class="panel-header">
-        <span class="panel-title">{{ sidebarPanels.find(p => p.id === activePanelId)?.title }}</span>
-        <button class="panel-close" @click="closePanel()" aria-label="关闭面板">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-          </svg>
-        </button>
-      </div>
-      <div class="panel-content" id="shell-panel-content"></div>
-    </aside>
+      <!-- Right Panel (driven by useSidebarPanels) -->
+      <aside v-if="rightPanelOpen" class="panel" :style="panelStyle">
+        <div class="panel-header">
+          <span class="panel-title">{{ sidebarPanels.find(p => p.id === activePanelId)?.title }}</span>
+          <button class="panel-close" @click="closePanel()" aria-label="关闭面板">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="panel-content" id="shell-panel-content"></div>
+      </aside>
+    </div>
 
     <!-- Activity Bar -->
     <div v-if="sidebarPanels.length > 0" class="activity-bar">
@@ -705,6 +712,13 @@ defineExpose({ rightPanelOpen, navCollapsed });
 }
 
 /* Center Content */
+.content-panel-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+
 .content {
   flex: 1;
   min-width: 0;
@@ -769,6 +783,8 @@ defineExpose({ rightPanelOpen, navCollapsed });
 .panel-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
   padding: 0 var(--space-3) var(--space-3);
 }
 

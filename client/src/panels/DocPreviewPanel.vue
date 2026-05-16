@@ -124,7 +124,7 @@ function statusClass(status: string) {
 </template>
 
 <style scoped>
-.doc-preview-panel { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.doc-preview-panel { padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-x: hidden; min-width: 0; }
 
 .doc-history-bar { display: flex; align-items: center; gap: 6px; }
 .doc-history-btn { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 4px; border: 1px solid var(--color-border-subtle, #333); background: transparent; color: var(--color-text-secondary, #aaa); cursor: pointer; transition: background 0.15s, color 0.15s; }
@@ -155,7 +155,7 @@ function statusClass(status: string) {
 .section-status--empty .doc-section-dot { background: #666; }
 .section-status--empty .doc-section-badge { color: #888; background: rgba(136, 136, 136, 0.12); }
 
-.doc-section-content { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--color-text-secondary, #aaa); white-space: pre-wrap; cursor: pointer; border-radius: 4px; padding: 4px; transition: background 0.15s; }
+.doc-section-content { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--color-text-secondary, #aaa); white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; cursor: pointer; border-radius: 4px; padding: 4px; transition: background 0.15s; }
 .doc-section-content:hover { background: var(--color-surface-2, #222); }
 
 .doc-section-placeholder { margin-top: 6px; font-size: 12px; color: var(--color-text-muted, #666); cursor: pointer; padding: 4px; font-style: italic; }
