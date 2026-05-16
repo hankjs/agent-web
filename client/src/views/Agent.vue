@@ -17,6 +17,7 @@ import AgentBlockPlannerDecision from "../components/AgentBlockPlannerDecision.v
 import AgentBlockAskUser from "../components/AgentBlockAskUser.vue";
 import PageLoading from "../components/PageLoading.vue";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
+import DocPreviewPanel from "../panels/DocPreviewPanel.vue";
 
 const props = defineProps<{ sessionId: string }>();
 
@@ -30,7 +31,8 @@ async function handleUpdateTitle(newTitle: string) {
 }
 
 // Sidebar
-const { activePanelId, registerPanel } = useSidebarPanels();
+const { activePanelId, registerPanel, togglePanel } = useSidebarPanels();
+registerPanel({ id: "doc-preview", icon: "doc", title: "文档", order: 0 });
 registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
 
 // Agent blocks composable (forward-declared, wired after exploreAgent init)
@@ -113,6 +115,10 @@ async function initializeSession() {
 // Load session on mount
 onMounted(async () => {
   await initializeSession();
+  // Explore 会话自动展开文档面板
+  if (!activePanelId.value) {
+    activePanelId.value = "doc-preview";
+  }
 });
 </script>
 
@@ -188,6 +194,7 @@ onMounted(async () => {
 
     <!-- Panel content teleported to AppShell right panel -->
     <Teleport to="#shell-panel-content" v-if="activePanelId">
+      <DocPreviewPanel v-if="activePanelId === 'doc-preview'" :sections="exploreAgent.state.value.documentSections" />
       <ChangeChatPanel v-if="activePanelId === 'changes'" :session-id="sessionId" :work-dir="currentSession?.work_dir || ''" :key="changesPanelRefreshKey" />
     </Teleport>
   </AgentLayout>

@@ -1,8 +1,41 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
-import { useSession } from "../composables/useSession";
+import { ref, computed, onMounted } from "vue";
+import { useSession, authFetch } from "../composables/useSession";
+import AppSelect, { type SelectOption } from "./AppSelect.vue";
 
 const { sessions, createSession } = useSession();
+
+interface TemplateItem { id: string; name: string; }
+const requirementTemplates = ref<TemplateItem[]>([]);
+const taskTemplates = ref<TemplateItem[]>([]);
+const selectedReqTemplate = ref<string>("");
+const selectedTaskTemplate = ref<string>("");
+
+const reqOptions = computed<SelectOption[]>(() => [
+  { value: "", label: "默认（第一个模板）" },
+  ...requirementTemplates.value.map(t => ({ value: t.id, label: t.name })),
+]);
+const taskOptions = computed<SelectOption[]>(() => [
+  { value: "", label: "默认" },
+  ...taskTemplates.value.map(t => ({ value: t.id, label: t.name })),
+]);
+
+onMounted(async () => {
+  try {
+    const [reqRes, taskRes] = await Promise.all([
+      authFetch("/api/templates?category=requirement"),
+      authFetch("/api/templates?category=task"),
+    ]);
+    if (reqRes.ok) {
+      const json = await reqRes.json();
+      requirementTemplates.value = json.data || [];
+    }
+    if (taskRes.ok) {
+      const json = await taskRes.json();
+      taskTemplates.value = json.data || [];
+    }
+  } catch { /* ignore */ }
+});
 
 const emit = defineEmits<{ close: [] }>();
 
@@ -59,6 +92,8 @@ async function submit() {
       depth: depth.value,
       questionStyle: questionStyle.value,
       focusAreas: focusAreas.value,
+      ...(selectedReqTemplate.value ? { templateId: selectedReqTemplate.value } : {}),
+      ...(selectedTaskTemplate.value ? { taskTemplateId: selectedTaskTemplate.value } : {}),
     },
   });
   emit("close");
@@ -86,16 +121,23 @@ async function submit() {
           <button :class="{ active: questionStyle === 'open' }" @click="questionStyle = 'open'">开放追问</button>
         </div>
 
-        <div class="field-label">关注范围</div>
-        <div class="focus-grid">
-          <button
-            v-for="area in focusOptions"
-            :key="area"
-            class="focus-chip"
-            :class="{ active: focusAreas.includes(area) }"
-            @click="toggleFocus(area)"
-          >{{ area }}</button>
-        </div>
+        <div class="field-label">需求模板</div>
+        <AppSelect
+          v-if="requirementTemplates.length"
+          v-model="selectedReqTemplate"
+          :options="reqOptions"
+          placeholder="默认（第一个模板）"
+        />
+        <div v-else class="template-empty">暂无需求模板</div>
+
+        <div class="field-label">任务模板</div>
+        <AppSelect
+          v-if="taskTemplates.length"
+          v-model="selectedTaskTemplate"
+          :options="taskOptions"
+          placeholder="默认"
+        />
+        <div v-else class="template-empty">暂无任务模板</div>
 
         <div class="project-label">选择项目</div>
         <div class="project-options">
@@ -229,4 +271,5 @@ async function submit() {
 .submit-btn { padding: 7px 16px; background: var(--color-accent, #3b82f6); color: white; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .empty-inline { font-size: 12px; color: var(--color-text-muted, #888); padding: 12px; text-align: center; }
+.template-empty { font-size: 11px; color: var(--color-text-muted, #666); padding: 6px 0 14px; }
 </style>

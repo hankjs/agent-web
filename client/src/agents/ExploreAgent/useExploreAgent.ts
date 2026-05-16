@@ -637,7 +637,9 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       if (res.ok) {
         const templates = await res.json();
         if (templates.length > 0) {
-          const template = templates[0]; // 使用第一个需求模板
+          const template = meta.templateId
+            ? templates.find((t: any) => t.id === meta.templateId) || templates[0]
+            : templates[0];
           state.value.templateId = template.id;
           state.value.documentSections = parseTemplateToSections(template.content);
         }
