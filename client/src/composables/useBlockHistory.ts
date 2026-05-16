@@ -37,7 +37,7 @@ export function useBlockHistory(
                 nextTick(scrollToBottom);
             }
 
-            // 始终尝试恢复文档面板（即使对话 blocks 为空，文档可能已存在）
+            // 始终尝试恢复文档面板（从本地文件读取，不依赖 events）
             await exploreAgent.restoreDocFromFile();
         } catch {
             /* best effort */

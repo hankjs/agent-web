@@ -108,6 +108,15 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     } catch { /* best effort */ }
   }
 
+  /** 将文档变更 diff 记录到数据库，用于展示变更历史 */
+  async function saveDocDiff(source: string, diffs: Array<{ sectionId: string; oldContent: string; newContent: string }>) {
+    await logEvent("explore:doc_diff", {
+      documentName: state.value.documentName,
+      diffs,
+      source,
+    }, "internal");
+  }
+
   function parseFindings(text: string): Finding[] {
     const match = text.match(/```json:findings\s*\n([\s\S]*?)\n```/);
     if (!match) return [];
@@ -391,6 +400,11 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         state.value.documentSections = applySectionUpdates(state.value.documentSections, result);
         docHistory.commit(oldSections, state.value.documentSections, "代码探索");
         await writeDocToFile();
+        const diffs = result.updates.map(u => {
+          const oldSec = oldSections.find(s => s.id === u.section_id);
+          return { sectionId: u.section_id, oldContent: oldSec?.content || "", newContent: u.content };
+        });
+        await saveDocDiff("代码探索", diffs);
         await logEvent("explore:doc_update", { updates: result.updates.map(u => u.section_id), progress: getDocProgress(state.value.documentSections) }, "internal");
       }
     } catch (e: any) {
@@ -415,6 +429,11 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         state.value.documentSections = applySectionUpdates(state.value.documentSections, result);
         docHistory.commit(oldSections, state.value.documentSections, "用户回答");
         await writeDocToFile();
+        const diffs = result.updates.map(u => {
+          const oldSec = oldSections.find(s => s.id === u.section_id);
+          return { sectionId: u.section_id, oldContent: oldSec?.content || "", newContent: u.content };
+        });
+        await saveDocDiff("用户回答", diffs);
         await logEvent("explore:doc_update", { source: "user_answer", updates: result.updates.map(u => u.section_id), progress: getDocProgress(state.value.documentSections) }, "internal");
       }
     } catch (e: any) {
@@ -655,6 +674,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         docHistory.commit(oldSections, state.value.documentSections, "用户回答");
         // 第一次输入就生成文档文件，后续探索持续填充
         await writeDocToFile();
+        await saveDocDiff("用户回答", [{ sectionId: state.value.documentSections[0]?.id || "", oldContent: "", newContent: content }]);
       }
       isFirstTurn.value = false;
     }
@@ -732,29 +752,35 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     state.value.phase = "done";
   }
 
-  /** 从已保存的 markdown 文件恢复 documentSections（页面刷新/历史加载时） */
+  /** 从本地文件恢复 documentSections（页面刷新/历史加载时） */
   async function restoreDocFromFile() {
-    // 确保 documentName 已设置
-    if (!state.value.documentName) {
-      const meta = options.metadata;
-      const docName = meta?.documentName || meta?.changeName || "";
-      if (docName) state.value.documentName = docName;
+    // 从 session metadata 获取 documentName
+    const meta = options.metadata;
+    const docName = meta?.documentName || meta?.changeName || "";
+    if (!docName || !options.workDir) {
+      return;
     }
-    if (!state.value.documentName || !options.workDir) return;
-    const dirPath = `${options.workDir}/docs/changes/${state.value.documentName.replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, "-")}`;
-    const filePath = `${dirPath}/requirement.md`;
+    state.value.documentName = docName;
+
+    // 尝试从本地文件读取
+    const dirName = docName.replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, "-");
+    const filePath = `${options.workDir}/docs/changes/${dirName}/requirement.md`;
     try {
-      const result = await execTool("shell", { command: `cat "${filePath}"` }, options.workDir);
-      const markdown = typeof result === "string" ? result : (result as any)?.output || "";
-      if (!markdown.trim()) return;
-      const sections = parseMarkdownToSections(markdown);
-      if (sections.length > 0) {
-        state.value.documentSections = sections;
-        docHistory.initFromSections(sections);
+      const result = await execTool("read_file", { path: filePath }, options.workDir);
+      if (!result.is_error && result.content.trim()) {
+        const sections = parseMarkdownToSections(result.content);
+        if (sections.length > 0) {
+          state.value.documentSections = sections;
+          docHistory.initFromSections(sections);
+          return;
+        }
       }
     } catch {
-      // 文件不存在时静默忽略
+      // 文件不存在，fallback 到模板初始化
     }
+
+    // 本地文件不存在或为空，fallback 到模板初始化
+    await initDocumentMode();
   }
 
   async function undoDoc() {
@@ -775,6 +801,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
   async function editSection(sectionId: string, newContent: string) {
     const oldSections = state.value.documentSections.map(s => ({ ...s }));
+    const oldContent = oldSections.find(s => s.id === sectionId)?.content || "";
     state.value.documentSections = state.value.documentSections.map(sec =>
       sec.id === sectionId
         ? { ...sec, content: newContent, status: newContent.trim() ? "filled" as const : "empty" as const }
@@ -782,6 +809,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     );
     docHistory.commit(oldSections, state.value.documentSections, "用户编辑");
     await writeDocToFile();
+    await saveDocDiff("用户编辑", [{ sectionId, oldContent, newContent }]);
   }
 
   return { state, handleUserInput, handleRequirementConfirm, resume, cancel, markDone, docHistory, undoDoc, redoDoc, editSection, restoreDocFromFile };
