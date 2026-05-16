@@ -37,7 +37,7 @@ export function useBlockHistory(
                 nextTick(scrollToBottom);
             }
 
-            // 始终尝试恢复文档面板（从本地文件读取，不依赖 events）
+            // 从本地文件恢复文档面板
             await exploreAgent.restoreDocFromFile();
         } catch {
             /* best effort */

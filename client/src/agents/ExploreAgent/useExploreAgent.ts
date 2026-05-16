@@ -752,17 +752,14 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     state.value.phase = "done";
   }
 
-  /** 从本地文件恢复 documentSections（页面刷新/历史加载时） */
+  /** 从本地文件恢复 documentSections（页面刷新/历史加载时）
+   * 前置条件：session metadata 中必须有 documentName，由 persistDocumentName 写入 */
   async function restoreDocFromFile() {
-    // 从 session metadata 获取 documentName
     const meta = options.metadata;
-    const docName = meta?.documentName || meta?.changeName || "";
-    if (!docName || !options.workDir) {
-      return;
-    }
-    state.value.documentName = docName;
+    const docName = meta?.documentName || "";
+    if (!docName || !options.workDir) return;
 
-    // 尝试从本地文件读取
+    state.value.documentName = docName;
     const dirName = docName.replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, "-");
     const filePath = `${options.workDir}/docs/changes/${dirName}/requirement.md`;
     try {
@@ -772,15 +769,11 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         if (sections.length > 0) {
           state.value.documentSections = sections;
           docHistory.initFromSections(sections);
-          return;
         }
       }
     } catch {
-      // 文件不存在，fallback 到模板初始化
+      // 文件尚未创建，面板保持空状态，等待首次用户输入后写入
     }
-
-    // 本地文件不存在或为空，fallback 到模板初始化
-    await initDocumentMode();
   }
 
   async function undoDoc() {
