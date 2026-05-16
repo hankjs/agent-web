@@ -137,6 +137,43 @@ export function parseTemplateToSections(templateContent: string): DocumentSectio
 }
 
 /**
+ * 从已保存的 markdown 文件解析出带内容的 DocumentSection 数组
+ * 与 parseTemplateToSections 不同，此函数保留内容并推断 status
+ */
+export function parseMarkdownToSections(markdown: string): DocumentSection[] {
+  const sections: DocumentSection[] = [];
+  const lines = markdown.split("\n");
+  let currentSection: DocumentSection | null = null;
+  const contentLines: string[] = [];
+
+  function flushSection() {
+    if (!currentSection) return;
+    const content = contentLines.join("\n").trim();
+    const isEmpty = !content || content === "*待填充*";
+    currentSection.content = isEmpty ? "" : content;
+    currentSection.status = isEmpty ? "empty" : "filled";
+    sections.push(currentSection);
+    contentLines.length = 0;
+  }
+
+  for (const line of lines) {
+    // 跳过一级标题（文档标题）
+    if (line.match(/^#\s+/) && !line.match(/^##/)) continue;
+    const headerMatch = line.match(/^##\s+(.+?)(?:\s*\{#([\w-]+)\})?\s*$/);
+    if (headerMatch) {
+      flushSection();
+      const title = headerMatch[1].trim();
+      const id = headerMatch[2] || title.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-");
+      currentSection = { id, title, content: "", status: "empty" };
+    } else if (currentSection) {
+      contentLines.push(line);
+    }
+  }
+  flushSection();
+  return sections;
+}
+
+/**
  * 调用 LLM 生成任务文档
  */
 export async function runTaskGenerator(

@@ -25,8 +25,10 @@ import {
   assembleMarkdown,
   getDocProgress,
   parseTemplateToSections,
+  parseMarkdownToSections,
   runTaskGenerator,
 } from "./docUpdater";
+import { useDocHistory } from "./useDocHistory";
 
 const enc = encodingForModel("gpt-4o"); // cl100k_base compatible
 
@@ -57,6 +59,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   const startTime = Date.now();
   let abortController = new AbortController();
   let consecutiveAsksTotal = 0; // 跨 reactLoop 调用追踪连续 ask_user 次数
+  const docHistory = useDocHistory();
 
   function elapsed() { return Date.now() - startTime; }
 
@@ -377,6 +380,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
   async function updateDocSections(newFindings: string) {
     try {
+      const oldSections = state.value.documentSections.map(s => ({ ...s }));
       const result = await runDocUpdater(
         state.value.documentSections,
         newFindings,
@@ -385,6 +389,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       );
       if (result.updates.length > 0) {
         state.value.documentSections = applySectionUpdates(state.value.documentSections, result);
+        docHistory.commit(oldSections, state.value.documentSections, "代码探索");
         await writeDocToFile();
         await logEvent("explore:doc_update", { updates: result.updates.map(u => u.section_id), progress: getDocProgress(state.value.documentSections) }, "internal");
       }
@@ -396,6 +401,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
   async function updateDocFromUserAnswer(userAnswer: string) {
     try {
+      const oldSections = state.value.documentSections.map(s => ({ ...s }));
       // 将用户回答 + 技术背景摘要一起传给 docUpdater
       // docUpdater prompt 会将用户决策转化为需求规格语言
       const context = `[用户需求决策]\n${userAnswer}\n\n[技术背景（仅供理解上下文，不要直接写入文档）]\n${state.value.runningSummary}`;
@@ -407,6 +413,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       );
       if (result.updates.length > 0) {
         state.value.documentSections = applySectionUpdates(state.value.documentSections, result);
+        docHistory.commit(oldSections, state.value.documentSections, "用户回答");
         await writeDocToFile();
         await logEvent("explore:doc_update", { source: "user_answer", updates: result.updates.map(u => u.section_id), progress: getDocProgress(state.value.documentSections) }, "internal");
       }
@@ -426,6 +433,17 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     } catch {
       // 写入失败不阻塞流程
     }
+  }
+
+  function persistDocumentName(docName: string) {
+    // 将 documentName 写入 session metadata，确保刷新后能恢复
+    const existingMeta = options.metadata || {};
+    const merged = { ...existingMeta, documentName: docName };
+    authFetch(`/api/sessions/${options.sessionId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ metadata: JSON.stringify(merged) }),
+    }).catch(() => { /* best effort */ });
   }
 
   async function executeConfirmRequirement(params: { title: string }) {
@@ -623,14 +641,18 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       // 如果没有 documentName，从用户输入生成一个
       if (!state.value.documentName && state.value.documentSections.length > 0) {
         state.value.documentName = content.slice(0, 30).replace(/\n/g, " ").trim() || "需求文档";
+        // 持久化 documentName 到 session metadata，刷新后可恢复
+        persistDocumentName(state.value.documentName);
       }
       // 立即将用户原始需求写入第一个 section，面板即时显示有内容的文档
       if (state.value.documentSections.length > 0) {
+        const oldSections = state.value.documentSections.map(s => ({ ...s }));
         state.value.documentSections = state.value.documentSections.map((sec, idx) =>
           idx === 0
             ? { ...sec, content: content, status: "filled" as const }
             : sec
         );
+        docHistory.commit(oldSections, state.value.documentSections, "用户回答");
         // 第一次输入就生成文档文件，后续探索持续填充
         await writeDocToFile();
       }
@@ -692,6 +714,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
             : templates[0];
           state.value.templateId = template.id;
           state.value.documentSections = parseTemplateToSections(template.content);
+          docHistory.initFromSections(state.value.documentSections);
         }
       }
     } catch {
@@ -709,5 +732,57 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     state.value.phase = "done";
   }
 
-  return { state, handleUserInput, handleRequirementConfirm, resume, cancel, markDone };
+  /** 从已保存的 markdown 文件恢复 documentSections（页面刷新/历史加载时） */
+  async function restoreDocFromFile() {
+    // 确保 documentName 已设置
+    if (!state.value.documentName) {
+      const meta = options.metadata;
+      const docName = meta?.documentName || meta?.changeName || "";
+      if (docName) state.value.documentName = docName;
+    }
+    if (!state.value.documentName || !options.workDir) return;
+    const dirPath = `${options.workDir}/docs/changes/${state.value.documentName.replace(/[^a-zA-Z0-9\u4e00-\u9fff-]/g, "-")}`;
+    const filePath = `${dirPath}/requirement.md`;
+    try {
+      const result = await execTool("shell", { command: `cat "${filePath}"` }, options.workDir);
+      const markdown = typeof result === "string" ? result : (result as any)?.output || "";
+      if (!markdown.trim()) return;
+      const sections = parseMarkdownToSections(markdown);
+      if (sections.length > 0) {
+        state.value.documentSections = sections;
+        docHistory.initFromSections(sections);
+      }
+    } catch {
+      // 文件不存在时静默忽略
+    }
+  }
+
+  async function undoDoc() {
+    const snapshot = docHistory.undo();
+    if (snapshot) {
+      state.value.documentSections = snapshot;
+      await writeDocToFile();
+    }
+  }
+
+  async function redoDoc() {
+    const snapshot = docHistory.redo();
+    if (snapshot) {
+      state.value.documentSections = snapshot;
+      await writeDocToFile();
+    }
+  }
+
+  async function editSection(sectionId: string, newContent: string) {
+    const oldSections = state.value.documentSections.map(s => ({ ...s }));
+    state.value.documentSections = state.value.documentSections.map(sec =>
+      sec.id === sectionId
+        ? { ...sec, content: newContent, status: newContent.trim() ? "filled" as const : "empty" as const }
+        : sec
+    );
+    docHistory.commit(oldSections, state.value.documentSections, "用户编辑");
+    await writeDocToFile();
+  }
+
+  return { state, handleUserInput, handleRequirementConfirm, resume, cancel, markDone, docHistory, undoDoc, redoDoc, editSection, restoreDocFromFile };
 }

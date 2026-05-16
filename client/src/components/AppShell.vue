@@ -16,6 +16,10 @@ const renamingSessionId = ref<string | null>(null);
 const renameInput = ref("");
 const pendingDeleteId = ref<string | null>(null);
 
+// 可调整面板宽度（百分比，相对于 content+panel 区域）
+const panelWidthPercent = ref(50);
+const isResizing = ref(false);
+
 function confirmDelete() {
   if (pendingDeleteId.value) {
     deleteSession(pendingDeleteId.value);
@@ -124,11 +128,51 @@ onUnmounted(() => {
   document.removeEventListener("keydown", handleKeydown);
 });
 
+// Panel resize drag
+const shellEl = ref<HTMLElement | null>(null);
+
+function startResize(e: MouseEvent) {
+  e.preventDefault();
+  isResizing.value = true;
+  document.addEventListener("mousemove", onResize);
+  document.addEventListener("mouseup", stopResize);
+}
+
+function onResize(e: MouseEvent) {
+  if (!shellEl.value) return;
+  const shell = shellEl.value;
+  const nav = shell.querySelector(".nav") as HTMLElement;
+  const activityBar = shell.querySelector(".activity-bar") as HTMLElement;
+  const navWidth = nav?.offsetWidth || 0;
+  const actBarWidth = activityBar?.offsetWidth || 0;
+  const availableWidth = shell.offsetWidth - navWidth - actBarWidth;
+  if (availableWidth <= 0) return;
+  const panelRight = shell.getBoundingClientRect().right - actBarWidth;
+  const panelWidth = panelRight - e.clientX;
+  const percent = Math.min(80, Math.max(20, (panelWidth / availableWidth) * 100));
+  panelWidthPercent.value = percent;
+}
+
+function stopResize() {
+  isResizing.value = false;
+  document.removeEventListener("mousemove", onResize);
+  document.removeEventListener("mouseup", stopResize);
+}
+
+const contentStyle = computed(() => {
+  if (!rightPanelOpen.value) return {};
+  return { flex: `0 0 ${100 - panelWidthPercent.value}%` };
+});
+
+const panelStyle = computed(() => {
+  return { flex: `0 0 ${panelWidthPercent.value}%` };
+});
+
 defineExpose({ rightPanelOpen, navCollapsed });
 </script>
 
 <template>
-  <div class="shell">
+  <div class="shell" ref="shellEl" :class="{ resizing: isResizing }">
     <!-- Left Navigation -->
     <nav class="nav" :class="{ collapsed: navCollapsed }">
       <div class="nav-header">
@@ -339,14 +383,17 @@ defineExpose({ rightPanelOpen, navCollapsed });
     </nav>
 
     <!-- Center Content -->
-    <main class="content">
+    <main class="content" :style="contentStyle">
       <router-view v-slot="{ Component, route }">
         <component :is="Component" :key="route.fullPath" />
       </router-view>
     </main>
 
+    <!-- Resize Handle -->
+    <div v-if="rightPanelOpen" class="panel-resize-handle" @mousedown="startResize"></div>
+
     <!-- Right Panel (driven by useSidebarPanels) -->
-    <aside v-if="rightPanelOpen" class="panel">
+    <aside v-if="rightPanelOpen" class="panel" :style="panelStyle">
       <div class="panel-header">
         <span class="panel-title">{{ sidebarPanels.find(p => p.id === activePanelId)?.title }}</span>
         <button class="panel-close" @click="closePanel()" aria-label="关闭面板">
@@ -666,16 +713,32 @@ defineExpose({ rightPanelOpen, navCollapsed });
   flex-direction: column;
 }
 
+/* Resize Handle */
+.panel-resize-handle {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background var(--duration-fast);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+.panel-resize-handle:hover,
+.shell.resizing .panel-resize-handle {
+  background: var(--color-accent);
+}
+
 /* Right Panel */
 .panel {
-  width: var(--panel-width);
-  min-width: var(--panel-width);
+  min-width: 200px;
   background: var(--color-surface-1);
   border-left: 1px solid var(--color-border-subtle);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
+
+.shell.resizing { cursor: col-resize; user-select: none; }
 
 .panel-header {
   display: flex;

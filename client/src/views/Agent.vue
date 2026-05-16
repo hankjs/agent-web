@@ -194,7 +194,16 @@ onMounted(async () => {
 
     <!-- Panel content teleported to AppShell right panel -->
     <Teleport to="#shell-panel-content" v-if="activePanelId">
-      <DocPreviewPanel v-if="activePanelId === 'doc-preview'" :sections="exploreAgent.state.value.documentSections" />
+      <DocPreviewPanel
+        v-if="activePanelId === 'doc-preview'"
+        :sections="exploreAgent.state.value.documentSections"
+        :can-undo="exploreAgent.docHistory.canUndo.value"
+        :can-redo="exploreAgent.docHistory.canRedo.value"
+        :current-commit="exploreAgent.docHistory.currentCommit.value"
+        @undo="exploreAgent.undoDoc()"
+        @redo="exploreAgent.redoDoc()"
+        @edit-section="(id, content) => exploreAgent.editSection(id, content)"
+      />
       <ChangeChatPanel v-if="activePanelId === 'changes'" :session-id="sessionId" :work-dir="currentSession?.work_dir || ''" :key="changesPanelRefreshKey" />
     </Teleport>
   </AgentLayout>
