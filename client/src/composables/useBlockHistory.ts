@@ -109,7 +109,17 @@ function restoreBlocks(userEvents: RawEvent[], answerIndices: number[]): Block[]
                         options: (q.options || []).map((o: any) => (typeof o === "string" ? { label: o } : o)),
                     }));
                     const qPos = userEvents.indexOf(ev);
-                    const hasAnswerAfter = answerIndices.some((aIdx) => aIdx > qPos);
+                    const nextAnswerIdx = answerIndices.find((aIdx) => aIdx > qPos);
+                    const hasAnswerAfter = nextAnswerIdx !== undefined;
+                    // 从 Answer 事件中恢复用户选中的选项
+                    if (hasAnswerAfter) {
+                        const answerEv = userEvents[nextAnswerIdx];
+                        const ap = typeof answerEv.payload === "string" ? JSON.parse(answerEv.payload) : answerEv.payload;
+                        const answers = (ap.content || "").split("; ");
+                        questions.forEach((q: any, i: number) => {
+                            if (answers[i]) q.selected = answers[i];
+                        });
+                    }
                     restored.push({
                         kind: BlockKind.AskUser,
                         toolUseId: `hist_${Date.now()}_${Math.random()}`,
