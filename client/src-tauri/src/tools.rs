@@ -138,9 +138,10 @@ pub async fn tool_glob(
         None => work_dir.clone(),
     };
 
-    // Try fd first, fallback to find
+    // Try fd first (with --no-ignore to avoid .gitignore filtering), fallback to find
     let mut cmd = Command::new("fd");
-    cmd.arg("--glob").arg(&pattern).arg(&base_dir).arg("--type=f").arg("--color=never");
+    cmd.arg("--glob").arg(&pattern).arg(&base_dir)
+        .arg("--type=f").arg("--color=never").arg("--no-ignore");
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), cmd.output()).await;
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -156,11 +157,37 @@ pub async fn tool_glob(
             }
         }
         _ => {
-            // Fallback to find
+            // Fallback to find — convert glob pattern to find-compatible args
             let mut cmd2 = Command::new("find");
-            cmd2.arg(&base_dir).arg("-name").arg(&pattern).arg("-type").arg("f");
-            match cmd2.output().await {
-                Ok(output) => {
+            cmd2.arg(&base_dir);
+
+            // Exclude common noisy directories
+            cmd2.args(["-path", "*/node_modules", "-prune", "-o",
+                       "-path", "*/.git", "-prune", "-o",
+                       "-path", "*/__pycache__", "-prune", "-o",
+                       "-path", "*/venv", "-prune", "-o"]);
+
+            if pattern.contains("**") {
+                // Pattern like "**/*.py" or "**/*" — extract the filename part for -name
+                let name_part = pattern.rsplit('/').next().unwrap_or(&pattern);
+                if name_part == "*" || name_part.is_empty() {
+                    // "**/*" means all files
+                    cmd2.args(["-type", "f", "-print"]);
+                } else {
+                    // "**/*.py" → find ... -type f -name "*.py"
+                    cmd2.args(["-type", "f", "-name", name_part, "-print"]);
+                }
+            } else if pattern.contains('/') {
+                // Pattern with path separators like "src/*.ts" — use -path
+                let find_pattern = format!("*/{pattern}");
+                cmd2.args(["-type", "f", "-path", &find_pattern, "-print"]);
+            } else {
+                // Simple pattern like "*.py" or "*" — use -name
+                cmd2.args(["-type", "f", "-name", &pattern, "-print"]);
+            }
+
+            match tokio::time::timeout(std::time::Duration::from_secs(10), cmd2.output()).await {
+                Ok(Ok(output)) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).take(100).collect();
                     if lines.is_empty() {
@@ -169,7 +196,8 @@ pub async fn tool_glob(
                         ToolResult { content: lines.join("\n"), is_error: false, duration_ms }
                     }
                 }
-                Err(e) => ToolResult { content: format!("Glob error: {e}"), is_error: true, duration_ms },
+                Ok(Err(e)) => ToolResult { content: format!("Glob error: {e}"), is_error: true, duration_ms },
+                Err(_) => ToolResult { content: "Glob timed out after 10s".into(), is_error: true, duration_ms },
             }
         }
     }

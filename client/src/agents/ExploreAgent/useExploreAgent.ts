@@ -297,9 +297,26 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       }
     }
 
+    // 5 rounds exhausted without report_findings — force a final call with only report_findings tool
     state.value.phase = "observing";
-    const lastResp = await callLLMWithTools(system, trimMessages(messages), [], abortController.signal);
-    const findings = earlyFindings || parseFindings(lastResp.text);
+    const REPORT_ONLY_TOOL = [READER_TOOLS.find(t => t.name === "report_findings")!];
+    const forceMsg: LlmMessage = { role: "user", content: [{ type: "text", text: "你已经读取了足够的信息。请立即调用 report_findings 工具，将你目前了解到的所有发现整理为结构化的 findings 报告。每条 finding 必须有 topic、content 和 source。" }] };
+    const forceMsgs = [...trimMessages(messages), forceMsg];
+    const lastResp = await callLLMWithTools(system, forceMsgs, REPORT_ONLY_TOOL, abortController.signal);
+
+    let findings: Finding[] = earlyFindings || [];
+    if (lastResp.toolCalls.length > 0) {
+      for (const tc of lastResp.toolCalls) {
+        if (tc.name === "report_findings") {
+          findings = (tc.input.findings || []).map((f: any) => ({
+            topic: f.topic || "", content: f.content || "", source: f.source || "", confirmed: false,
+          }));
+        }
+      }
+    }
+    if (findings.length === 0) {
+      findings = parseFindings(lastResp.text);
+    }
     await applyFindings(findings, lastResp.text);
     return findings;
   }
@@ -328,10 +345,8 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       state.value.runningSummary = combined;
     }
 
-    // 文档模式：调用 doc_updater 更新章节
-    if (state.value.documentSections.length > 0 && findings.length > 0) {
-      await updateDocSections(newText);
-    }
+    // 文档模式：代码 findings 不直接填入需求文档
+    // 文档填充由用户回答驱动（见 handleUserInput 中的 updateDocFromUserAnswer）
   }
 
   async function compressSummary(newText: string) {
@@ -376,6 +391,27 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     } catch (e: any) {
       if (e.name === "AbortError") throw e;
       // doc update failure is non-fatal
+    }
+  }
+
+  async function updateDocFromUserAnswer(userAnswer: string) {
+    try {
+      // 将用户回答 + 技术背景摘要一起传给 docUpdater
+      // docUpdater prompt 会将用户决策转化为需求规格语言
+      const context = `[用户需求决策]\n${userAnswer}\n\n[技术背景（仅供理解上下文，不要直接写入文档）]\n${state.value.runningSummary}`;
+      const result = await runDocUpdater(
+        state.value.documentSections,
+        context,
+        state.value.runningSummary,
+        abortController.signal,
+      );
+      if (result.updates.length > 0) {
+        state.value.documentSections = applySectionUpdates(state.value.documentSections, result);
+        await writeDocToFile();
+        await logEvent("explore:doc_update", { source: "user_answer", updates: result.updates.map(u => u.section_id), progress: getDocProgress(state.value.documentSections) }, "internal");
+      }
+    } catch (e: any) {
+      if (e.name === "AbortError") throw e;
     }
   }
 
@@ -584,6 +620,10 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       state.value.uncoveredAreas = getInitialAreas();
       // 初始化文档模式：从 metadata 获取模板
       await initDocumentMode();
+      // 如果没有 documentName，从用户输入生成一个
+      if (!state.value.documentName && state.value.documentSections.length > 0) {
+        state.value.documentName = content.slice(0, 30).replace(/\n/g, " ").trim() || "需求文档";
+      }
       // 立即将用户原始需求写入第一个 section，面板即时显示有内容的文档
       if (state.value.documentSections.length > 0) {
         state.value.documentSections = state.value.documentSections.map((sec, idx) =>
@@ -591,6 +631,8 @@ export function useExploreAgent(options: ExploreAgentOptions) {
             ? { ...sec, content: content, status: "filled" as const }
             : sec
         );
+        // 第一次输入就生成文档文件，后续探索持续填充
+        await writeDocToFile();
       }
       isFirstTurn.value = false;
     }
@@ -606,9 +648,9 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       state.value.runningSummary = combined;
     }
 
-    // 文档模式：用户回答后也触发 doc_updater
+    // 文档模式：用户回答驱动文档填充，将用户决策转化为需求规格
     if (state.value.documentSections.length > 0) {
-      await updateDocSections(`[用户回答] ${content}`);
+      await updateDocFromUserAnswer(content);
     }
 
     try {
@@ -633,19 +675,19 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   /** 初始化文档模式 */
   async function initDocumentMode() {
     const meta = options.metadata;
-    if (!meta) return;
 
     // 从 metadata 获取文档名称
-    const docName = meta.documentName || meta.changeName || "";
+    const docName = meta?.documentName || meta?.changeName || "";
     if (docName) state.value.documentName = docName;
 
-    // 尝试获取需求模板
+    // 尝试获取需求模板（即使没有 metadata 也尝试加载默认模板）
     try {
       const res = await authFetch("/api/templates?category=requirement");
       if (res.ok) {
-        const templates = await res.json();
+        const json = await res.json();
+        const templates = json.data || [];
         if (templates.length > 0) {
-          const template = meta.templateId
+          const template = meta?.templateId
             ? templates.find((t: any) => t.id === meta.templateId) || templates[0]
             : templates[0];
           state.value.templateId = template.id;
