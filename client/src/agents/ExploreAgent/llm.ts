@@ -272,7 +272,8 @@ function streamSSERequestFull(body: string, signal?: AbortSignal): Promise<LlmRe
             case "tool_use_end":
               if (currentTool) {
                 let input: any = {};
-                try { input = JSON.parse(currentTool.inputJson); } catch {}
+                try { input = JSON.parse(currentTool.inputJson); } catch (e) { console.warn("[LLM] Failed to parse tool input JSON:", currentTool.inputJson, e); }
+                console.log("[LLM] tool_use_end:", currentTool.name, "parsed input type=", typeof input, "isArray=", Array.isArray(input));
                 toolCalls.push({ type: "tool_use", id: currentTool.id, name: currentTool.name, input });
                 currentTool = null;
               }

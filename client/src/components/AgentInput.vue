@@ -46,6 +46,7 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const showProviderDropdown = ref(false);
 const pendingImages = ref<PendingImage[]>([]);
+const isComposing = ref(false);
 
 function autoResize() {
   const ta = textareaRef.value;
@@ -54,8 +55,12 @@ function autoResize() {
   ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
 }
 
+function handleCompositionEnd() {
+  setTimeout(() => { isComposing.value = false; });
+}
+
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+  if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !isComposing.value) {
     e.preventDefault();
     emit("send");
   }
@@ -165,6 +170,8 @@ defineExpose({ clearImages, getImages, textareaRef });
           :value="modelValue"
           @input="handleInput"
           @keydown="handleKeydown"
+          @compositionstart="isComposing = true"
+          @compositionend="handleCompositionEnd"
           @paste="showImageUpload ? handlePaste($event) : undefined"
           :disabled="!isConnected"
           :placeholder="!isConnected ? '离线' : placeholder"

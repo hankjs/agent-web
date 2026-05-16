@@ -20,13 +20,11 @@ export function useBlockHistory(
             if (!res.ok) return;
             const json = await res.json();
             const events: RawEvent[] = json.data || json;
-            console.log("[BlockHistory] loadHistory: total events=", events.length);
 
             // 从所有事件（含 internal）恢复 agent 运行状态
             exploreAgent.restoreAgentState(events);
 
             const userEvents = events.filter((ev: RawEvent) => ev.source !== "remote" && ev.visibility !== "internal");
-            console.log("[BlockHistory] loadHistory: userEvents=", userEvents.length);
 
             const answerIndices: number[] = [];
             userEvents.forEach((ev: any, idx: number) => {
@@ -34,20 +32,17 @@ export function useBlockHistory(
             });
 
             const restored = restoreBlocks(userEvents, answerIndices);
-            console.log("[BlockHistory] loadHistory: restored blocks=", restored.length);
 
             if (restored.length > 0) {
                 blocks.value = restored;
                 if (events.some((ev: any) => ev.event_type === ExploreEvent.Complete)) {
                     exploreAgent.markDone();
                 }
-                nextTick(scrollToBottom);
+                nextTick(() => { scrollToBottom(); setTimeout(scrollToBottom, 100); });
             }
 
             // 从本地文件恢复文档面板
-            console.log("[BlockHistory] calling restoreDocFromFile...");
             await exploreAgent.restoreDocFromFile();
-            console.log("[BlockHistory] restoreDocFromFile done, documentSections=", exploreAgent.state.value.documentSections?.length);
         } catch (e) {
             console.error("[BlockHistory] loadHistory error:", e);
         }
@@ -82,6 +77,11 @@ function restoreBlocks(userEvents: RawEvent[], answerIndices: number[]): Block[]
                     restored.push(currentRound);
                 } else {
                     currentRound = null;
+                    // 恢复 PlannerDecision block（ask_user、confirm_requirement、finalize）
+                    if (p.action && p.action !== "read_code") {
+                        const actionLabel = p.action === "ask_user" ? "向用户提问" : p.action === "confirm_requirement" ? "确认需求文档" : "完成探索";
+                        restored.push({ kind: BlockKind.PlannerDecision, reasoning: p.reasoning || "", action: actionLabel, objective: p.params?.objective, expanded: false });
+                    }
                 }
                 break;
             case ExploreEvent.ToolCall:
@@ -110,15 +110,18 @@ function restoreBlocks(userEvents: RawEvent[], answerIndices: number[]): Block[]
                 break;
             case ExploreEvent.Error:
                 currentRound = null;
+                // 过滤掉内部运行时错误（如旧版代码 bug 产生的错误），不展示给用户
+                if (p.error && /tc\.input\.\w+.*is (not a function|undefined)/.test(p.error)) break;
                 restored.push({ kind: BlockKind.Error, content: p.error || "未知错误" });
                 break;
             case ExploreEvent.Question:
                 currentRound = null;
                 if (p.questions) {
-                    const questions = p.questions.map((q: any) => ({
+                    const rawQuestions = Array.isArray(p.questions) ? p.questions : [];
+                    const questions = rawQuestions.map((q: any) => ({
                         header: q.header || "",
                         question: q.question || "",
-                        options: (q.options || []).map((o: any) => (typeof o === "string" ? { label: o } : o)),
+                        options: Array.isArray(q.options) ? q.options.map((o: any) => (typeof o === "string" ? { label: o } : o)) : [],
                     }));
                     const qPos = userEvents.indexOf(ev);
                     const nextAnswerIdx = answerIndices.find((aIdx) => aIdx > qPos);

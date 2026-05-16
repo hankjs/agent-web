@@ -123,6 +123,13 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     }, "internal");
   }
 
+  /** Safely parse tc.input which may be string, null, or object */
+  function safeInput(raw: any): Record<string, any> {
+    if (!raw) return {};
+    if (typeof raw === "string") { try { return JSON.parse(raw); } catch { return {}; } }
+    return raw;
+  }
+
   function parseFindings(text: string): Finding[] {
     const match = text.match(/```json:findings\s*\n([\s\S]*?)\n```/);
     if (!match) return [];
@@ -264,20 +271,25 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       const toolResults: any[] = [];
       for (const tc of resp.toolCalls) {
         if (tc.name === "report_findings") {
-          const reported: Finding[] = (tc.input.findings || []).map((f: any) => ({
+          const inputObj = safeInput(tc.input);
+          let rawFindings = inputObj.findings || [];
+          if (typeof rawFindings === "string") { try { rawFindings = JSON.parse(rawFindings); } catch { rawFindings = []; } }
+          if (!Array.isArray(rawFindings)) rawFindings = [];
+          const reported: Finding[] = rawFindings.map((f: any) => ({
             topic: f.topic || "", content: f.content || "", source: f.source || "", confirmed: false,
           }));
           toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: "Findings recorded." });
-          options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: false, expanded: false } });
+          options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(inputObj), isRunning: false, expanded: false } });
           earlyFindings = reported;
         } else if (tc.name === "AskUserQuestion") {
-          const questions = (tc.input.questions || []).map((q: any) => ({
+          const inputObj = safeInput(tc.input);
+          const questions = (inputObj.questions || []).map((q: any) => ({
             header: q.header,
             question: q.question,
             options: (q.options || []).map((o: any) => typeof o === "string" ? o : { label: o.label, description: o.description }),
           }));
           options.onBlock({ kind: BlockKind.AskUser, toolUseId: tc.id, questions, answered: false, activeTab: 0 });
-          options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), isRunning: false, expanded: false } });
+          options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(inputObj), isRunning: false, expanded: false } });
           await logEvent("explore:question", { questions }, "user");
           state.value.phase = "waiting_user";
           options.onStreaming(false);
@@ -298,12 +310,13 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
       // Track read paths for dedup
       for (const tc of resp.toolCalls) {
-        if (tc.name === "glob" && tc.input.pattern) {
-          state.value.filesRead.push(`glob:${tc.input.pattern}`);
-        } else if (tc.name === "read_file" && tc.input.path) {
-          state.value.filesRead.push(tc.input.path);
-        } else if (tc.name === "search" && tc.input.query) {
-          state.value.filesRead.push(`search:${tc.input.query}`);
+        const inp = safeInput(tc.input);
+        if (tc.name === "glob" && inp.pattern) {
+          state.value.filesRead.push(`glob:${inp.pattern}`);
+        } else if (tc.name === "read_file" && inp.path) {
+          state.value.filesRead.push(inp.path);
+        } else if (tc.name === "search" && inp.query) {
+          state.value.filesRead.push(`search:${inp.query}`);
         }
       }
 
@@ -326,7 +339,11 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     if (lastResp.toolCalls.length > 0) {
       for (const tc of lastResp.toolCalls) {
         if (tc.name === "report_findings") {
-          findings = (tc.input.findings || []).map((f: any) => ({
+          const inputObj = safeInput(tc.input);
+          let rawFindings = inputObj.findings || [];
+          if (typeof rawFindings === "string") { try { rawFindings = JSON.parse(rawFindings); } catch { rawFindings = []; } }
+          if (!Array.isArray(rawFindings)) rawFindings = [];
+          findings = rawFindings.map((f: any) => ({
             topic: f.topic || "", content: f.content || "", source: f.source || "", confirmed: false,
           }));
         }
@@ -804,7 +821,6 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   async function restoreDocFromFile() {
     const meta = options.metadata;
     const docName = meta?.documentName || "";
-    console.log("[ExploreAgent] restoreDocFromFile: metadata=", meta, "docName=", docName);
     if (!docName) {
       console.warn("[ExploreAgent] restoreDocFromFile skipped: no docName");
       return;
@@ -822,7 +838,6 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           state.value.documentSections = sections;
           docHistory.initFromSections(sections);
           isFirstTurn.value = false;
-          console.log("[ExploreAgent] restoreDocFromFile: restored from API, sections:", sections.length);
         }
       }
     } catch (e) {
@@ -867,16 +882,13 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
     if (lastSummary) {
       state.value.runningSummary = lastSummary;
-      console.log("[ExploreAgent] restoreAgentState: runningSummary restored, length=", lastSummary.length);
     }
     if (restoredFilesRead.length > 0) {
       state.value.filesRead = restoredFilesRead;
-      console.log("[ExploreAgent] restoreAgentState: filesRead restored, count=", restoredFilesRead.length);
     }
     if (readCodeTurns > 0) {
       state.value.turnCount = readCodeTurns;
       isFirstTurn.value = false;
-      console.log("[ExploreAgent] restoreAgentState: turnCount=", readCodeTurns);
     }
   }
 
