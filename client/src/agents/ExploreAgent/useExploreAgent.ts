@@ -584,6 +584,14 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       state.value.uncoveredAreas = getInitialAreas();
       // 初始化文档模式：从 metadata 获取模板
       await initDocumentMode();
+      // 立即将用户原始需求写入第一个 section，面板即时显示有内容的文档
+      if (state.value.documentSections.length > 0) {
+        state.value.documentSections = state.value.documentSections.map((sec, idx) =>
+          idx === 0
+            ? { ...sec, content: content, status: "filled" as const }
+            : sec
+        );
+      }
       isFirstTurn.value = false;
     }
 

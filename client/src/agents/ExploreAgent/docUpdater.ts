@@ -84,7 +84,25 @@ export function getDocProgress(sections: DocumentSection[]): string {
   if (sections.length === 0) return "无文档模式";
   const filled = sections.filter(s => s.status === "filled").length;
   const partial = sections.filter(s => s.status === "partial").length;
-  return `${filled}/${sections.length} filled, ${partial} partial`;
+  const pending = sections.filter(s => s.status === "empty").map(s => s.title);
+
+  let result = `${filled}/${sections.length} filled, ${partial} partial`;
+
+  // 已填章节摘要（每个截取前 80 字）
+  const filledSections = sections.filter(s => s.status === "filled" || s.status === "partial");
+  if (filledSections.length > 0) {
+    result += "\n已填内容摘要:";
+    for (const sec of filledSections) {
+      const preview = sec.content.length > 80 ? sec.content.slice(0, 80) + "..." : sec.content;
+      result += `\n- ${sec.title}: ${preview}`;
+    }
+  }
+
+  if (pending.length > 0) {
+    result += `\n待填: ${pending.join(", ")}`;
+  }
+
+  return result;
 }
 
 /**
