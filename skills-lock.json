@@ -6,6 +6,12 @@
       "sourceType": "github",
       "skillPath": "skill/SKILL.md",
       "computedHash": "9aec36a70b0c2cafd3ded7e2c523c77beddcdb814fac86cda42f395ef719a924"
+    },
+    "vue": {
+      "source": "antfu/skills",
+      "sourceType": "github",
+      "skillPath": "skills/vue/SKILL.md",
+      "computedHash": "9c241141e07e836e4f0537c63e8f929fba3767c2997250be38e699f19b75e3f2"
     }
   }
 }
