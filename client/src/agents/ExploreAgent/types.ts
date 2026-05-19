@@ -18,7 +18,6 @@ export interface ExploreAgentState {
   phase: ExplorePhase;
   runningSummary: string;
   findings: Finding[];
-  uncoveredAreas: string[];
   turnCount: number;
   filesRead: string[];
   documentSections: DocumentSection[];

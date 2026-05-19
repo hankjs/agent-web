@@ -1,10 +1,19 @@
-import plannerTemplate from "./prompts/explore-planner.md?raw";
 import readerTemplate from "./prompts/explore-reader.md?raw";
 import summarizerTemplate from "./prompts/explore-summarizer.md?raw";
-import exploreTemplate from "./prompts/explore.md?raw";
 import exploreContinueTemplate from "./prompts/explore-continue.md?raw";
 import docUpdaterTemplate from "./prompts/doc-updater.md?raw";
 import taskGeneratorTemplate from "./prompts/task-generator.md?raw";
+import { PromptBuilder, type PlannerContext } from "./promptPipe";
+import {
+  identityPipe,
+  coreRulesPipe,
+  progressPipe,
+  convergenceRulesPipe,
+  antiConvergencePipe,
+  stagnationWarningPipe,
+  actionSchemaPipe,
+  prohibitionsPipe,
+} from "./pipes";
 
 function fillTemplate(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => values[key] ?? "");
@@ -19,30 +28,34 @@ export function buildExplorePlannerPrompt(values: {
   elapsedSec: number;
   filesRead?: string[];
   docProgress?: string;
+  isFirstTurn?: boolean;
+  consecutiveReads?: number;
 }) {
-  const filesReadStr = values.filesRead?.length
-    ? values.filesRead.join(", ")
-    : "（暂无）";
-  return fillTemplate(plannerTemplate, {
+  const ctx: PlannerContext = {
     summary: values.summary,
-    user_input: values.userInput,
-    turn_count: String(values.turnCount),
-    max_turns: String(values.maxTurns),
-    findings_count: String(values.findingsCount),
-    elapsed_sec: String(values.elapsedSec),
-    files_read: filesReadStr,
-    doc_progress: values.docProgress || "无文档模式",
-  });
-}
+    userInput: values.userInput,
+    turnCount: values.turnCount,
+    maxTurns: values.maxTurns,
+    findingsCount: values.findingsCount,
+    elapsedSec: values.elapsedSec,
+    filesRead: values.filesRead || [],
+    docProgress: values.docProgress || "无文档模式",
+    isFirstTurn: values.isFirstTurn ?? values.turnCount === 0,
+    consecutiveReads: values.consecutiveReads ?? 0,
+    hasRecentUserDecision: values.summary.includes("[回答]") &&
+      values.summary.lastIndexOf("[回答]") > values.summary.length - 200,
+  };
 
-export function buildExploreReaderPrompt(values: {
-  objective: string;
-  workDir: string;
-}) {
-  return fillTemplate(readerTemplate, {
-    objective: values.objective,
-    work_dir: values.workDir,
-  });
+  return new PromptBuilder()
+    .pipe(identityPipe)
+    .pipe(coreRulesPipe)
+    .pipe(progressPipe)
+    .pipe(convergenceRulesPipe)
+    .pipe(antiConvergencePipe)
+    .pipe(stagnationWarningPipe)
+    .pipe(actionSchemaPipe)
+    .pipe(prohibitionsPipe)
+    .build(ctx);
 }
 
 /**
@@ -63,20 +76,6 @@ export function buildExploreSummarizerPrompt(values: {
   return fillTemplate(summarizerTemplate, {
     current_summary: values.currentSummary,
     new_findings: values.newFindings,
-  });
-}
-
-export function buildExplorePrompt(values: {
-  projectLabel: string;
-  workDir: string;
-  depth: string;
-  questionStyle: string;
-}) {
-  return fillTemplate(exploreTemplate, {
-    project_label: values.projectLabel,
-    work_dir: values.workDir,
-    depth: values.depth,
-    question_style: values.questionStyle,
   });
 }
 

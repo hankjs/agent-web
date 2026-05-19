@@ -12,12 +12,11 @@ import {
   buildExploreSummarizerPrompt,
 } from "./prompts";
 import { callLLM, callLLMWithTools, execTool } from "./llm";
-import { READER_TOOLS, WRITER_TOOLS } from "./tools";
+import { READER_TOOLS } from "./tools";
 import {
   BlockKind,
   type ExploreAgentState,
   type ExploreAgentOptions,
-  type ExplorePhase,
   type Finding,
   type PlannerAction,
   type LlmMessage,
@@ -46,15 +45,25 @@ function estimateTokens(text: string): number {
 }
 
 const HARD_MAX_READS = 20;
-const MAX_FULL_ROUNDS = 3;
 const MAX_CONSECUTIVE_ERRORS = 3;
+const TOKEN_BUDGET_WARN = 12000; // 累计 token 接近此值时注入收敛信号
+
+/** 根据 reader round 生成动态指令（渐进式催促） */
+function getReaderRoundDirective(round: number, maxRounds: number): string {
+  if (round >= maxRounds - 1) {
+    return "\n\n⚠ 这是最后一轮，必须立即调用 report_findings 报告你目前了解到的所有信息。";
+  }
+  if (round >= maxRounds - 2) {
+    return "\n\n提示：你已使用 " + (round + 1) + " 轮，请尽快调用 report_findings。";
+  }
+  return "";
+}
 
 export function useExploreAgent(options: ExploreAgentOptions) {
   const state = ref<ExploreAgentState>({
     phase: "idle",
     runningSummary: "",
     findings: [],
-    uncoveredAreas: [],
     turnCount: 0,
     filesRead: [],
     documentSections: [],
@@ -67,6 +76,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   const startTime = Date.now();
   let abortController = new AbortController();
   let consecutiveAsksTotal = 0; // 跨 reactLoop 调用追踪连续 ask_user 次数
+  let totalTokensUsed = 0; // 累计 token 消耗（用于预算感知）
   const docHistory = useDocHistory();
   const contextCache = new ContextCache(); // Offload: 大工具结果缓存
 
@@ -93,12 +103,6 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     options.onBlock({ kind: BlockKind.Text, content: "探索已取消。" });
     options.onStreaming(false);
     options.onComplete();
-  }
-
-  function getInitialAreas(): string[] {
-    const meta = options.metadata;
-    if (!meta) return [];
-    return meta.focusAreas || [];
   }
 
   function getMaxReads(): number {
@@ -135,17 +139,21 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   // 只接收 runningSummary + docProgress + filesRead + userInput
   // 不接收 reader 的完整工具调用历史，大幅减少 planner 的 token 消耗
 
-  async function runPlannerStep(userInput: string, images?: Array<{ media_type: string; data: string }>): Promise<PlannerAction | null> {
+  async function runPlannerStep(userInput: string, images?: Array<{ media_type: string; data: string }>, extraContext?: { consecutiveReads?: number; tokenBudgetWarn?: boolean }): Promise<PlannerAction | null> {
     state.value.phase = "thinking";
     const prompt = buildExplorePlannerPrompt({
       summary: state.value.runningSummary || "（尚未开始探索）",
-      userInput,
+      userInput: (extraContext?.tokenBudgetWarn
+        ? userInput + "\n（⚠ 上下文预算紧张，请尽快收敛或总结当前发现）"
+        : userInput),
       turnCount: state.value.turnCount,
       maxTurns: HARD_MAX_READS,
       findingsCount: state.value.findings.length,
       elapsedSec: Math.round(elapsed() / 1000),
       filesRead: state.value.filesRead,
       docProgress: getDocProgress(state.value.documentSections),
+      isFirstTurn: isFirstTurn.value,
+      consecutiveReads: extraContext?.consecutiveReads ?? 0,
     });
     await logEvent("explore:thought", { prompt_preview: prompt.slice(0, 200), cache_stats: contextCache.stats }, "internal");
     // Emit a thinking block that will stream planner output
@@ -222,8 +230,21 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     let earlyFindings: Finding[] | null = null;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      // 渐进式指令注入：前期不催促，后期逐步加压
+      const roundDirective = getReaderRoundDirective(round, MAX_TOOL_ROUNDS);
+      if (roundDirective && messages.length > 0) {
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg.role === "user" && Array.isArray(lastMsg.content)) {
+          // 在最后一条 user message 末尾追加动态指令
+          const lastContent = lastMsg.content[lastMsg.content.length - 1];
+          if (lastContent && lastContent.type === "text") {
+            lastContent.text += roundDirective;
+          }
+        }
+      }
       const trimmed = trimMessages(messages);
       const resp = await callLLMWithTools(system, trimmed, READER_TOOLS, abortController.signal);
+      totalTokensUsed += (resp.meta.tokens_in || 0) + (resp.meta.tokens_out || 0);
       await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "reader", round, tokens_in: resp.meta.tokens_in, tokens_out: resp.meta.tokens_out, latency_ms: resp.meta.latency_ms, tools_count: resp.toolCalls.length, elapsed_ms: elapsed(), system, messages: trimmed }, "internal");
 
       if (resp.toolCalls.length === 0) {
@@ -345,11 +366,6 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
     if (findings.length > 0) {
       state.value.findings.push(...findings);
-      for (const f of findings) {
-        state.value.uncoveredAreas = state.value.uncoveredAreas.filter(
-          a => !f.topic.includes(a) && !f.content.includes(a)
-        );
-      }
       logEvent("explore:observation", { findings }, "internal");
     }
 
@@ -387,32 +403,6 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     } catch (e: any) {
       if (e.name === "AbortError") throw e;
       /* keep existing summary on other errors */
-    }
-  }
-
-  async function updateDocSections(newFindings: string) {
-    try {
-      const oldSections = state.value.documentSections.map(s => ({ ...s }));
-      const result = await runDocUpdater(
-        state.value.documentSections,
-        newFindings,
-        state.value.runningSummary,
-        abortController.signal,
-      );
-      if (result.updates.length > 0) {
-        state.value.documentSections = applySectionUpdates(state.value.documentSections, result);
-        docHistory.commit(oldSections, state.value.documentSections, "代码探索");
-        await writeDocToFile();
-        const diffs = result.updates.map(u => {
-          const oldSec = oldSections.find(s => s.id === u.section_id);
-          return { sectionId: u.section_id, oldContent: oldSec?.content || "", newContent: u.content };
-        });
-        await saveDocDiff("代码探索", diffs);
-        await logEvent("explore:doc_update", { updates: result.updates.map(u => u.section_id), progress: getDocProgress(state.value.documentSections) }, "internal");
-      }
-    } catch (e: any) {
-      if (e.name === "AbortError") throw e;
-      // doc update failure is non-fatal
     }
   }
 
@@ -590,11 +580,18 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     let noGainCount = 0;
     let consecutiveAsks = 0;
     let lastFindingsCount = state.value.findings.length;
+    let cumulativeTokens = totalTokensUsed; // 动态 token 预算追踪
 
     while (state.value.phase !== "done" && state.value.phase !== "waiting_user" && state.value.phase !== "cancelled") {
       if (abortController.signal.aborted) return;
+      cumulativeTokens = totalTokensUsed; // 同步最新累计值
       state.value.turnCount++;
-      const action = await runPlannerStep(userInput, images);
+      const tokenBudgetWarn = cumulativeTokens > TOKEN_BUDGET_WARN;
+      // 当 token 预算紧张时，降低 summarizer 压缩阈值
+      if (tokenBudgetWarn && summarizeThreshold > 500) {
+        summarizeThreshold = Math.max(400, summarizeThreshold - 200);
+      }
+      const action = await runPlannerStep(userInput, images, { consecutiveReads, tokenBudgetWarn });
       if (!action) break;
 
       userInput = "";
@@ -689,7 +686,6 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     options.onBlock({ kind: BlockKind.User, content });
 
     if (isFirstTurn.value) {
-      state.value.uncoveredAreas = getInitialAreas();
       // 初始化文档模式：仅在 documentSections 为空时（非恢复场景）才加载模板
       if (state.value.documentSections.length === 0) {
         await initDocumentMode();
