@@ -45,6 +45,17 @@ export function buildExploreReaderPrompt(values: {
   });
 }
 
+/**
+ * Prompt Cache 友好版本：
+ * - system prompt 只含 workDir（整个会话不变），确保 API prefix cache 命中
+ * - objective 由调用方放入第一条 user message
+ */
+export function buildExploreReaderSystem(workDir: string): string {
+  return fillTemplate(readerTemplate, {
+    work_dir: workDir,
+  });
+}
+
 export function buildExploreSummarizerPrompt(values: {
   currentSummary: string;
   newFindings: string;

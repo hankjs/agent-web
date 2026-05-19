@@ -8,7 +8,7 @@ import {
 } from "../../api/admin";
 import {
   buildExplorePlannerPrompt,
-  buildExploreReaderPrompt,
+  buildExploreReaderSystem,
   buildExploreSummarizerPrompt,
 } from "./prompts";
 import { callLLM, callLLMWithTools, execTool } from "./llm";
@@ -34,6 +34,7 @@ import {
   runTaskGenerator,
 } from "./docUpdater";
 import { useDocHistory } from "./useDocHistory";
+import { ContextCache } from "./contextCache";
 
 const enc = encodingForModel("gpt-4o"); // cl100k_base compatible
 
@@ -66,6 +67,11 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   let abortController = new AbortController();
   let consecutiveAsksTotal = 0; // 跨 reactLoop 调用追踪连续 ask_user 次数
   const docHistory = useDocHistory();
+  const contextCache = new ContextCache(); // Offload: 大工具结果缓存
+
+  // Prompt Cache: reader system prompt 只含 workDir，整个会话生命周期不变
+  // 确保 API 层 prefix cache 跨多次 executeReadCode 调用命中
+  const readerSystemPrompt = buildExploreReaderSystem(options.workDir);
 
   function elapsed() { return Date.now() - startTime; }
 
@@ -141,7 +147,8 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     } catch { return []; }
   }
 
-  /** Sliding window: trim old tool rounds to keep context manageable */
+  /** Sliding window: trim old tool rounds to keep context manageable.
+   *  改进：旧轮摘要保留工具名 + 结果要点（而非仅工具名），减少信息丢失 */
   function trimMessages(msgs: LlmMessage[]): LlmMessage[] {
     const rounds = (msgs.length - 1) / 2;
     if (rounds <= MAX_FULL_ROUNDS) return msgs;
@@ -149,18 +156,33 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     const trimmed: LlmMessage[] = [msgs[0]];
     let summary = "（前几轮工具调用摘要）\n";
     for (let i = 0; i < trimCount; i++) {
-      const aIdx = 1 + i * 2;
+      const aIdx = 1 + i * 2; // assistant message
+      const uIdx = aIdx + 1;  // user message (tool results)
       const toolNames = msgs[aIdx].content
         .filter((b: any) => b.type === "tool_use")
         .map((b: any) => b.name);
-      summary += `- 调用了 ${toolNames.join(", ")}\n`;
+      // 从 tool_result 中提取前 2 行作为要点
+      const resultHints = msgs[uIdx]?.content
+        ?.filter((b: any) => b.type === "tool_result" && !b.is_error)
+        .map((b: any) => {
+          const text = typeof b.content === "string" ? b.content : "";
+          return text.split("\n").slice(0, 2).join(" ").slice(0, 100);
+        })
+        .filter(Boolean)
+        .slice(0, 2) || [];
+      summary += `- ${toolNames.join(", ")}`;
+      if (resultHints.length > 0) summary += ` → ${resultHints.join("; ")}`;
+      summary += "\n";
     }
     trimmed.push({ role: "user", content: [{ type: "text", text: summary }] });
     trimmed.push(...msgs.slice(1 + trimCount * 2));
     return trimmed;
   }
 
-  // --- PLACEHOLDER_PLANNER_AND_BELOW ---
+  // --- Planner Isolation ---
+  // Planner 使用独立上下文（by communicating 模式）：
+  // 只接收 runningSummary + docProgress + filesRead + userInput
+  // 不接收 reader 的完整工具调用历史，大幅减少 planner 的 token 消耗
 
   async function runPlannerStep(userInput: string, images?: Array<{ media_type: string; data: string }>): Promise<PlannerAction | null> {
     state.value.phase = "thinking";
@@ -174,7 +196,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       filesRead: state.value.filesRead,
       docProgress: getDocProgress(state.value.documentSections),
     });
-    await logEvent("explore:thought", { prompt_preview: prompt.slice(0, 200) }, "internal");
+    await logEvent("explore:thought", { prompt_preview: prompt.slice(0, 200), cache_stats: contextCache.stats }, "internal");
     // Emit a thinking block that will stream planner output
     const thinkingBlock: Extract<Block, { kind: BlockKind.Thinking }> = { kind: BlockKind.Thinking, content: "" };
     options.onBlock(thinkingBlock);
@@ -239,12 +261,12 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     options.onBlock({ kind: BlockKind.ExploreRound, objective: params.objective, reasoning, tools: [], expanded: false, isRunning: true } as any);
     await logEvent("explore:status", { message: statusMsg }, "user");
 
-    const system = buildExploreReaderPrompt({
-      objective: params.objective + (params.files_hint?.length ? `\n提示文件: ${params.files_hint.join(", ")}` : ""),
-      workDir: options.workDir,
-    });
+    // Prompt Cache 友好：system prompt 只含 workDir（会话级稳定），objective 放入 user message
+    // 这样 API 层的 prefix cache 可以跨多次 executeReadCode 调用命中
+    const system = readerSystemPrompt;
+    const objectiveText = params.objective + (params.files_hint?.length ? `\n提示文件: ${params.files_hint.join(", ")}` : "");
 
-    let messages: LlmMessage[] = [{ role: "user", content: [{ type: "text", text: "开始阅读。" }] }];
+    let messages: LlmMessage[] = [{ role: "user", content: [{ type: "text", text: `阅读目标：${objectiveText}\n\n开始阅读。` }] }];
     const MAX_TOOL_ROUNDS = 5;
     let earlyFindings: Finding[] | null = null;
 
@@ -302,7 +324,14 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           const result = await execTool(tc.name, tc.input, options.workDir);
           const outputPreview = result.content.length > 200 ? result.content.slice(0, 200) + "..." : result.content;
           await logEvent("explore:tool_result", { turn: state.value.turnCount, tool_name: tc.name, output_preview: outputPreview, output_length: result.content.length, is_error: result.is_error, duration_ms: result.duration_ms, round, elapsed_ms: elapsed() }, "user");
-          toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: result.content, is_error: result.is_error });
+
+          // Offload: 大结果存缓存，messages 里只留预览引用
+          let messageContent = result.content;
+          if (!result.is_error && contextCache.shouldOffload(result.content)) {
+            messageContent = contextCache.offload(tc.id, tc.name, tc.input, result.content);
+          }
+
+          toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: messageContent, is_error: result.is_error });
           options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), result: outputPreview, isError: result.is_error, isRunning: false, expanded: false } });
         }
       }
