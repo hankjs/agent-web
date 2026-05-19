@@ -51,7 +51,7 @@ export class ContextCache {
     const lines = content.split("\n");
     const preview = lines.slice(0, PREVIEW_LINES).join("\n");
     const suffix = lines.length > PREVIEW_LINES
-      ? `\n... (共 ${lines.length} 行, ${tokens} tokens, 已缓存 id=${toolUseId})`
+      ? `\n... (共 ${lines.length} 行, ${tokens} tokens, 已缓存。如需完整内容可重新 read_file)`
       : "";
     return preview + suffix;
   }

@@ -36,9 +36,9 @@ describe("ContextCache", () => {
       expect(preview).toContain("line 7:");
       // Preview should NOT contain all lines
       expect(preview).not.toContain("line 49:");
-      // Should have cache reference
+      // Should have cache reference with recovery hint
       expect(preview).toContain("已缓存");
-      expect(preview).toContain("tool_1");
+      expect(preview).toContain("如需完整内容可重新 read_file");
     });
 
     it("retrieve returns full content", () => {

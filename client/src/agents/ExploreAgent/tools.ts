@@ -23,6 +23,7 @@ export const READER_TOOLS = [
         path: { type: "string", description: "Directory or file to search in (default: work_dir)" },
         glob: { type: "string", description: "File glob filter (e.g. '*.ts')" },
         ignore_case: { type: "boolean", description: "Case insensitive search (default: false)" },
+        max_results: { type: "integer", description: "Max results to return (default: 50). Use smaller values for broad patterns." },
       },
       required: ["pattern"],
     },

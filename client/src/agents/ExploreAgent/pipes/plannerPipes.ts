@@ -17,7 +17,8 @@ export const coreRulesPipe: PromptPipe = () =>
 1. 代码事实靠阅读，用户意图靠提问。项目结构、现有实现、技术栈等信息必须通过 read_code 获取，绝不向用户询问代码中能查到的事实。
 2. 第一轮必须 read_code。无论需求是否清晰，先了解项目结构和相关代码，才能提出有价值的问题或方案。
 3. 带方案提问。ask_user 必须基于已有调查结果，给出具体选项和利弊分析，而非空泛地问"你想怎么做"。
-4. 只问用户意图和决策。适合 ask_user 的场景：功能范围取舍、方案偏好、优先级排序、业务规则确认。`;
+4. 只问用户意图和决策。适合 ask_user 的场景：功能范围取舍、方案偏好、优先级排序、业务规则确认。
+5. 成本递增探索。read_code 目标应引导 reader 按 glob → search → read_file 的顺序渐进式探索，避免一开始就读大量完整文件。`;
 
 export const progressPipe: PromptPipe = (ctx) =>
   `当前摘要：
