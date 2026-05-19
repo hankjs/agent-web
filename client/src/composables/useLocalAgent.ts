@@ -51,11 +51,11 @@ export function useLocalAgent(options: UseLocalAgentOptions) {
     const opt = providerOptions.value.find(o => o.key === selectedProvider.value);
     return opt?.source || "local";
   });
-  const selectedProviderName = computed(() => {
+  const selectedProviderName = computed<string>(() => {
     const opt = providerOptions.value.find(o => o.key === selectedProvider.value);
     return opt?.name || "";
   });
-  const localAgentName = computed(() => selectedProviderName.value);
+  const localAgentName = computed<string>(() => selectedProviderName.value);
 
   watch(selectedProvider, async (_newVal, oldVal) => {
     if (localAgentStatus.value === "running") {

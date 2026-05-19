@@ -39,7 +39,7 @@ function cancelEdit() {
   editingId.value = null;
 }
 
-const progress = computed(() => {
+const progress = computed<{ filled: number; partial: number; empty: number; percent: number }>(() => {
   const total = props.sections.length;
   if (total === 0) return { filled: 0, partial: 0, empty: 0, percent: 0 };
   const filled = props.sections.filter(s => s.status === "filled").length;
@@ -49,17 +49,17 @@ const progress = computed(() => {
   return { filled, partial, empty, percent };
 });
 
-const changedSectionIds = computed(() => {
+const changedSectionIds = computed<Set<string>>(() => {
   if (!props.currentCommit?.diffs?.length) return new Set<string>();
   return new Set(props.currentCommit.diffs.map(d => d.sectionId));
 });
 
-const sourceLabel = computed(() => {
+const sourceLabel = computed<string>(() => {
   if (!props.currentCommit) return "";
   return props.currentCommit.source;
 });
 
-const timeLabel = computed(() => {
+const timeLabel = computed<string>(() => {
   if (!props.currentCommit) return "";
   const d = new Date(props.currentCommit.timestamp);
   return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}`;

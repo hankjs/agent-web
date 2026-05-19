@@ -48,8 +48,8 @@ function hasBranches(nodes: TreeNode[]): boolean {
   return false;
 }
 
-const tree = computed(() => buildTree(treeNodes.value));
-const hasBranching = computed(() => hasBranches(treeNodes.value));
+const tree = computed<TreeNode[]>(() => buildTree(treeNodes.value));
+const hasBranching = computed<boolean>(() => hasBranches(treeNodes.value));
 
 /** Get sibling nodes at a given message (same parent_id) */
 function getSiblings(messageId: string): TreeNode[] {

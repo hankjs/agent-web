@@ -11,7 +11,7 @@ const registeredPanels = ref<PanelDefinition[]>([]);
 const activePanelId = ref<string | null>(null);
 
 export function useSidebarPanels() {
-  const sortedPanels = computed(() =>
+  const sortedPanels = computed<PanelDefinition[]>(() =>
     [...registeredPanels.value].sort((a, b) => a.order - b.order)
   );
 

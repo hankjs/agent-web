@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive, watch } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { useSession } from "../composables/useSession";
 import { useExploreAgent, type Block } from "../agents/ExploreAgent";
 import { useSidebarPanels } from "../composables/useSidebarPanels";
@@ -39,7 +39,7 @@ registerPanel({ id: "changes", icon: "changes", title: "需求", order: 1 });
 const blocksComposable = {} as ReturnType<typeof useAgentBlocks>;
 
 const changesPanelRefreshKey = ref(0);
-const exploreOptions = reactive({
+const exploreOptions = {
   sessionId: props.sessionId,
   changeId: currentSession.value?.change_id || undefined,
   metadata: currentSession.value?.metadata || null,
@@ -47,7 +47,7 @@ const exploreOptions = reactive({
   onBlock: (block: Block) => blocksComposable.onBlock(block),
   onStreaming: (v: boolean) => blocksComposable.onStreaming(v),
   onComplete: () => { changesPanelRefreshKey.value++; },
-});
+};
 
 // Explore agent
 const exploreAgent = useExploreAgent(exploreOptions);
