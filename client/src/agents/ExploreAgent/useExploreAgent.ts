@@ -38,8 +38,6 @@ import { safeInput, parseFindings, trimMessages } from "./utils";
 
 const enc = encodingForModel("gpt-4o"); // cl100k_base compatible
 
-let summarizeThreshold = 800;
-
 function estimateTokens(text: string): number {
   return enc.encode(text).length;
 }
@@ -77,6 +75,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   let abortController = new AbortController();
   let consecutiveAsksTotal = 0; // 跨 reactLoop 调用追踪连续 ask_user 次数
   let totalTokensUsed = 0; // 累计 token 消耗（用于预算感知）
+  let summarizeThreshold = 800; // 实例级：压缩触发阈值（动态校准）
   const docHistory = useDocHistory();
   const contextCache = new ContextCache(); // Offload: 大工具结果缓存
 
@@ -99,6 +98,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
   function cancel() {
     abortController.abort();
+    abortController = new AbortController(); // 重建，允许后续重新启动
     state.value.phase = "cancelled";
     options.onBlock({ kind: BlockKind.Text, content: "探索已取消。" });
     options.onStreaming(false);
@@ -173,6 +173,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           thinkingBlock.content += delta;
           options.onBlock({ kind: BlockKind.Thinking, content: thinkingBlock.content });
         });
+        totalTokensUsed += (meta.tokens_in || 0) + (meta.tokens_out || 0);
         await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "planner", attempt, tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(), httpStatus, system: systemPrompt, messages: prompt }, "internal");
 
         if (!response || response.trim().length === 0) {
@@ -201,13 +202,15 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         lastError = e.message;
         const statusMatch = lastError.match(/LLM error: (\d+)/);
         const httpStatus = statusMatch ? parseInt(statusMatch[1]) : undefined;
-        if (attempt < MAX_PLANNER_RETRIES) {
-          await logEvent("explore:planner_retry", { attempt, error: lastError, willRetry: true, httpStatus }, "user");
-          continue;
+        // 不可重试错误（4xx 非 429）直接终止
+        const isPermanent = httpStatus && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 429;
+        if (isPermanent || attempt >= MAX_PLANNER_RETRIES) {
+          await logEvent("explore:error", { phase: "planner", error: lastError, attempts: attempt + 1, httpStatus, permanent: isPermanent }, "user");
+          options.onBlock({ kind: BlockKind.Error, content: `规划失败: ${e.message}` });
+          return null;
         }
-        await logEvent("explore:error", { phase: "planner", error: lastError, attempts: attempt + 1, httpStatus }, "user");
-        options.onBlock({ kind: BlockKind.Error, content: `规划失败: ${e.message}` });
-        return null;
+        await logEvent("explore:planner_retry", { attempt, error: lastError, willRetry: true, httpStatus }, "user");
+        continue;
       }
     }
     return null;
@@ -229,6 +232,10 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     const MAX_TOOL_ROUNDS = 5;
     let earlyFindings: Finding[] | null = null;
 
+    // 死循环指纹检测：连续相同 tool_use 检测
+    const fingerprints: string[] = [];
+    const LOOP_THRESHOLD = 2; // 连续 2 次相同指纹即判定为循环
+
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       // 渐进式指令注入：作为独立 user message 追加，不修改已有消息内容（保护 prefix cache）
       const roundDirective = getReaderRoundDirective(round, MAX_TOOL_ROUNDS);
@@ -245,6 +252,22 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         const findings = earlyFindings || parseFindings(resp.text);
         await applyFindings(findings, resp.text);
         return findings;
+      }
+
+      // 死循环指纹检测
+      const roundFingerprint = resp.toolCalls
+        .map(tc => `${tc.name}:${JSON.stringify(tc.input)}`)
+        .sort()
+        .join("|");
+      fingerprints.push(roundFingerprint);
+      if (fingerprints.length >= LOOP_THRESHOLD) {
+        const recent = fingerprints.slice(-LOOP_THRESHOLD);
+        if (recent.every(fp => fp === recent[0])) {
+          await logEvent("explore:loop_detected", { fingerprint: roundFingerprint, round }, "internal");
+          // 注入 nudge 而非直接终止，给模型一次机会换策略
+          messages.push({ role: "user", content: [{ type: "text", text: "⚠ 检测到重复操作。你正在重复调用相同的工具和参数，请换一个不同的策略，或者调用 report_findings 报告当前发现。" }] });
+          continue;
+        }
       }
 
       const assistantContent: any[] = [];

@@ -5,6 +5,7 @@ import { API_BASE } from "../../config";
 
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
+const SSE_READ_TIMEOUT_MS = 120_000; // 120s 无数据则判定连接挂起
 
 /** Exponential backoff with jitter */
 function backoffDelay(attempt: number): number {
@@ -36,6 +37,17 @@ function streamSSEViaTauri(
   onError: (err: Error) => void,
 ): () => void {
   let aborted = false;
+  let finished = false;
+
+  // Read timeout for Tauri path
+  let readTimer: ReturnType<typeof setTimeout> | null = null;
+  const resetReadTimer = () => {
+    if (readTimer) clearTimeout(readTimer);
+    if (finished || aborted) return;
+    readTimer = setTimeout(() => {
+      if (!finished && !aborted) { finished = true; aborted = true; onError(new Error("SSE read timeout: no data received for 120s")); }
+    }, SSE_READ_TIMEOUT_MS);
+  };
 
   const run = async () => {
     try {
@@ -43,10 +55,14 @@ function streamSSEViaTauri(
 
       if (signal?.aborted) { onError(new DOMException("Aborted", "AbortError")); return; }
 
+      resetReadTimer();
       const onEvent = new Channel<{ data: string; done: boolean }>();
       onEvent.onmessage = (event) => {
         if (aborted) return;
+        resetReadTimer();
         if (event.done) {
+          finished = true;
+          if (readTimer) clearTimeout(readTimer);
           onDone();
         } else if (event.data) {
           onLine(event.data);
@@ -60,6 +76,8 @@ function streamSSEViaTauri(
       // invoke resolves after stream ends; if onDone wasn't called via channel, call it now
       // (Channel should have delivered done:true before invoke resolves)
     } catch (err: any) {
+      finished = true;
+      if (readTimer) clearTimeout(readTimer);
       if (!aborted) {
         onError(new Error(err?.toString() || "Tauri invoke failed"));
       }
@@ -69,7 +87,7 @@ function streamSSEViaTauri(
   run();
 
   if (signal) {
-    signal.addEventListener("abort", () => { aborted = true; });
+    signal.addEventListener("abort", () => { aborted = true; if (readTimer) clearTimeout(readTimer); });
   }
 
   return () => { aborted = true; };
@@ -93,8 +111,21 @@ function streamSSEViaXHR(
   xhr.setRequestHeader("Accept", "text/event-stream");
 
   let lastIndex = 0;
+  let finished = false;
+
+  // Read timeout: abort if no data received within threshold
+  let readTimer: ReturnType<typeof setTimeout> | null = null;
+  const resetReadTimer = () => {
+    if (readTimer) clearTimeout(readTimer);
+    if (finished) return;
+    readTimer = setTimeout(() => {
+      if (!finished) { finished = true; xhr.abort(); onError(new Error("SSE read timeout: no data received for 120s")); }
+    }, SSE_READ_TIMEOUT_MS);
+  };
+  resetReadTimer();
 
   xhr.onprogress = () => {
+    resetReadTimer();
     const text = xhr.responseText.slice(lastIndex);
     lastIndex = xhr.responseText.length;
     const lines = text.split("\n");
@@ -106,6 +137,8 @@ function streamSSEViaXHR(
   };
 
   xhr.onload = () => {
+    finished = true;
+    if (readTimer) clearTimeout(readTimer);
     const text = xhr.responseText.slice(lastIndex);
     if (text) {
       const lines = text.split("\n");
@@ -122,9 +155,9 @@ function streamSSEViaXHR(
     }
   };
 
-  xhr.onerror = () => { onError(new Error("Network error")); };
-  xhr.onabort = () => { onError(new DOMException("Aborted", "AbortError")); };
-  xhr.ontimeout = () => { onError(new Error("Request timeout")); };
+  xhr.onerror = () => { finished = true; if (readTimer) clearTimeout(readTimer); onError(new Error("Network error")); };
+  xhr.onabort = () => { if (!finished) { finished = true; if (readTimer) clearTimeout(readTimer); onError(new DOMException("Aborted", "AbortError")); } };
+  xhr.ontimeout = () => { finished = true; if (readTimer) clearTimeout(readTimer); onError(new Error("Request timeout")); };
 
   if (signal) {
     if (signal.aborted) { xhr.abort(); return () => {}; }
@@ -132,7 +165,7 @@ function streamSSEViaXHR(
   }
 
   xhr.send(body);
-  return () => xhr.abort();
+  return () => { finished = true; if (readTimer) clearTimeout(readTimer); xhr.abort(); };
 }
 
 /** Route SSE to Tauri or XHR based on environment */
@@ -299,9 +332,42 @@ function streamSSERequestFull(body: string, signal?: AbortSignal): Promise<LlmRe
   });
 }
 
+/** Allowlist of read-only command prefixes for the bash tool in reader context */
+const BASH_ALLOWLIST = [
+  "curl", "cat", "head", "tail", "ls", "find", "wc", "file", "stat",
+  "echo", "grep", "rg", "ag", "tree", "du", "df", "which", "type",
+  "git log", "git show", "git diff", "git status", "git branch",
+];
+
+/** Validate bash command against allowlist. Returns error message or null if allowed. */
+function validateBashCommand(command: string): string | null {
+  const trimmed = command.trim();
+  // Block empty commands
+  if (!trimmed) return "Empty command";
+  // Block command chaining that could bypass allowlist
+  if (/[;&|`$]/.test(trimmed) && !trimmed.startsWith("curl")) {
+    // Allow pipes only if the base command is allowed
+    const baseCmd = trimmed.split(/\s*\|\s*/)[0].trim();
+    const isAllowed = BASH_ALLOWLIST.some(prefix => baseCmd.startsWith(prefix));
+    if (!isAllowed) return `Command not allowed: ${baseCmd.split(" ")[0]}. Only read-only commands are permitted.`;
+    return null;
+  }
+  const isAllowed = BASH_ALLOWLIST.some(prefix => trimmed.startsWith(prefix));
+  if (!isAllowed) return `Command not allowed: ${trimmed.split(" ")[0]}. Only read-only commands (curl, cat, ls, etc.) are permitted.`;
+  return null;
+}
+
 /** Execute a tool — routes to local (Tauri) or server based on environment */
 export async function execTool(toolName: string, input: any, workDir: string): Promise<{ content: string; is_error: boolean; duration_ms: number }> {
   const start = performance.now();
+
+  // Bash command allowlist enforcement
+  if (toolName === "bash") {
+    const error = validateBashCommand(input?.command || "");
+    if (error) {
+      return { content: error, is_error: true, duration_ms: Math.round(performance.now() - start) };
+    }
+  }
 
   // Tauri environment → local execution
   if (isTauri()) {
