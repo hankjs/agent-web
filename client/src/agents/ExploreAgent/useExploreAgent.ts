@@ -230,20 +230,13 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     let earlyFindings: Finding[] | null = null;
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      // 渐进式指令注入：前期不催促，后期逐步加压
+      // 渐进式指令注入：作为独立 user message 追加，不修改已有消息内容（保护 prefix cache）
       const roundDirective = getReaderRoundDirective(round, MAX_TOOL_ROUNDS);
-      if (roundDirective && messages.length > 0) {
-        const lastMsg = messages[messages.length - 1];
-        if (lastMsg.role === "user" && Array.isArray(lastMsg.content)) {
-          // 在最后一条 user message 末尾追加动态指令
-          const lastContent = lastMsg.content[lastMsg.content.length - 1];
-          if (lastContent && lastContent.type === "text") {
-            lastContent.text += roundDirective;
-          }
-        }
-      }
       const trimmed = trimMessages(messages);
-      const resp = await callLLMWithTools(system, trimmed, READER_TOOLS, abortController.signal);
+      const messagesForCall = roundDirective
+        ? [...trimmed, { role: "user" as const, content: [{ type: "text" as const, text: roundDirective.trim() }] }]
+        : trimmed;
+      const resp = await callLLMWithTools(system, messagesForCall, READER_TOOLS, abortController.signal);
       totalTokensUsed += (resp.meta.tokens_in || 0) + (resp.meta.tokens_out || 0);
       await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "reader", round, tokens_in: resp.meta.tokens_in, tokens_out: resp.meta.tokens_out, latency_ms: resp.meta.latency_ms, tools_count: resp.toolCalls.length, elapsed_ms: elapsed(), system, messages: trimmed }, "internal");
 
