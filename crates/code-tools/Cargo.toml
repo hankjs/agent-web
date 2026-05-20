@@ -1,11 +1,9 @@
 [package]
-name = "hank-agent"
+name = "code-tools"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hank-provider = { path = "../hank-provider" }
-hank-web-tools = { path = "../hank-web-tools" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -13,8 +11,4 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
-futures = { workspace = true }
-uuid = { workspace = true }
-chrono = { workspace = true }
-tokio-stream = { workspace = true }
-tokio-util = { workspace = true }
+reqwest = { workspace = true }

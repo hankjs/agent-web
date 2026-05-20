@@ -273,6 +273,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "code-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "code-tools",
+ "futures",
+ "hank-provider",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "code-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -711,26 +745,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hank-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "futures",
- "hank-provider",
- "hank-web-tools",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "hank-db"
 version = "0.1.0"
 dependencies = [
@@ -774,12 +788,12 @@ dependencies = [
  "axum-extra",
  "bcrypt",
  "chrono",
+ "code-agent",
+ "code-tools",
  "dirs",
  "futures",
- "hank-agent",
  "hank-db",
  "hank-provider",
- "hank-web-tools",
  "jsonwebtoken",
  "reqwest",
  "serde",
@@ -794,20 +808,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "hank-web-tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
 ]
 
 [[package]]

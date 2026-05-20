@@ -9,7 +9,7 @@ use hank_provider::{
     CompletionRequest, ContentBlock, LlmProvider, Message, Role, StopReason, StreamEvent,
     ToolDefinition,
 };
-use hank_web_tools::{Tool, ToolOutput};
+use code_tools::{Tool, ToolOutput};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -384,8 +384,7 @@ impl AgentSession {
                         }
 
                         // Check for loop detection
-                        if loop_detector.record(name, input) {
-                            loop_detector.consecutive_loops += 1;
+                        if loop_detector.record_and_check(name, input) {
                             let pattern = loop_detector.loop_pattern();
                             let _ = event_tx
                                 .send(AgentEvent::LoopDetected {
@@ -394,8 +393,8 @@ impl AgentSession {
                                 })
                                 .await;
 
-                            if loop_detector.consecutive_loops >= 3 {
-                                warn!("Loop detected: {} consecutive loops, terminating", loop_detector.consecutive_loops);
+                            if loop_detector.should_terminate(3) {
+                                warn!("Loop detected: terminating agent loop");
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: format!(
@@ -422,7 +421,7 @@ impl AgentSession {
                         let tool_start = Instant::now();
                         let output = match tokio::time::timeout(
                             Duration::from_secs(TOOL_TIMEOUT_SECS),
-                            self.execute_tool(name, input.clone()),
+                            self.execute_tool(name, input.clone(), &event_tx, id),
                         )
                         .await
                         {
@@ -508,16 +507,44 @@ impl AgentSession {
         Ok(())
     }
 
-    async fn execute_tool(&self, name: &str, input: serde_json::Value) -> ToolOutput {
+    async fn execute_tool(&self, name: &str, input: serde_json::Value, event_tx: &mpsc::Sender<AgentEvent>, tool_use_id: &str) -> ToolOutput {
         for tool in &self.tools {
             if tool.name() == name {
-                return match tool.execute(input).await {
-                    Ok(output) => output,
-                    Err(e) => ToolOutput {
-                        content: format!("Tool execution error: {e}"),
-                        is_error: true,
-                    },
-                };
+                if tool.supports_streaming() {
+                    // Streaming execution: forward chunks as ToolOutputDelta events
+                    let (stream_tx, mut stream_rx) = mpsc::channel::<String>(64);
+                    let event_tx_clone = event_tx.clone();
+                    let id_clone = tool_use_id.to_string();
+
+                    let forward_handle = tokio::spawn(async move {
+                        while let Some(chunk) = stream_rx.recv().await {
+                            let _ = event_tx_clone.send(AgentEvent::ToolOutputDelta {
+                                id: id_clone.clone(),
+                                chunk,
+                            }).await;
+                        }
+                    });
+
+                    let result = match tool.execute_streaming(input, stream_tx).await {
+                        Ok(output) => output,
+                        Err(e) => ToolOutput {
+                            content: format!("Tool execution error: {e}"),
+                            is_error: true,
+                        },
+                    };
+
+                    // Wait for forwarding to complete
+                    let _ = forward_handle.await;
+                    return result;
+                } else {
+                    return match tool.execute(input).await {
+                        Ok(output) => output,
+                        Err(e) => ToolOutput {
+                            content: format!("Tool execution error: {e}"),
+                            is_error: true,
+                        },
+                    };
+                }
             }
         }
         ToolOutput {

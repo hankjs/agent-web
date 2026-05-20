@@ -2,8 +2,8 @@
 members = [
     "server",
     "crates/hank-provider",
-    "crates/hank-agent",
-    "crates/hank-web-tools",
+    "crates/code-agent",
+    "crates/code-tools",
     "crates/hank-db",
 ]
 exclude = ["client/src-tauri"]

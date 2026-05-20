@@ -5,7 +5,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use hank_agent::AgentEvent;
+use code_agent::AgentEvent;
 use hank_provider::{CompletionRequest, Message, StreamEvent};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

@@ -4,18 +4,51 @@ pub enum PromptSegment {
     Static(&'static str),
     /// Dynamically generated text
     Dynamic(String),
+    /// Conditional segment — only included if condition is true
+    Conditional { content: String, condition: bool },
 }
 
 /// Build a system prompt from multiple segments joined with double newlines
 pub fn build_system_prompt(segments: &[PromptSegment]) -> String {
     segments
         .iter()
-        .map(|seg| match seg {
-            PromptSegment::Static(s) => s.to_string(),
-            PromptSegment::Dynamic(s) => s.clone(),
+        .filter_map(|seg| match seg {
+            PromptSegment::Static(s) => Some(s.to_string()),
+            PromptSegment::Dynamic(s) => Some(s.clone()),
+            PromptSegment::Conditional { content, condition } => {
+                if *condition { Some(content.clone()) } else { None }
+            }
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// 扫描项目目录，发现并加载上下文文件
+pub async fn discover_project_context(work_dir: &str) -> Vec<PromptSegment> {
+    let mut segments = Vec::new();
+    let context_files = [
+        ("CLAUDE.md", "Project Instructions (CLAUDE.md)"),
+        ("AGENTS.md", "Agent Instructions (AGENTS.md)"),
+        (".cursorrules", "Project Rules (.cursorrules)"),
+    ];
+
+    let max_chars: usize = 4000;
+
+    for (filename, label) in &context_files {
+        let path = format!("{}/{}", work_dir.trim_end_matches('/'), filename);
+        if let Ok(content) = tokio::fs::read_to_string(&path).await {
+            let truncated = if content.len() > max_chars {
+                format!("{}...\n[truncated at {} chars]", &content[..max_chars], max_chars)
+            } else {
+                content
+            };
+            segments.push(PromptSegment::Dynamic(format!(
+                "# {label}\n\n{truncated}"
+            )));
+        }
+    }
+
+    segments
 }
 
 /// Pre-built prompt segments for common scenarios

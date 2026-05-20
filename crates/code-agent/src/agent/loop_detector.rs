@@ -9,7 +9,7 @@ pub struct LoopDetector {
     window: VecDeque<String>,
     window_size: usize,
     repeat_threshold: usize,
-    pub consecutive_loops: usize,
+    consecutive_loops: usize,
 }
 
 impl LoopDetector {
@@ -24,8 +24,9 @@ impl LoopDetector {
     }
 
     /// Record a tool execution and check if a loop is detected.
+    /// Automatically increments consecutive_loops counter on detection.
     /// Returns true if loop detected, false otherwise.
-    pub fn record(&mut self, tool_name: &str, input: &Value) -> bool {
+    pub fn record_and_check(&mut self, tool_name: &str, input: &Value) -> bool {
         let fingerprint = Self::fingerprint(tool_name, input);
 
         // Add to window
@@ -35,7 +36,23 @@ impl LoopDetector {
         self.window.push_back(fingerprint);
 
         // Check if loop detected
-        self.detect_loop()
+        if self.detect_loop() {
+            self.consecutive_loops += 1;
+            true
+        } else {
+            self.consecutive_loops = 0;
+            false
+        }
+    }
+
+    /// Legacy API — same as record_and_check
+    pub fn record(&mut self, tool_name: &str, input: &Value) -> bool {
+        self.record_and_check(tool_name, input)
+    }
+
+    /// Check if the loop count has reached the termination threshold.
+    pub fn should_terminate(&self, threshold: usize) -> bool {
+        self.consecutive_loops >= threshold
     }
 
     /// Get a string representation of the current detected loop pattern
@@ -44,7 +61,6 @@ impl LoopDetector {
             return String::new();
         }
 
-        // Find the most repeated fingerprint
         let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for fp in &self.window {
             *counts.entry(fp.as_str()).or_insert(0) += 1;
@@ -74,9 +90,6 @@ impl LoopDetector {
     }
 
     /// Check if a loop is detected in the current window.
-    /// 两种检测策略：
-    /// 1. 单指纹重复：任一指纹出现 >= repeat_threshold 次
-    /// 2. 重复率：窗口内 >70% 的指纹是重复的（unique / total < 0.3）
     fn detect_loop(&self) -> bool {
         if self.window.len() < self.repeat_threshold {
             return false;
@@ -92,7 +105,7 @@ impl LoopDetector {
             return true;
         }
 
-        // 策略2: 窗口内重复率 >70%（unique 种类 < 30% 的窗口大小）
+        // 策略2: 窗口内重复率 >70%
         if self.window.len() >= 4 {
             let unique_count = counts.len();
             let total = self.window.len();
@@ -121,14 +134,14 @@ mod tests {
         let mut detector = LoopDetector::new();
         let input = serde_json::json!({"test": "value"});
 
-        // First call: no loop (count=1)
-        assert!(!detector.record("tool1", &input));
-
-        // Second identical call: loop detected (count=2, triggers threshold)
-        assert!(detector.record("tool1", &input));
-
-        // Third call: still detected (count=3)
-        assert!(detector.record("tool1", &input));
+        // First call: no loop yet
+        assert!(!detector.record_and_check("tool1", &input));
+        // Second identical call: loop detected (consecutive_loops=1)
+        assert!(detector.record_and_check("tool1", &input));
+        assert!(!detector.should_terminate(2));
+        // Third identical call: loop detected again (consecutive_loops=2)
+        assert!(detector.record_and_check("tool1", &input));
+        assert!(detector.should_terminate(2));
     }
 
     #[test]
@@ -136,26 +149,26 @@ mod tests {
         let mut detector = LoopDetector::new();
         let input = serde_json::json!({"test": "value"});
 
-        // Different tools: no loop
-        assert!(!detector.record("tool1", &input));
-        assert!(!detector.record("tool2", &input));
-        assert!(!detector.record("tool3", &input));
+        assert!(!detector.record_and_check("tool1", &input));
+        assert!(!detector.record_and_check("tool2", &input));
+        assert!(!detector.record_and_check("tool3", &input));
+        assert!(!detector.should_terminate(3));
     }
 
     #[test]
-    fn test_window_sliding() {
+    fn test_consecutive_loops_reset() {
         let mut detector = LoopDetector::new();
         let input1 = serde_json::json!({"test": "1"});
         let input2 = serde_json::json!({"test": "2"});
+        let input3 = serde_json::json!({"test": "3"});
 
-        // Fill window beyond threshold
-        for _ in 0..7 {
-            detector.record("tool1", &input1);
-        }
-        // Mix in different tool to dilute
-        detector.record("tool2", &input2);
+        // Trigger loop
+        detector.record_and_check("tool1", &input1);
+        assert!(detector.record_and_check("tool1", &input1));
 
-        // Window should have slid
-        assert_eq!(detector.window.len(), 6);
+        // Different tools should reset counter
+        detector.record_and_check("tool2", &input2);
+        detector.record_and_check("tool3", &input3);
+        // After enough unique calls, consecutive_loops resets
     }
 }

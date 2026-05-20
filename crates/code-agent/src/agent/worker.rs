@@ -1,5 +1,6 @@
 use crate::agent::{Artifact, DelegatedTask, LoopDetector, TaskResult, TaskStatus};
 use crate::context::summary::truncate_tool_result_default;
+use crate::context::{BudgetStatus, ContextManager};
 use crate::retry::stream_with_retry;
 use crate::AgentEvent;
 use anyhow::Result;
@@ -7,7 +8,7 @@ use hank_provider::{
     CompletionRequest, ContentBlock, LlmProvider, Message, Role, StopReason, StreamEvent,
     ToolDefinition,
 };
-use hank_web_tools::{Tool, ToolOutput};
+use code_tools::{Tool, ToolOutput};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -17,8 +18,10 @@ use tracing::{debug, warn};
 
 const WORKER_MAX_ITERATIONS: usize = 25;
 const LLM_STREAM_TIMEOUT_SECS: u64 = 120;
-const TOOL_TIMEOUT_SECS: u64 = 30;
 const LOOP_TERMINATE_COUNT: usize = 3;
+/// Worker context budget (smaller than orchestrator)
+const WORKER_CONTEXT_BUDGET: usize = 100_000;
+const WORKER_COMPRESS_THRESHOLD: usize = 60_000;
 
 /// WorkerAgent executes a delegated task using a flat stream-tools loop.
 pub struct WorkerAgent {
@@ -26,6 +29,7 @@ pub struct WorkerAgent {
     tools: Vec<Arc<dyn Tool>>,
     model: String,
     tool_definitions: Vec<ToolDefinition>,
+    context_manager: ContextManager,
 }
 
 impl WorkerAgent {
@@ -42,11 +46,18 @@ impl WorkerAgent {
                 input_schema: t.input_schema(),
             })
             .collect();
+        let context_manager = ContextManager::with_budget(
+            WORKER_COMPRESS_THRESHOLD,
+            WORKER_CONTEXT_BUDGET,
+            provider.clone(),
+            model.clone(),
+        );
         Self {
             provider,
             tools,
             model,
             tool_definitions,
+            context_manager,
         }
     }
 
@@ -225,8 +236,7 @@ impl WorkerAgent {
                         }
 
                         // Check for loop detection
-                        if loop_detector.record(name, input) {
-                            loop_detector.consecutive_loops += 1;
+                        if loop_detector.record_and_check(name, input) {
                             let pattern = loop_detector.loop_pattern();
                             let _ = event_tx
                                 .send(AgentEvent::LoopDetected {
@@ -235,10 +245,10 @@ impl WorkerAgent {
                                 })
                                 .await;
 
-                            if loop_detector.consecutive_loops >= LOOP_TERMINATE_COUNT {
+                            if loop_detector.should_terminate(LOOP_TERMINATE_COUNT) {
                                 warn!(
-                                    "Worker loop detection: {} consecutive loops, terminating task {}",
-                                    loop_detector.consecutive_loops, task.id
+                                    "Worker loop detection: terminating task {}",
+                                    task.id
                                 );
                                 return Ok(TaskResult {
                                     task_id: task.id.clone(),
@@ -249,7 +259,7 @@ impl WorkerAgent {
                             }
 
                             // Inject nudge message
-                            let nudge = Message {
+                            messages.push(Message {
                                 role: Role::User,
                                 content: vec![ContentBlock::Text {
                                     text: format!(
@@ -257,8 +267,7 @@ impl WorkerAgent {
                                         pattern
                                     ),
                                 }],
-                            };
-                            messages.push(nudge);
+                            });
                         }
 
                         let input_str = serde_json::to_string(input).unwrap_or_default();
@@ -270,17 +279,18 @@ impl WorkerAgent {
                             })
                             .await;
 
+                        let tool_timeout = self.get_tool_timeout(name);
                         let output = match tokio::time::timeout(
-                            Duration::from_secs(TOOL_TIMEOUT_SECS),
-                            self.execute_tool(name, input.clone()),
+                            tool_timeout,
+                            self.execute_tool(name, input.clone(), &event_tx, id),
                         )
                         .await
                         {
                             Ok(tool_output) => tool_output,
                             Err(_) => {
-                                warn!("Worker tool {} timed out after {}s for task {}", name, TOOL_TIMEOUT_SECS, task.id);
+                                warn!("Worker tool {} timed out after {:?} for task {}", name, tool_timeout, task.id);
                                 ToolOutput {
-                                    content: format!("Tool execution timed out after {}s", TOOL_TIMEOUT_SECS),
+                                    content: format!("Tool execution timed out after {}s", tool_timeout.as_secs()),
                                     is_error: true,
                                 }
                             }
@@ -315,6 +325,20 @@ impl WorkerAgent {
                     role: Role::User,
                     content: tool_results,
                 });
+
+                // Budget check after tool results
+                match self.context_manager.check_budget(&messages) {
+                    BudgetStatus::Overflow100 => {
+                        warn!("Worker budget overflow, terminating task {}", task.id);
+                        break;
+                    }
+                    BudgetStatus::Critical95 | BudgetStatus::Warning80 => {
+                        if self.context_manager.needs_compression(&messages) {
+                            self.context_manager.compress_async(&mut messages).await;
+                        }
+                    }
+                    BudgetStatus::Normal => {}
+                }
             } else {
                 break;
             }
@@ -327,33 +351,77 @@ impl WorkerAgent {
         // Truncate summary to reasonable length
         let summary = if final_text.len() > 500 {
             format!("{}...", &final_text[..500])
+        } else if final_text.is_empty() {
+            "Task completed without output.".to_string()
         } else {
             final_text
         };
 
+        // Determine final status based on how we exited
+        let status = if cancel.is_cancelled() {
+            TaskStatus::Failed
+        } else {
+            TaskStatus::Success
+        };
+
         Ok(TaskResult {
             task_id: task.id.clone(),
-            status: TaskStatus::Success,
+            status,
             summary,
             artifacts,
         })
     }
 
-    async fn execute_tool(&self, name: &str, input: serde_json::Value) -> ToolOutput {
+    async fn execute_tool(&self, name: &str, input: serde_json::Value, event_tx: &mpsc::Sender<AgentEvent>, tool_use_id: &str) -> ToolOutput {
         for tool in &self.tools {
             if tool.name() == name {
-                return match tool.execute(input).await {
-                    Ok(output) => output,
-                    Err(e) => ToolOutput {
-                        content: format!("Tool execution error: {e}"),
-                        is_error: true,
-                    },
-                };
+                if tool.supports_streaming() {
+                    let (stream_tx, mut stream_rx) = mpsc::channel::<String>(64);
+                    let event_tx_clone = event_tx.clone();
+                    let id_clone = tool_use_id.to_string();
+
+                    let forward_handle = tokio::spawn(async move {
+                        while let Some(chunk) = stream_rx.recv().await {
+                            let _ = event_tx_clone.send(AgentEvent::ToolOutputDelta {
+                                id: id_clone.clone(),
+                                chunk,
+                            }).await;
+                        }
+                    });
+
+                    let result = match tool.execute_streaming(input, stream_tx).await {
+                        Ok(output) => output,
+                        Err(e) => ToolOutput {
+                            content: format!("Tool execution error: {e}"),
+                            is_error: true,
+                        },
+                    };
+
+                    let _ = forward_handle.await;
+                    return result;
+                } else {
+                    return match tool.execute(input).await {
+                        Ok(output) => output,
+                        Err(e) => ToolOutput {
+                            content: format!("Tool execution error: {e}"),
+                            is_error: true,
+                        },
+                    };
+                }
             }
         }
         ToolOutput {
             content: format!("Unknown tool: {name}"),
             is_error: true,
         }
+    }
+
+    fn get_tool_timeout(&self, name: &str) -> Duration {
+        for tool in &self.tools {
+            if tool.name() == name {
+                return tool.timeout();
+            }
+        }
+        Duration::from_secs(30)
     }
 }

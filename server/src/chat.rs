@@ -9,13 +9,19 @@ use axum::{
     },
 };
 use futures::stream::Stream;
-use hank_agent::{AgentEvent, AgentSession};
-use hank_web_tools::{
+use code_agent::{AgentEvent, AgentSession};
+use code_tools::{
     ask_user::AskUserTool,
     explore_tools::FinalizeExploreTool,
+    file_checksum::new_checksum_store,
     generate_tools::GenerateArtifactsTool,
+    git::GitTool,
     read_file::ReadFileTool, search::SearchTool, shell::ShellTool,
     spec_tools::{UpdateArtifactTool, UpdateSpecTool, UpdateTaskStatusTool},
+    str_replace::StrReplaceTool,
+    list_directory::ListDirectoryTool,
+    test_runner::TestRunnerTool,
+    web_fetch::WebFetchTool,
     write_file::WriteFileTool, Tool,
 };
 use serde::Deserialize;
@@ -138,11 +144,17 @@ pub async fn chat_handler(
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or_default()
             .to_string();
+        let checksum_store = new_checksum_store();
         let mut t: Vec<Arc<dyn Tool>> = vec![
             Arc::new(ShellTool::new(work_dir.clone())),
-            Arc::new(ReadFileTool::new(work_dir.clone())),
-            Arc::new(WriteFileTool::new(work_dir.clone())),
-            Arc::new(SearchTool::new(work_dir)),
+            Arc::new(ReadFileTool::with_checksum_store(work_dir.clone(), checksum_store.clone())),
+            Arc::new(WriteFileTool::with_checksum_store(work_dir.clone(), checksum_store.clone())),
+            Arc::new(StrReplaceTool::with_checksum_store(work_dir.clone(), checksum_store.clone())),
+            Arc::new(ListDirectoryTool::new(work_dir.clone())),
+            Arc::new(SearchTool::new(work_dir.clone())),
+            Arc::new(GitTool::new(work_dir.clone())),
+            Arc::new(WebFetchTool::new()),
+            Arc::new(TestRunnerTool::new(work_dir.clone())),
             Arc::new(UpdateSpecTool::new(base_url.clone(), token.clone(), session_id.clone())),
             Arc::new(UpdateTaskStatusTool::new(base_url.clone(), token.clone(), session_id.clone())),
             Arc::new(UpdateArtifactTool::new(base_url.clone(), token.clone(), session_id.clone())),
@@ -615,5 +627,6 @@ fn extract_event_type(event: &AgentEvent) -> &'static str {
         AgentEvent::ExploreComplete { .. } => "explore_complete",
         AgentEvent::GenerateComplete { .. } => "generate_complete",
         AgentEvent::LlmRequest { .. } => "llm_request",
+        AgentEvent::ToolOutputDelta { .. } => "tool_output_delta",
     }
 }

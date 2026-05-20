@@ -7,7 +7,7 @@ use hank_provider::{
     CompletionRequest, ContentBlock, LlmProvider, Message, Role, StopReason, StreamEvent,
     ToolDefinition,
 };
-use hank_web_tools::{Tool, ToolOutput};
+use code_tools::{Tool, ToolOutput};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;

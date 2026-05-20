@@ -9,8 +9,8 @@ use axum::{
     },
     Json,
 };
-use hank_agent::{AgentEvent, AgentSession};
-use hank_web_tools::{
+use code_agent::{AgentEvent, AgentSession};
+use code_tools::{
     read_file::ReadFileTool, search::SearchTool, shell::ShellTool, write_file::WriteFileTool, Tool,
 };
 use serde::{Deserialize, Serialize};

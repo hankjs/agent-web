@@ -79,10 +79,10 @@ async fn main() -> Result<()> {
 
     let env_filter = EnvFilter::from_default_env()
         .add_directive("hank_server=debug".parse()?)
-        .add_directive("hank_agent=debug".parse()?)
+        .add_directive("code_agent=debug".parse()?)
         .add_directive("hank_provider=debug".parse()?)
         .add_directive("hank_db=debug".parse()?)
-        .add_directive("hank_web_tools=debug".parse()?);
+        .add_directive("code_tools=debug".parse()?);
 
     tracing_subscriber::registry()
         .with(env_filter)

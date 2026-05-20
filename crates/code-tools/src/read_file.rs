@@ -1,3 +1,4 @@
+use crate::file_checksum::{compute_checksum, ChecksumStore};
 use crate::{Tool, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -8,11 +9,16 @@ const MAX_READ_BYTES: usize = 200_000;
 
 pub struct ReadFileTool {
     work_dir: Option<String>,
+    checksum_store: Option<ChecksumStore>,
 }
 
 impl ReadFileTool {
     pub fn new(work_dir: Option<String>) -> Self {
-        Self { work_dir }
+        Self { work_dir, checksum_store: None }
+    }
+
+    pub fn with_checksum_store(work_dir: Option<String>, store: ChecksumStore) -> Self {
+        Self { work_dir, checksum_store: Some(store) }
     }
 
     fn resolve_path(&self, path: &str) -> String {
@@ -77,6 +83,13 @@ impl Tool for ReadFileTool {
                 });
             }
         };
+
+        // 存储 checksum 用于冲突检测
+        if let Some(ref store) = self.checksum_store {
+            let checksum = compute_checksum(content.as_bytes());
+            let mut map = store.write().await;
+            map.insert(resolved.clone(), checksum);
+        }
 
         let offset = input["offset"].as_u64().unwrap_or(1).max(1) as usize;
         let limit = input["limit"].as_u64().map(|l| l as usize);

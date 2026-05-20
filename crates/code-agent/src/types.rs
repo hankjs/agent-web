@@ -89,4 +89,6 @@ pub enum AgentEvent {
         message_count: usize,
         phase: String,
     },
+    /// Streaming tool output delta (实时输出)
+    ToolOutputDelta { id: String, chunk: String },
 }

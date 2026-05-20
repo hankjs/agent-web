@@ -10,7 +10,7 @@ use hank_provider::{
     CompletionRequest, ContentBlock, LlmProvider, Message, Role, StopReason, StreamEvent,
     ToolDefinition,
 };
-use hank_web_tools::{Tool, ToolOutput};
+use code_tools::{Tool, ToolOutput};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -21,7 +21,6 @@ use tracing::{debug, error, warn};
 const ORCHESTRATOR_MAX_ITERATIONS: usize = 50;
 const DELEGATE_TASK_TOOL: &str = "delegate_task";
 const LLM_STREAM_TIMEOUT_SECS: u64 = 120;
-const TOOL_TIMEOUT_SECS: u64 = 30;
 const LOOP_TERMINATE_COUNT: usize = 3;
 
 pub struct OrchestratorAgent {
@@ -436,116 +435,105 @@ impl OrchestratorAgent {
             return Ok(ActResult::Done);
         }
 
-        // Execute tools, intercepting delegate_task
+        // Execute tools: parallel for read-only, sequential for writes
         let mut tool_results: Vec<ContentBlock> = Vec::new();
         let mut had_worker = false;
         let mut worker_success = true;
 
+        // Separate tool calls into delegate tasks and regular tools
+        let mut regular_tools: Vec<(&str, &str, &serde_json::Value)> = Vec::new();
+        let mut delegate_tasks: Vec<(&str, &serde_json::Value)> = Vec::new();
+
         for block in &assistant_content {
             if let ContentBlock::ToolUse { id, name, input } = block {
-                if cancel.is_cancelled() {
-                    return Ok(ActResult::Done);
-                }
-
-                // Check for loop detection
-                if self.loop_detector.record(name, input) {
-                    self.loop_detector.consecutive_loops += 1;
-                    let pattern = self.loop_detector.loop_pattern();
-                    let _ = event_tx
-                        .send(AgentEvent::LoopDetected {
-                            pattern: pattern.clone(),
-                            window_size: 6,
-                        })
-                        .await;
-
-                    if self.loop_detector.consecutive_loops >= LOOP_TERMINATE_COUNT {
-                        warn!(
-                            "Loop detection: {} consecutive loops, terminating",
-                            self.loop_detector.consecutive_loops
-                        );
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: format!(
-                                "Loop detected: {}. Agent terminating to prevent infinite loop.",
-                                pattern
-                            ),
-                            is_error: true,
-                        });
-                        break;
-                    }
-
-                    // Inject nudge message
-                    let nudge = Message {
-                        role: Role::User,
-                        content: vec![ContentBlock::Text {
-                            text: format!(
-                                "⚠️ Loop detected: {}. Vary your approach or use different tools.",
-                                pattern
-                            ),
-                        }],
-                    };
-                    self.messages.push(nudge);
-                }
-
                 if name == DELEGATE_TASK_TOOL {
-                    // Intercept and spawn worker
-                    let result = self
-                        .handle_delegate_task(id, input, event_tx, cancel)
-                        .await?;
-                    had_worker = true;
-                    if result.status != TaskStatus::Success {
-                        worker_success = false;
-                    }
-                    tool_results.push(ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: format!(
-                            "Task {} completed with status {:?}.\nSummary: {}",
-                            result.task_id, result.status, result.summary
-                        ),
-                        is_error: result.status == TaskStatus::Failed,
-                    });
+                    delegate_tasks.push((id.as_str(), input));
                 } else {
-                    // Execute directly with timeout
-                    let input_str = serde_json::to_string(input).unwrap_or_default();
-                    let _ = event_tx
-                        .send(AgentEvent::ToolStart {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input: input_str,
-                        })
-                        .await;
-
-                    let output = match tokio::time::timeout(
-                        Duration::from_secs(TOOL_TIMEOUT_SECS),
-                        self.execute_tool(name, input.clone()),
-                    )
-                    .await
-                    {
-                        Ok(tool_output) => tool_output,
-                        Err(_) => {
-                            warn!("Tool {} timed out after {}s", name, TOOL_TIMEOUT_SECS);
-                            ToolOutput {
-                                content: format!("Tool execution timed out after {}s", TOOL_TIMEOUT_SECS),
-                                is_error: true,
-                            }
-                        }
-                    };
-
-                    let _ = event_tx
-                        .send(AgentEvent::ToolResult {
-                            id: id.clone(),
-                            content: output.content.clone(),
-                            is_error: output.is_error,
-                        })
-                        .await;
-                    let content = truncate_tool_result_default(&output.content);
-                    tool_results.push(ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content,
-                        is_error: output.is_error,
-                    });
+                    regular_tools.push((id.as_str(), name.as_str(), input));
                 }
             }
+        }
+
+        // Check for loops on regular tools
+        for (id, name, input) in &regular_tools {
+            if self.loop_detector.record_and_check(name, input) {
+                let pattern = self.loop_detector.loop_pattern();
+                let _ = event_tx
+                    .send(AgentEvent::LoopDetected {
+                        pattern: pattern.clone(),
+                        window_size: 6,
+                    })
+                    .await;
+
+                if self.loop_detector.should_terminate(LOOP_TERMINATE_COUNT) {
+                    warn!("Loop detection: terminating after repeated loops");
+                    tool_results.push(ContentBlock::ToolResult {
+                        tool_use_id: id.to_string(),
+                        content: format!(
+                            "Loop detected: {}. Agent terminating to prevent infinite loop.",
+                            pattern
+                        ),
+                        is_error: true,
+                    });
+                    // Add empty results for remaining tools
+                    break;
+                }
+
+                // Inject nudge
+                self.messages.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: format!(
+                            "⚠️ Loop detected: {}. Vary your approach or use different tools.",
+                            pattern
+                        ),
+                    }],
+                });
+            }
+        }
+
+        // Execute regular tools — parallel if all are read-only, sequential otherwise
+        if !regular_tools.is_empty() && tool_results.is_empty() {
+            let has_writes = regular_tools.iter().any(|(_, name, _)| {
+                self.tools.iter().any(|t| t.name() == *name && t.is_write())
+            });
+
+            if !has_writes && regular_tools.len() > 1 {
+                // Parallel execution for read-only tools
+                let results = self.execute_tools_parallel(&regular_tools, &event_tx, cancel).await;
+                tool_results.extend(results);
+            } else {
+                // Sequential execution for write tools
+                for (id, name, input) in &regular_tools {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    let result = self.execute_single_tool(id, name, input, &event_tx).await;
+                    tool_results.push(result);
+                }
+            }
+        }
+
+        // Execute delegate tasks (always sequential)
+        for (id, input) in &delegate_tasks {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let result = self
+                .handle_delegate_task(id, input, &event_tx, cancel)
+                .await?;
+            had_worker = true;
+            if result.status != TaskStatus::Success {
+                worker_success = false;
+            }
+            tool_results.push(ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: format!(
+                    "Task {} completed with status {:?}.\nSummary: {}",
+                    result.task_id, result.status, result.summary
+                ),
+                is_error: result.status == TaskStatus::Failed,
+            });
         }
 
         self.messages.push(Message {
@@ -657,22 +645,176 @@ impl OrchestratorAgent {
         Ok(result)
     }
 
-    async fn execute_tool(&self, name: &str, input: serde_json::Value) -> ToolOutput {
+    async fn execute_tool(&self, name: &str, input: serde_json::Value, event_tx: &mpsc::Sender<AgentEvent>, tool_use_id: &str) -> ToolOutput {
         for tool in &self.tools {
             if tool.name() == name {
-                return match tool.execute(input).await {
-                    Ok(output) => output,
-                    Err(e) => ToolOutput {
-                        content: format!("Tool execution error: {e}"),
-                        is_error: true,
-                    },
-                };
+                if tool.supports_streaming() {
+                    let (stream_tx, mut stream_rx) = mpsc::channel::<String>(64);
+                    let event_tx_clone = event_tx.clone();
+                    let id_clone = tool_use_id.to_string();
+
+                    let forward_handle = tokio::spawn(async move {
+                        while let Some(chunk) = stream_rx.recv().await {
+                            let _ = event_tx_clone.send(AgentEvent::ToolOutputDelta {
+                                id: id_clone.clone(),
+                                chunk,
+                            }).await;
+                        }
+                    });
+
+                    let result = match tool.execute_streaming(input, stream_tx).await {
+                        Ok(output) => output,
+                        Err(e) => ToolOutput {
+                            content: format!("Tool execution error: {e}"),
+                            is_error: true,
+                        },
+                    };
+
+                    let _ = forward_handle.await;
+                    return result;
+                } else {
+                    return match tool.execute(input).await {
+                        Ok(output) => output,
+                        Err(e) => ToolOutput {
+                            content: format!("Tool execution error: {e}"),
+                            is_error: true,
+                        },
+                    };
+                }
             }
         }
         ToolOutput {
             content: format!("Unknown tool: {name}"),
             is_error: true,
         }
+    }
+
+    /// Execute a single tool with per-tool timeout and event emission.
+    async fn execute_single_tool(
+        &self,
+        id: &str,
+        name: &str,
+        input: &serde_json::Value,
+        event_tx: &mpsc::Sender<AgentEvent>,
+    ) -> ContentBlock {
+        let input_str = serde_json::to_string(input).unwrap_or_default();
+        let _ = event_tx
+            .send(AgentEvent::ToolStart {
+                id: id.to_string(),
+                name: name.to_string(),
+                input: input_str,
+            })
+            .await;
+
+        let timeout = self.get_tool_timeout(name);
+        let output = match tokio::time::timeout(
+            timeout,
+            self.execute_tool(name, input.clone(), event_tx, id),
+        )
+        .await
+        {
+            Ok(tool_output) => tool_output,
+            Err(_) => {
+                warn!("Tool {} timed out after {:?}", name, timeout);
+                ToolOutput {
+                    content: format!("Tool execution timed out after {}s", timeout.as_secs()),
+                    is_error: true,
+                }
+            }
+        };
+
+        let _ = event_tx
+            .send(AgentEvent::ToolResult {
+                id: id.to_string(),
+                content: output.content.clone(),
+                is_error: output.is_error,
+            })
+            .await;
+
+        ContentBlock::ToolResult {
+            tool_use_id: id.to_string(),
+            content: truncate_tool_result_default(&output.content),
+            is_error: output.is_error,
+        }
+    }
+
+    /// Execute multiple read-only tools in parallel.
+    async fn execute_tools_parallel(
+        &self,
+        tools: &[(&str, &str, &serde_json::Value)],
+        event_tx: &mpsc::Sender<AgentEvent>,
+        _cancel: &CancellationToken,
+    ) -> Vec<ContentBlock> {
+        use futures::future::join_all;
+
+        // Emit ToolStart events
+        for (id, name, input) in tools {
+            let input_str = serde_json::to_string(input).unwrap_or_default();
+            let _ = event_tx
+                .send(AgentEvent::ToolStart {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    input: input_str,
+                })
+                .await;
+        }
+
+        // Execute all in parallel
+        let futures: Vec<_> = tools
+            .iter()
+            .map(|(id, name, input)| {
+                let id = id.to_string();
+                let name = name.to_string();
+                let input = (*input).clone();
+                let timeout = self.get_tool_timeout(&name);
+                let event_tx = event_tx.clone();
+                async move {
+                    let output = match tokio::time::timeout(
+                        timeout,
+                        self.execute_tool(&name, input, &event_tx, &id),
+                    )
+                    .await
+                    {
+                        Ok(tool_output) => tool_output,
+                        Err(_) => ToolOutput {
+                            content: format!("Tool execution timed out after {}s", timeout.as_secs()),
+                            is_error: true,
+                        },
+                    };
+                    (id, name, output)
+                }
+            })
+            .collect();
+
+        let results = join_all(futures).await;
+
+        let mut content_blocks = Vec::new();
+        for (id, _name, output) in results {
+            let _ = event_tx
+                .send(AgentEvent::ToolResult {
+                    id: id.clone(),
+                    content: output.content.clone(),
+                    is_error: output.is_error,
+                })
+                .await;
+            content_blocks.push(ContentBlock::ToolResult {
+                tool_use_id: id,
+                content: truncate_tool_result_default(&output.content),
+                is_error: output.is_error,
+            });
+        }
+
+        content_blocks
+    }
+
+    /// Get the timeout for a specific tool based on its trait implementation.
+    fn get_tool_timeout(&self, name: &str) -> Duration {
+        for tool in &self.tools {
+            if tool.name() == name {
+                return tool.timeout();
+            }
+        }
+        Duration::from_secs(30)
     }
 }
 

@@ -9,7 +9,7 @@ use axum::{
 };
 use futures::StreamExt;
 use hank_provider::{CompletionRequest, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
-use hank_web_tools::{read_file::ReadFileTool, search::SearchTool, Tool};
+use code_tools::{read_file::ReadFileTool, search::SearchTool, Tool};
 use axum::http::Response;
 use serde::Deserialize;
 use std::sync::Arc;

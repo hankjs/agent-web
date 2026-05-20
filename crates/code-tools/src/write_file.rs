@@ -1,4 +1,5 @@
-use crate::{Tool, ToolOutput};
+use crate::file_checksum::{compute_checksum, ChecksumStore};
+use crate::{Tool, ToolOutput, ToolRisk};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -6,11 +7,16 @@ use tokio::fs;
 
 pub struct WriteFileTool {
     work_dir: Option<String>,
+    checksum_store: Option<ChecksumStore>,
 }
 
 impl WriteFileTool {
     pub fn new(work_dir: Option<String>) -> Self {
-        Self { work_dir }
+        Self { work_dir, checksum_store: None }
+    }
+
+    pub fn with_checksum_store(work_dir: Option<String>, store: ChecksumStore) -> Self {
+        Self { work_dir, checksum_store: Some(store) }
     }
 
     fn resolve_path(&self, path: &str) -> String {
@@ -32,6 +38,14 @@ impl Tool for WriteFileTool {
 
     fn description(&self) -> &str {
         "Write content to a file. Creates the file if it doesn't exist, or overwrites it if it does. Parent directories are created automatically."
+    }
+
+    fn is_write(&self) -> bool {
+        true
+    }
+
+    fn risk_level(&self) -> ToolRisk {
+        ToolRisk::Moderate
     }
 
     fn input_schema(&self) -> Value {
@@ -63,6 +77,26 @@ impl Tool for WriteFileTool {
         let content = input["content"].as_str().unwrap_or_default();
         let resolved = self.resolve_path(path);
 
+        // 冲突检测: 如果文件已存在且有 checksum 记录，验证是否被外部修改
+        if let Some(ref store) = self.checksum_store {
+            if let Ok(current_content) = fs::read_to_string(&resolved).await {
+                let current_checksum = compute_checksum(current_content.as_bytes());
+                let map = store.read().await;
+                if let Some(&stored_checksum) = map.get(&resolved) {
+                    if current_checksum != stored_checksum {
+                        return Ok(ToolOutput {
+                            content: format!(
+                                "Error: file '{}' has been modified since last read. \
+                                 Please re-read the file before writing.",
+                                path
+                            ),
+                            is_error: true,
+                        });
+                    }
+                }
+            }
+        }
+
         // Create parent directories if needed
         if let Some(parent) = std::path::Path::new(&resolved).parent() {
             if let Err(e) = fs::create_dir_all(parent).await {
@@ -75,6 +109,12 @@ impl Tool for WriteFileTool {
 
         match fs::write(&resolved, content).await {
             Ok(()) => {
+                // 更新 checksum store
+                if let Some(ref store) = self.checksum_store {
+                    let new_checksum = compute_checksum(content.as_bytes());
+                    let mut map = store.write().await;
+                    map.insert(resolved.clone(), new_checksum);
+                }
                 let lines = content.lines().count();
                 Ok(ToolOutput {
                     content: format!("Successfully wrote {lines} lines to {path}"),

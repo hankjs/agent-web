@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 hank-provider = { path = "../crates/hank-provider" }
-hank-agent = { path = "../crates/hank-agent" }
-hank-web-tools = { path = "../crates/hank-web-tools" }
+code-agent = { path = "../crates/code-agent" }
+code-tools = { path = "../crates/code-tools" }
 hank-db = { path = "../crates/hank-db" }
 tokio = { workspace = true }
 serde = { workspace = true }
