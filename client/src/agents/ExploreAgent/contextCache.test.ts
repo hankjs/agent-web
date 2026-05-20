@@ -90,4 +90,79 @@ describe("ContextCache", () => {
       expect(preview).toBe(content);
     });
   });
+
+  describe("LRU eviction", () => {
+    // Helper: generate content of roughly `n` tokens
+    function makeContent(id: number, lines = 20): string {
+      return Array.from({ length: lines }, (_, i) => `// file${id} line ${i}: export const val = ${i};`).join("\n");
+    }
+
+    it("evicts oldest entry when MAX_ENTRIES (50) is reached", () => {
+      // Fill cache to capacity
+      for (let i = 0; i < 50; i++) {
+        cache.offload(`t_${i}`, "read_file", {}, makeContent(i));
+      }
+      expect(cache.stats.entries).toBe(50);
+      expect(cache.retrieve("t_0")).not.toBeNull();
+
+      // Adding one more should evict t_0 (the oldest)
+      cache.offload("t_50", "read_file", {}, makeContent(50));
+      expect(cache.stats.entries).toBe(50);
+      expect(cache.retrieve("t_0")).toBeNull();
+      expect(cache.retrieve("t_50")).not.toBeNull();
+      // t_1 should still be present
+      expect(cache.retrieve("t_1")).not.toBeNull();
+    });
+
+    it("evicts multiple entries when adding many beyond capacity", () => {
+      for (let i = 0; i < 50; i++) {
+        cache.offload(`t_${i}`, "read_file", {}, makeContent(i));
+      }
+      // Add 3 more
+      cache.offload("t_50", "read_file", {}, makeContent(50));
+      cache.offload("t_51", "read_file", {}, makeContent(51));
+      cache.offload("t_52", "read_file", {}, makeContent(52));
+
+      expect(cache.stats.entries).toBe(50);
+      expect(cache.retrieve("t_0")).toBeNull();
+      expect(cache.retrieve("t_1")).toBeNull();
+      expect(cache.retrieve("t_2")).toBeNull();
+      expect(cache.retrieve("t_3")).not.toBeNull(); // still present
+      expect(cache.retrieve("t_52")).not.toBeNull();
+    });
+
+    it("evicts by total token limit (MAX_TOTAL_TOKENS = 200_000)", () => {
+      // Create a very large content item (~100k tokens worth of lines)
+      const bigContent = Array.from({ length: 8000 }, (_, i) =>
+        `export function bigHandler${i}(req: Request, res: Response) { return res.json({ ok: true, data: "${i}" }); }`
+      ).join("\n");
+
+      // Offload two big items — combined should approach or exceed 200k tokens
+      cache.offload("big_1", "read_file", {}, bigContent);
+      const tokensFirst = cache.stats.totalOffloadedTokens;
+      expect(tokensFirst).toBeGreaterThan(50000);
+
+      cache.offload("big_2", "read_file", {}, bigContent);
+
+      // If combined exceeds 200k, big_1 should have been evicted
+      if (tokensFirst * 2 > 200_000) {
+        expect(cache.retrieve("big_1")).toBeNull();
+        expect(cache.retrieve("big_2")).not.toBeNull();
+        expect(cache.stats.entries).toBe(1);
+      }
+    });
+
+    it("totalOffloadedTokens decreases after eviction", () => {
+      for (let i = 0; i < 50; i++) {
+        cache.offload(`t_${i}`, "read_file", {}, makeContent(i));
+      }
+      const tokensBefore = cache.stats.totalOffloadedTokens;
+
+      // Evict one by adding new
+      cache.offload("t_new", "read_file", {}, makeContent(999));
+      // Tokens should stay roughly the same (evicted ~= added)
+      expect(cache.stats.totalOffloadedTokens).toBeLessThanOrEqual(tokensBefore + 500);
+      expect(cache.stats.totalOffloadedTokens).toBeGreaterThan(0);
+    });
+  });
 });

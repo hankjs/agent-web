@@ -22,6 +22,7 @@ import {
   type LlmMessage,
   type Block,
   type DocumentSection,
+  type ToolUseBlock,
 } from "./types";
 import {
   runDocUpdater,
@@ -45,6 +46,7 @@ function estimateTokens(text: string): number {
 const HARD_MAX_READS = 20;
 const MAX_CONSECUTIVE_ERRORS = 3;
 const TOKEN_BUDGET_WARN = 12000; // 累计 token 接近此值时注入收敛信号
+const TOKEN_BUDGET_HARD = 50000; // 硬性上限，超过时强制 finalize
 
 /** 根据 reader round 生成动态指令（渐进式催促） */
 function getReaderRoundDirective(round: number, maxRounds: number): string {
@@ -72,10 +74,16 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
   const isFirstTurn = ref(true);
   const startTime = Date.now();
-  let abortController = new AbortController();
+  let _abortController = new AbortController();
+  /** 始终通过 getter 获取当前 controller，避免闭包持有旧引用 */
+  function getSignal(): AbortSignal { return _abortController.signal; }
   let consecutiveAsksTotal = 0; // 跨 reactLoop 调用追踪连续 ask_user 次数
   let totalTokensUsed = 0; // 累计 token 消耗（用于预算感知）
   let summarizeThreshold = 800; // 实例级：压缩触发阈值（动态校准）
+  let debugMode = !!(options.metadata?.debug); // 调试模式：记录完整 prompt
+  /** 跨轮次 circuit breaker：连续 LLM 失败计数 */
+  let circuitBreakerFailures = 0;
+  const CIRCUIT_BREAKER_THRESHOLD = 5; // 连续 5 次失败后熔断
   const docHistory = useDocHistory();
   const contextCache = new ContextCache(); // Offload: 大工具结果缓存
 
@@ -97,8 +105,8 @@ export function useExploreAgent(options: ExploreAgentOptions) {
   }
 
   function cancel() {
-    abortController.abort();
-    abortController = new AbortController(); // 重建，允许后续重新启动
+    _abortController.abort();
+    _abortController = new AbortController(); // 重建，允许后续重新启动
     state.value.phase = "cancelled";
     options.onBlock({ kind: BlockKind.Text, content: "探索已取消。" });
     options.onStreaming(false);
@@ -169,12 +177,18 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           ? "你是一个 JSON 输出机器，只返回合法 JSON。"
           : `你是一个 JSON 输出机器，只返回合法 JSON。\n\n上次输出失败原因: ${lastError}\n请严格只输出一个 JSON 对象，不要包含任何其他文字。`;
         thinkingBlock.content = "";
-        const { text: response, meta, httpStatus } = await callLLM(systemPrompt, prompt, images, abortController.signal, (delta) => {
+        const { text: response, meta, httpStatus } = await callLLM(systemPrompt, prompt, images, getSignal(), (delta) => {
           thinkingBlock.content += delta;
           options.onBlock({ kind: BlockKind.Thinking, content: thinkingBlock.content });
         });
         totalTokensUsed += (meta.tokens_in || 0) + (meta.tokens_out || 0);
-        await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "planner", attempt, tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(), httpStatus, system: systemPrompt, messages: prompt }, "internal");
+        circuitBreakerFailures = 0; // 成功调用，重置 circuit breaker
+        await logEvent("explore:llm_call", {
+          turn: state.value.turnCount, phase: "planner", attempt,
+          tokens_in: meta.tokens_in, tokens_out: meta.tokens_out,
+          latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(), httpStatus,
+          ...(debugMode ? { system: systemPrompt, messages: prompt } : { prompt_length: prompt.length }),
+        }, "internal");
 
         if (!response || response.trim().length === 0) {
           lastError = "LLM 返回空响应";
@@ -183,15 +197,39 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           throw new Error(lastError);
         }
 
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) {
-          lastError = `响应中未找到 JSON (响应前100字: ${response.slice(0, 100)})`;
-          await logEvent("explore:planner_retry", { attempt, error: lastError, willRetry: attempt < MAX_PLANNER_RETRIES, httpStatus }, "user");
-          if (attempt < MAX_PLANNER_RETRIES) continue;
-          throw new Error("No JSON in planner response");
+        // 优先直接 parse，失败后用正则提取
+        let action: PlannerAction;
+        try {
+          action = JSON.parse(response.trim());
+        } catch {
+          const jsonMatch = response.match(/\{[\s\S]*?\}(?=[^}]*$)/);
+          if (!jsonMatch) {
+            // 兜底：尝试非贪婪匹配所有可能的 JSON 块并逐个验证
+            const allMatches = response.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
+            let parsed: PlannerAction | null = null;
+            if (allMatches) {
+              for (const m of allMatches) {
+                try { parsed = JSON.parse(m); if (parsed && (parsed as any).action) break; } catch { parsed = null; }
+              }
+            }
+            if (!parsed) {
+              lastError = `响应中未找到 JSON (响应前100字: ${response.slice(0, 100)})`;
+              await logEvent("explore:planner_retry", { attempt, error: lastError, willRetry: attempt < MAX_PLANNER_RETRIES, httpStatus }, "user");
+              if (attempt < MAX_PLANNER_RETRIES) continue;
+              throw new Error("No JSON in planner response");
+            }
+            action = parsed;
+          } else {
+            try {
+              action = JSON.parse(jsonMatch[0]);
+            } catch {
+              lastError = `JSON parse 失败 (响应前100字: ${response.slice(0, 100)})`;
+              await logEvent("explore:planner_retry", { attempt, error: lastError, willRetry: attempt < MAX_PLANNER_RETRIES, httpStatus }, "user");
+              if (attempt < MAX_PLANNER_RETRIES) continue;
+              throw new Error("Invalid JSON in planner response");
+            }
+          }
         }
-
-        const action: PlannerAction = JSON.parse(jsonMatch[0]);
         await logEvent("explore:action", action, "user");
         // Emit persistent PlannerDecision block (thinking will be cleared by clearThinkingIfNeeded)
         const actionLabel = action.action === "read_code" ? "阅读代码" : action.action === "ask_user" ? "向用户提问" : action.action === "confirm_requirement" ? "确认需求文档" : "完成探索";
@@ -200,12 +238,13 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       } catch (e: any) {
         if (e.name === "AbortError") return null;
         lastError = e.message;
+        circuitBreakerFailures++;
         const statusMatch = lastError.match(/LLM error: (\d+)/);
         const httpStatus = statusMatch ? parseInt(statusMatch[1]) : undefined;
         // 不可重试错误（4xx 非 429）直接终止
         const isPermanent = httpStatus && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 429;
         if (isPermanent || attempt >= MAX_PLANNER_RETRIES) {
-          await logEvent("explore:error", { phase: "planner", error: lastError, attempts: attempt + 1, httpStatus, permanent: isPermanent }, "user");
+          await logEvent("explore:error", { phase: "planner", error: lastError, attempts: attempt + 1, httpStatus, permanent: isPermanent, circuitBreakerFailures }, "user");
           options.onBlock({ kind: BlockKind.Error, content: `规划失败: ${e.message}` });
           return null;
         }
@@ -243,9 +282,15 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       const messagesForCall = roundDirective
         ? [...trimmed, { role: "user" as const, content: [{ type: "text" as const, text: roundDirective.trim() }] }]
         : trimmed;
-      const resp = await callLLMWithTools(system, messagesForCall, READER_TOOLS, abortController.signal);
+      const resp = await callLLMWithTools(system, messagesForCall, READER_TOOLS, getSignal());
       totalTokensUsed += (resp.meta.tokens_in || 0) + (resp.meta.tokens_out || 0);
-      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "reader", round, tokens_in: resp.meta.tokens_in, tokens_out: resp.meta.tokens_out, latency_ms: resp.meta.latency_ms, tools_count: resp.toolCalls.length, elapsed_ms: elapsed(), system, messages: trimmed }, "internal");
+      circuitBreakerFailures = 0; // 成功调用，重置 circuit breaker
+      await logEvent("explore:llm_call", {
+        turn: state.value.turnCount, phase: "reader", round,
+        tokens_in: resp.meta.tokens_in, tokens_out: resp.meta.tokens_out,
+        latency_ms: resp.meta.latency_ms, tools_count: resp.toolCalls.length, elapsed_ms: elapsed(),
+        ...(debugMode ? { system, messages: trimmed } : { messages_count: trimmed.length }),
+      }, "internal");
 
       if (resp.toolCalls.length === 0) {
         state.value.phase = "observing";
@@ -279,7 +324,37 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       messages.push({ role: "assistant", content: assistantContent });
 
       const toolResults: any[] = [];
+      // 分离需要串行处理的特殊工具和可并发的只读工具
+      const specialTools: ToolUseBlock[] = [];
+      const readOnlyTools: ToolUseBlock[] = [];
       for (const tc of resp.toolCalls) {
+        if (tc.name === "report_findings" || tc.name === "AskUserQuestion") {
+          specialTools.push(tc);
+        } else {
+          readOnlyTools.push(tc);
+        }
+      }
+
+      // 并发执行只读工具
+      const readOnlyResults = await Promise.all(readOnlyTools.map(async (tc) => {
+        await logEvent("explore:tool_call", { turn: state.value.turnCount, tool_name: tc.name, input: tc.input, round, elapsed_ms: elapsed() }, "user");
+        const result = await execTool(tc.name, tc.input, options.workDir);
+        const outputPreview = result.content.length > 200 ? result.content.slice(0, 200) + "..." : result.content;
+        await logEvent("explore:tool_result", { turn: state.value.turnCount, tool_name: tc.name, output_preview: outputPreview, output_length: result.content.length, is_error: result.is_error, duration_ms: result.duration_ms, round, elapsed_ms: elapsed() }, "user");
+
+        // Offload: 大结果存缓存，messages 里只留预览引用
+        let messageContent = result.content;
+        if (!result.is_error && contextCache.shouldOffload(result.content)) {
+          messageContent = contextCache.offload(tc.id, tc.name, tc.input, result.content);
+        }
+
+        options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), result: outputPreview, isError: result.is_error, isRunning: false, expanded: false } });
+        return { type: "tool_result", tool_use_id: tc.id, content: messageContent, is_error: result.is_error };
+      }));
+
+      // 串行处理特殊工具（report_findings, AskUserQuestion）
+      const specialResults: any[] = [];
+      for (const tc of specialTools) {
         if (tc.name === "report_findings") {
           const inputObj = safeInput(tc.input);
           let rawFindings = inputObj.findings || [];
@@ -288,7 +363,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           const reported: Finding[] = rawFindings.map((f: any) => ({
             topic: f.topic || "", content: f.content || "", source: f.source || "", confirmed: false,
           }));
-          toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: "Findings recorded." });
+          specialResults.push({ type: "tool_result", tool_use_id: tc.id, content: "Findings recorded." });
           options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(inputObj), isRunning: false, expanded: false } });
           earlyFindings = reported;
         } else if (tc.name === "AskUserQuestion") {
@@ -306,22 +381,16 @@ export function useExploreAgent(options: ExploreAgentOptions) {
           const answer = await waitForAnswer();
           options.onStreaming(true);
           state.value.phase = "acting";
-          toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: answer });
-        } else {
-          await logEvent("explore:tool_call", { turn: state.value.turnCount, tool_name: tc.name, input: tc.input, round, elapsed_ms: elapsed() }, "user");
-          const result = await execTool(tc.name, tc.input, options.workDir);
-          const outputPreview = result.content.length > 200 ? result.content.slice(0, 200) + "..." : result.content;
-          await logEvent("explore:tool_result", { turn: state.value.turnCount, tool_name: tc.name, output_preview: outputPreview, output_length: result.content.length, is_error: result.is_error, duration_ms: result.duration_ms, round, elapsed_ms: elapsed() }, "user");
-
-          // Offload: 大结果存缓存，messages 里只留预览引用
-          let messageContent = result.content;
-          if (!result.is_error && contextCache.shouldOffload(result.content)) {
-            messageContent = contextCache.offload(tc.id, tc.name, tc.input, result.content);
-          }
-
-          toolResults.push({ type: "tool_result", tool_use_id: tc.id, content: messageContent, is_error: result.is_error });
-          options.onBlock({ kind: BlockKind.Tool, tool: { id: tc.id, name: tc.name, input: JSON.stringify(tc.input), result: outputPreview, isError: result.is_error, isRunning: false, expanded: false } });
+          specialResults.push({ type: "tool_result", tool_use_id: tc.id, content: answer });
         }
+      }
+
+      // 按原始 toolCalls 顺序合并结果，保持 API 消息顺序一致
+      for (const tc of resp.toolCalls) {
+        const fromReadOnly = readOnlyResults.find(r => r.tool_use_id === tc.id);
+        const fromSpecial = specialResults.find(r => r.tool_use_id === tc.id);
+        if (fromReadOnly) toolResults.push(fromReadOnly);
+        else if (fromSpecial) toolResults.push(fromSpecial);
       }
       messages.push({ role: "user", content: toolResults });
 
@@ -350,7 +419,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     const REPORT_ONLY_TOOL = [READER_TOOLS.find(t => t.name === "report_findings")!];
     const forceMsg: LlmMessage = { role: "user", content: [{ type: "text", text: "你已经读取了足够的信息。请立即调用 report_findings 工具，将你目前了解到的所有发现整理为结构化的 findings 报告。每条 finding 必须有 topic、content 和 source。" }] };
     const forceMsgs = [...trimMessages(messages), forceMsg];
-    const lastResp = await callLLMWithTools(system, forceMsgs, REPORT_ONLY_TOOL, abortController.signal);
+    const lastResp = await callLLMWithTools(system, forceMsgs, REPORT_ONLY_TOOL, getSignal());
 
     let findings: Finding[] = earlyFindings || [];
     if (lastResp.toolCalls.length > 0) {
@@ -402,8 +471,13 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       newFindings: newText,
     });
     try {
-      const { text: compressed, meta } = await callLLM("你是一个文本压缩助手。", prompt, undefined, abortController.signal);
-      await logEvent("explore:llm_call", { turn: state.value.turnCount, phase: "summarizer", tokens_in: meta.tokens_in, tokens_out: meta.tokens_out, latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(), system: "你是一个文本压缩助手。", messages: prompt }, "internal");
+      const { text: compressed, meta } = await callLLM("你是一个文本压缩助手。", prompt, undefined, getSignal());
+      await logEvent("explore:llm_call", {
+        turn: state.value.turnCount, phase: "summarizer",
+        tokens_in: meta.tokens_in, tokens_out: meta.tokens_out,
+        latency_ms: meta.latency_ms, tools_count: 0, elapsed_ms: elapsed(),
+        ...(debugMode ? { system: "你是一个文本压缩助手。", messages: prompt } : { prompt_length: prompt.length }),
+      }, "internal");
 
       // Dynamic threshold calibration
       const actualIn = meta.tokens_in;
@@ -432,7 +506,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         state.value.documentSections,
         context,
         state.value.runningSummary,
-        abortController.signal,
+        getSignal(),
       );
       if (result.updates.length > 0) {
         state.value.documentSections = applySectionUpdates(state.value.documentSections, result);
@@ -508,7 +582,7 @@ export function useExploreAgent(options: ExploreAgentOptions) {
 
     try {
       const requirementContent = assembleMarkdown(state.value.documentSections, title);
-      const tasksMarkdown = await runTaskGenerator(requirementContent, options.workDir, abortController.signal);
+      const tasksMarkdown = await runTaskGenerator(requirementContent, options.workDir, getSignal());
 
       // 确保需求文档已保存到 DB
       if (!state.value.requirementDocId) {
@@ -599,8 +673,27 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     let cumulativeTokens = totalTokensUsed; // 动态 token 预算追踪
 
     while (state.value.phase !== "done" && state.value.phase !== "waiting_user" && state.value.phase !== "cancelled") {
-      if (abortController.signal.aborted) return;
+      if (getSignal().aborted) return;
       cumulativeTokens = totalTokensUsed; // 同步最新累计值
+
+      // 硬性 token 预算：超过时强制 finalize
+      if (cumulativeTokens > TOKEN_BUDGET_HARD) {
+        await logEvent("explore:token_budget_exceeded", { totalTokensUsed: cumulativeTokens, limit: TOKEN_BUDGET_HARD }, "user");
+        options.onBlock({ kind: BlockKind.Text, content: `Token 预算已耗尽 (${cumulativeTokens}/${TOKEN_BUDGET_HARD})，自动结束探索。` });
+        await executeFinalize({ title: "Token 预算耗尽，自动结束" });
+        return;
+      }
+
+      // Circuit breaker: 连续跨轮次失败过多时熔断
+      if (circuitBreakerFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+        await logEvent("explore:circuit_breaker", { failures: circuitBreakerFailures, threshold: CIRCUIT_BREAKER_THRESHOLD }, "user");
+        options.onBlock({ kind: BlockKind.Error, content: `LLM API 连续失败 ${circuitBreakerFailures} 次，已熔断。请检查服务状态后重试。` });
+        state.value.phase = "done";
+        options.onStreaming(false);
+        options.onComplete();
+        return;
+      }
+
       state.value.turnCount++;
       const tokenBudgetWarn = cumulativeTokens > TOKEN_BUDGET_WARN;
       // 当 token 预算紧张时，降低 summarizer 压缩阈值
@@ -608,7 +701,17 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         summarizeThreshold = Math.max(400, summarizeThreshold - 200);
       }
       const action = await runPlannerStep(userInput, images, { consecutiveReads, tokenBudgetWarn });
-      if (!action) break;
+      if (!action) {
+        // Planner 失败后也检查 circuit breaker，避免需要再循环一次才能检测到
+        if (circuitBreakerFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+          await logEvent("explore:circuit_breaker", { failures: circuitBreakerFailures, threshold: CIRCUIT_BREAKER_THRESHOLD }, "user");
+          options.onBlock({ kind: BlockKind.Error, content: `LLM API 连续失败 ${circuitBreakerFailures} 次，已熔断。请检查服务状态后重试。` });
+          state.value.phase = "done";
+          options.onStreaming(false);
+          options.onComplete();
+        }
+        break;
+      }
 
       userInput = "";
       images = undefined;

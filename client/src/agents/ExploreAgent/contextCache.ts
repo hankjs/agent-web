@@ -20,6 +20,12 @@ const OFFLOAD_THRESHOLD = 1500;
 /** offload 后留在 messages 里的引用最大行数（给模型一个预览） */
 const PREVIEW_LINES = 8;
 
+/** 缓存最大条目数，超过时 LRU 淘汰 */
+const MAX_ENTRIES = 50;
+
+/** 缓存最大总 token 数 */
+const MAX_TOTAL_TOKENS = 200_000;
+
 export interface CachedResult {
   toolName: string;
   input: any;
@@ -44,6 +50,25 @@ export class ContextCache {
   /** 存储工具结果，返回用于替换 messages 中内容的短引用 */
   offload(toolUseId: string, toolName: string, input: any, content: string): string {
     const tokens = enc.encode(content).length;
+
+    // LRU 淘汰：条目数超限时，删除最早的条目
+    while (this.cache.size >= MAX_ENTRIES) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      const evicted = this.cache.get(oldest);
+      if (evicted) this._totalOffloaded -= evicted.tokens;
+      this.cache.delete(oldest);
+    }
+
+    // Token 总量超限时，持续淘汰最早条目
+    while (this._totalOffloaded + tokens > MAX_TOTAL_TOKENS && this.cache.size > 0) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      const evicted = this.cache.get(oldest);
+      if (evicted) this._totalOffloaded -= evicted.tokens;
+      this.cache.delete(oldest);
+    }
+
     this.cache.set(toolUseId, { toolName, input, content, tokens, timestamp: Date.now() });
     this._totalOffloaded += tokens;
 

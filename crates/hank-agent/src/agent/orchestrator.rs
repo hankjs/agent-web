@@ -1,6 +1,9 @@
 use crate::agent::traits::{DelegatedTask, TaskResult, TaskStatus, ThinkStrategy};
 use crate::agent::worker::WorkerAgent;
-use crate::context::ContextManager;
+use crate::agent::LoopDetector;
+use crate::context::summary::{estimate_tokens, truncate_tool_result_default};
+use crate::context::{BudgetStatus, ContextManager};
+use crate::retry::stream_with_retry;
 use crate::AgentEvent;
 use anyhow::Result;
 use hank_provider::{
@@ -9,6 +12,7 @@ use hank_provider::{
 };
 use hank_web_tools::{Tool, ToolOutput};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -16,6 +20,9 @@ use tracing::{debug, error, warn};
 
 const ORCHESTRATOR_MAX_ITERATIONS: usize = 50;
 const DELEGATE_TASK_TOOL: &str = "delegate_task";
+const LLM_STREAM_TIMEOUT_SECS: u64 = 120;
+const TOOL_TIMEOUT_SECS: u64 = 30;
+const LOOP_TERMINATE_COUNT: usize = 3;
 
 pub struct OrchestratorAgent {
     provider: Arc<dyn LlmProvider>,
@@ -25,6 +32,7 @@ pub struct OrchestratorAgent {
     tool_definitions: Vec<ToolDefinition>,
     think_strategy: ThinkStrategy,
     context_manager: ContextManager,
+    loop_detector: LoopDetector,
     messages: Vec<Message>,
     consecutive_max_tokens: u32,
 }
@@ -88,6 +96,7 @@ impl OrchestratorAgent {
             tool_definitions,
             think_strategy,
             context_manager,
+            loop_detector: LoopDetector::new(),
             messages: Vec::new(),
             consecutive_max_tokens: 0,
         }
@@ -122,9 +131,62 @@ impl OrchestratorAgent {
                 break;
             }
 
-            // Context compression check
-            if self.context_manager.needs_compression(&self.messages) {
-                self.context_manager.compress_async(&mut self.messages).await;
+            // Budget check with multi-level strategy
+            match self.context_manager.check_budget(&self.messages) {
+                BudgetStatus::Overflow100 => {
+                    warn!("Budget overflow at 100%, terminating agent loop");
+                    let _ = event_tx.send(AgentEvent::TurnComplete).await;
+                    break;
+                }
+                BudgetStatus::Critical95 => {
+                    warn!("Budget critical at 95%, forcing compression");
+                    let used = estimate_tokens(&self.messages);
+                    let _ = event_tx
+                        .send(AgentEvent::TokenWarning {
+                            used_tokens: used,
+                            total_budget: 200_000,
+                            percent: 95,
+                            action: "forcing_compression".to_string(),
+                        })
+                        .await;
+                    if let Some(strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                        let after = estimate_tokens(&self.messages);
+                        let _ = event_tx
+                            .send(AgentEvent::CompressionTriggered {
+                                before_tokens: used,
+                                after_tokens: after,
+                                strategy: format!("{:?}", strategy),
+                            })
+                            .await;
+                    }
+                }
+                BudgetStatus::Warning80 => {
+                    let used = estimate_tokens(&self.messages);
+                    debug!("Budget warning at 80%, compressing if needed");
+                    let _ = event_tx
+                        .send(AgentEvent::TokenWarning {
+                            used_tokens: used,
+                            total_budget: 200_000,
+                            percent: 80,
+                            action: "compress_if_needed".to_string(),
+                        })
+                        .await;
+                    if self.context_manager.needs_compression(&self.messages) {
+                        if let Some(strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                            let after = estimate_tokens(&self.messages);
+                            let _ = event_tx
+                                .send(AgentEvent::CompressionTriggered {
+                                    before_tokens: used,
+                                    after_tokens: after,
+                                    strategy: format!("{:?}", strategy),
+                                })
+                                .await;
+                        }
+                    }
+                }
+                BudgetStatus::Normal => {
+                    // No action needed
+                }
             }
 
             // THINK phase (conditional)
@@ -205,13 +267,17 @@ impl OrchestratorAgent {
         }).await;
 
         debug!("Orchestrator THINK phase");
-        let mut stream = self.provider.stream(req).await?;
+        let mut stream = stream_with_retry(&self.provider, req).await?;
         let mut think_text = String::new();
 
         loop {
             let event = tokio::select! {
                 event = stream.next() => event,
                 _ = cancel.cancelled() => { None }
+                _ = tokio::time::sleep(Duration::from_secs(LLM_STREAM_TIMEOUT_SECS)) => {
+                    warn!("Think phase LLM stream timeout after {}s", LLM_STREAM_TIMEOUT_SECS);
+                    None
+                }
             };
             let Some(event) = event else { break };
             match event {
@@ -269,7 +335,7 @@ impl OrchestratorAgent {
         }).await;
 
         debug!("Orchestrator ACT phase");
-        let mut stream = self.provider.stream(req).await?;
+        let mut stream = stream_with_retry(&self.provider, req).await?;
 
         let mut assistant_content: Vec<ContentBlock> = Vec::new();
         let mut current_text = String::new();
@@ -283,6 +349,10 @@ impl OrchestratorAgent {
             let event = tokio::select! {
                 event = stream.next() => event,
                 _ = cancel.cancelled() => { None }
+                _ = tokio::time::sleep(Duration::from_secs(LLM_STREAM_TIMEOUT_SECS)) => {
+                    warn!("Act phase LLM stream timeout after {}s", LLM_STREAM_TIMEOUT_SECS);
+                    None
+                }
             };
             let Some(event) = event else { break };
             match event {
@@ -377,6 +447,46 @@ impl OrchestratorAgent {
                     return Ok(ActResult::Done);
                 }
 
+                // Check for loop detection
+                if self.loop_detector.record(name, input) {
+                    self.loop_detector.consecutive_loops += 1;
+                    let pattern = self.loop_detector.loop_pattern();
+                    let _ = event_tx
+                        .send(AgentEvent::LoopDetected {
+                            pattern: pattern.clone(),
+                            window_size: 6,
+                        })
+                        .await;
+
+                    if self.loop_detector.consecutive_loops >= LOOP_TERMINATE_COUNT {
+                        warn!(
+                            "Loop detection: {} consecutive loops, terminating",
+                            self.loop_detector.consecutive_loops
+                        );
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: format!(
+                                "Loop detected: {}. Agent terminating to prevent infinite loop.",
+                                pattern
+                            ),
+                            is_error: true,
+                        });
+                        break;
+                    }
+
+                    // Inject nudge message
+                    let nudge = Message {
+                        role: Role::User,
+                        content: vec![ContentBlock::Text {
+                            text: format!(
+                                "⚠️ Loop detected: {}. Vary your approach or use different tools.",
+                                pattern
+                            ),
+                        }],
+                    };
+                    self.messages.push(nudge);
+                }
+
                 if name == DELEGATE_TASK_TOOL {
                     // Intercept and spawn worker
                     let result = self
@@ -395,7 +505,7 @@ impl OrchestratorAgent {
                         is_error: result.status == TaskStatus::Failed,
                     });
                 } else {
-                    // Execute directly
+                    // Execute directly with timeout
                     let input_str = serde_json::to_string(input).unwrap_or_default();
                     let _ = event_tx
                         .send(AgentEvent::ToolStart {
@@ -404,7 +514,23 @@ impl OrchestratorAgent {
                             input: input_str,
                         })
                         .await;
-                    let output = self.execute_tool(name, input.clone()).await;
+
+                    let output = match tokio::time::timeout(
+                        Duration::from_secs(TOOL_TIMEOUT_SECS),
+                        self.execute_tool(name, input.clone()),
+                    )
+                    .await
+                    {
+                        Ok(tool_output) => tool_output,
+                        Err(_) => {
+                            warn!("Tool {} timed out after {}s", name, TOOL_TIMEOUT_SECS);
+                            ToolOutput {
+                                content: format!("Tool execution timed out after {}s", TOOL_TIMEOUT_SECS),
+                                is_error: true,
+                            }
+                        }
+                    };
+
                     let _ = event_tx
                         .send(AgentEvent::ToolResult {
                             id: id.clone(),
@@ -412,9 +538,10 @@ impl OrchestratorAgent {
                             is_error: output.is_error,
                         })
                         .await;
+                    let content = truncate_tool_result_default(&output.content);
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
-                        content: output.content,
+                        content,
                         is_error: output.is_error,
                     });
                 }
@@ -425,6 +552,28 @@ impl OrchestratorAgent {
             role: Role::User,
             content: tool_results,
         });
+
+        // Budget check after tool results to catch large tool outputs early
+        match self.context_manager.check_budget(&self.messages) {
+            BudgetStatus::Overflow100 => {
+                warn!("Budget overflow after tool results, terminating");
+                return Ok(ActResult::Done);
+            }
+            BudgetStatus::Critical95 => {
+                let used = estimate_tokens(&self.messages);
+                if let Some(_strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                    let after = estimate_tokens(&self.messages);
+                    let _ = event_tx
+                        .send(AgentEvent::CompressionTriggered {
+                            before_tokens: used,
+                            after_tokens: after,
+                            strategy: "post_tool_critical".to_string(),
+                        })
+                        .await;
+                }
+            }
+            _ => {}
+        }
 
         if had_worker {
             Ok(ActResult::WorkerCompleted { success: worker_success })

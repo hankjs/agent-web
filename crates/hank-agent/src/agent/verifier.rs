@@ -1,4 +1,6 @@
 use crate::agent::{Verdict, VerificationResult};
+use crate::context::summary::truncate_tool_result_default;
+use crate::retry::stream_with_retry;
 use crate::AgentEvent;
 use anyhow::Result;
 use hank_provider::{
@@ -10,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 const VERIFIER_MAX_ITERATIONS: usize = 5;
 
@@ -80,7 +82,7 @@ impl VerifierAgent {
             };
 
             debug!("Verifier iteration {iteration}");
-            let mut stream = self.provider.stream(req).await?;
+            let mut stream = stream_with_retry(&self.provider, req).await?;
 
             let mut assistant_content: Vec<ContentBlock> = Vec::new();
             let mut current_text = String::new();
@@ -151,9 +153,10 @@ impl VerifierAgent {
                     if let ContentBlock::ToolUse { id, name, input } = block {
                         if cancel.is_cancelled() { break; }
                         let output = self.execute_tool(name, input.clone()).await;
+                        let content = truncate_tool_result_default(&output.content);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
-                            content: output.content,
+                            content,
                             is_error: output.is_error,
                         });
                     }
@@ -187,7 +190,7 @@ impl VerifierAgent {
                 Some("approved") => Verdict::Approved,
                 Some("needs_revision") => Verdict::NeedsRevision,
                 Some("rejected") => Verdict::Rejected,
-                _ => Verdict::Approved,
+                _ => Verdict::NeedsRevision,
             };
             let issues = v
                 .get("issues")
@@ -209,7 +212,7 @@ impl VerifierAgent {
                         Some("approved") => Verdict::Approved,
                         Some("needs_revision") => Verdict::NeedsRevision,
                         Some("rejected") => Verdict::Rejected,
-                        _ => Verdict::Approved,
+                        _ => Verdict::NeedsRevision,
                     };
                     let issues = v
                         .get("issues")
@@ -225,10 +228,11 @@ impl VerifierAgent {
             }
         }
 
-        // Default: approve if we can't parse
+        // 解析失败时默认 Approved，防止因格式错误导致无限修订循环
+        warn!("Could not parse verification JSON, defaulting to Approved");
         VerificationResult {
             verdict: Verdict::Approved,
-            issues: vec![],
+            issues: vec!["Could not parse verification result, auto-approved".to_string()],
         }
     }
 

@@ -340,20 +340,24 @@ const BASH_ALLOWLIST = [
 ];
 
 /** Validate bash command against allowlist. Returns error message or null if allowed. */
-function validateBashCommand(command: string): string | null {
+export function validateBashCommand(command: string): string | null {
   const trimmed = command.trim();
   // Block empty commands
   if (!trimmed) return "Empty command";
-  // Block command chaining that could bypass allowlist
-  if (/[;&|`$]/.test(trimmed) && !trimmed.startsWith("curl")) {
-    // Allow pipes only if the base command is allowed
-    const baseCmd = trimmed.split(/\s*\|\s*/)[0].trim();
-    const isAllowed = BASH_ALLOWLIST.some(prefix => baseCmd.startsWith(prefix));
-    if (!isAllowed) return `Command not allowed: ${baseCmd.split(" ")[0]}. Only read-only commands are permitted.`;
-    return null;
+  // Block subshell injection in ALL commands (including curl)
+  if (/[`]|\$\(/.test(trimmed)) return "Subshell execution ($() and backticks) is not allowed.";
+  // Block semicolons and && that chain commands
+  if (/[;&]/.test(trimmed)) {
+    return "Command chaining (;, &) is not allowed. Use a single command.";
   }
-  const isAllowed = BASH_ALLOWLIST.some(prefix => trimmed.startsWith(prefix));
-  if (!isAllowed) return `Command not allowed: ${trimmed.split(" ")[0]}. Only read-only commands (curl, cat, ls, etc.) are permitted.`;
+  // Allow pipes only if every segment starts with an allowed command
+  const segments = trimmed.split(/\s*\|\s*/);
+  for (const seg of segments) {
+    const s = seg.trim();
+    if (!s) return "Empty pipe segment";
+    const isAllowed = BASH_ALLOWLIST.some(prefix => s.startsWith(prefix));
+    if (!isAllowed) return `Command not allowed: ${s.split(" ")[0]}. Only read-only commands (curl, cat, ls, etc.) are permitted.`;
+  }
   return null;
 }
 

@@ -1,5 +1,8 @@
 use crate::agent::orchestrator::OrchestratorAgent;
-use crate::agent::ThinkStrategy;
+use crate::agent::{LoopDetector, ThinkStrategy};
+use crate::context::summary::{estimate_tokens, truncate_tool_result_default};
+use crate::context::ContextManager;
+use crate::retry::stream_with_retry;
 use crate::AgentEvent;
 use anyhow::Result;
 use hank_provider::{
@@ -8,13 +11,15 @@ use hank_provider::{
 };
 use hank_web_tools::{Tool, ToolOutput};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 const MAX_ITERATIONS: usize = 25;
+const LLM_STREAM_TIMEOUT_SECS: u64 = 120;
+const TOOL_TIMEOUT_SECS: u64 = 30;
 
 /// Agent execution mode
 pub enum AgentMode {
@@ -38,6 +43,7 @@ pub struct AgentSession {
     model: String,
     tool_definitions: Vec<ToolDefinition>,
     mode: AgentMode,
+    context_manager: ContextManager,
 }
 
 impl AgentSession {
@@ -55,6 +61,7 @@ impl AgentSession {
                 input_schema: t.input_schema(),
             })
             .collect();
+        let context_manager = ContextManager::with_provider(80_000, provider.clone(), model.clone());
         Self {
             provider,
             tools,
@@ -63,6 +70,7 @@ impl AgentSession {
             model,
             tool_definitions,
             mode: AgentMode::Simple,
+            context_manager,
         }
     }
 
@@ -82,6 +90,7 @@ impl AgentSession {
                 input_schema: t.input_schema(),
             })
             .collect();
+        let context_manager = ContextManager::with_provider(80_000, provider.clone(), model.clone());
         Self {
             provider,
             tools,
@@ -90,6 +99,7 @@ impl AgentSession {
             model,
             tool_definitions,
             mode: AgentMode::Orchestrated { think_strategy },
+            context_manager,
         }
     }
 
@@ -154,6 +164,7 @@ impl AgentSession {
         });
 
         let mut consecutive_max_tokens = 0u32;
+        let mut loop_detector = LoopDetector::new();
 
         for iteration in 0..MAX_ITERATIONS {
             if cancel.is_cancelled() {
@@ -172,7 +183,7 @@ impl AgentSession {
             debug!("Agent loop iteration {iteration}: model={}, messages={}", req.model, req.messages.len());
 
             let llm_start = Instant::now();
-            let mut stream = self.provider.stream(req).await?;
+            let mut stream = stream_with_retry(&self.provider, req).await?;
 
             let mut assistant_content: Vec<ContentBlock> = Vec::new();
             let mut current_text = String::new();
@@ -190,6 +201,10 @@ impl AgentSession {
                     event = stream.next() => event,
                     _ = cancel.cancelled() => {
                         cancelled_during_stream = true;
+                        None
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(LLM_STREAM_TIMEOUT_SECS)) => {
+                        warn!("LLM stream timeout after {}s at iteration {}", LLM_STREAM_TIMEOUT_SECS, iteration);
                         None
                     }
                 };
@@ -268,12 +283,49 @@ impl AgentSession {
                 latency_ms,
                 model: self.model.clone(),
                 provider: self.provider.name().to_string(),
+                phase: Some("simple".to_string()),
             }).await;
 
             self.messages.push(Message {
                 role: Role::Assistant,
                 content: assistant_content.clone(),
             });
+
+            // 更新实际 token 用量（provider 报告的 input_tokens 是整个上下文的大小）
+            if total_input_tokens > 0 {
+                self.context_manager.update_actual_tokens(total_input_tokens as usize);
+            }
+
+            // Check budget after receiving assistant message
+            match self.context_manager.check_budget(&self.messages) {
+                crate::context::BudgetStatus::Overflow100 => {
+                    warn!("Budget overflow, terminating at iteration {}", iteration);
+                    let _ = event_tx.send(AgentEvent::TurnComplete).await;
+                    break;
+                }
+                crate::context::BudgetStatus::Critical95 => {
+                    let used = estimate_tokens(&self.messages);
+                    let _ = event_tx
+                        .send(AgentEvent::TokenWarning {
+                            used_tokens: used,
+                            total_budget: 200_000,
+                            percent: 95,
+                            action: "forcing_compression".to_string(),
+                        })
+                        .await;
+                    if let Some(strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                        let after = estimate_tokens(&self.messages);
+                        let _ = event_tx
+                            .send(AgentEvent::CompressionTriggered {
+                                before_tokens: used,
+                                after_tokens: after,
+                                strategy: format!("{:?}", strategy),
+                            })
+                            .await;
+                    }
+                }
+                _ => {}
+            }
 
             // If cancelled during streaming, stop immediately
             if cancelled_during_stream {
@@ -331,6 +383,33 @@ impl AgentSession {
                             break;
                         }
 
+                        // Check for loop detection
+                        if loop_detector.record(name, input) {
+                            loop_detector.consecutive_loops += 1;
+                            let pattern = loop_detector.loop_pattern();
+                            let _ = event_tx
+                                .send(AgentEvent::LoopDetected {
+                                    pattern: pattern.clone(),
+                                    window_size: 6,
+                                })
+                                .await;
+
+                            if loop_detector.consecutive_loops >= 3 {
+                                warn!("Loop detected: {} consecutive loops, terminating", loop_detector.consecutive_loops);
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: format!(
+                                        "Loop detected: {}. Agent terminating to prevent infinite loop.",
+                                        pattern
+                                    ),
+                                    is_error: true,
+                                });
+                                break;
+                            }
+
+                            // Inject nudge message after this tool result
+                        }
+
                         let input_str = serde_json::to_string(input).unwrap_or_default();
                         debug!("Executing tool: name={name}, id={id}");
                         let _ = event_tx
@@ -341,7 +420,21 @@ impl AgentSession {
                             })
                             .await;
                         let tool_start = Instant::now();
-                        let output = self.execute_tool(name, input.clone()).await;
+                        let output = match tokio::time::timeout(
+                            Duration::from_secs(TOOL_TIMEOUT_SECS),
+                            self.execute_tool(name, input.clone()),
+                        )
+                        .await
+                        {
+                            Ok(tool_output) => tool_output,
+                            Err(_) => {
+                                warn!("Tool {} timed out after {}s", name, TOOL_TIMEOUT_SECS);
+                                ToolOutput {
+                                    content: format!("Tool execution timed out after {}s", TOOL_TIMEOUT_SECS),
+                                    is_error: true,
+                                }
+                            }
+                        };
                         let tool_duration_ms = tool_start.elapsed().as_millis() as u64;
                         debug!("Tool result: id={id}, is_error={}", output.is_error);
                         let _ = event_tx
@@ -358,9 +451,10 @@ impl AgentSession {
                                 is_error: output.is_error,
                             })
                             .await;
+                        let content = truncate_tool_result_default(&output.content);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
-                            content: output.content,
+                            content,
                             is_error: output.is_error,
                         });
                     }
@@ -376,6 +470,29 @@ impl AgentSession {
                     role: Role::User,
                     content: tool_results,
                 });
+
+                // Budget check after tool results to catch large tool outputs
+                match self.context_manager.check_budget(&self.messages) {
+                    crate::context::BudgetStatus::Overflow100 => {
+                        warn!("Budget overflow after tool results, terminating");
+                        let _ = event_tx.send(AgentEvent::TurnComplete).await;
+                        break;
+                    }
+                    crate::context::BudgetStatus::Critical95 => {
+                        let used = estimate_tokens(&self.messages);
+                        if let Some(strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                            let after = estimate_tokens(&self.messages);
+                            let _ = event_tx
+                                .send(AgentEvent::CompressionTriggered {
+                                    before_tokens: used,
+                                    after_tokens: after,
+                                    strategy: format!("{:?}", strategy),
+                                })
+                                .await;
+                        }
+                    }
+                    _ => {}
+                }
             } else {
                 // Turn complete
                 let _ = event_tx.send(AgentEvent::TurnComplete).await;

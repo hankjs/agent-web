@@ -278,7 +278,7 @@ pub async fn chat_handler(
 
             // Keep existing metric/tool persistence for backward compatibility
             match &event {
-                AgentEvent::Metrics { input_tokens, output_tokens, latency_ms, model, provider } => {
+                AgentEvent::Metrics { input_tokens, output_tokens, latency_ms, model, provider, phase: _ } => {
                     let _ = db_fwd.save_agent_metric(
                         &sid_fwd2, None, *input_tokens, *output_tokens, *latency_ms, model, provider,
                     ).await;
@@ -602,6 +602,9 @@ fn extract_event_type(event: &AgentEvent) -> &'static str {
         AgentEvent::WorkerSpawned { .. } => "worker_spawned",
         AgentEvent::WorkerCompleted { .. } => "worker_completed",
         AgentEvent::Verification { .. } => "verification",
+        AgentEvent::LoopDetected { .. } => "loop_detected",
+        AgentEvent::TokenWarning { .. } => "token_warning",
+        AgentEvent::CompressionTriggered { .. } => "compression_triggered",
         AgentEvent::Metrics { .. } => "metrics",
         AgentEvent::ToolMetrics { .. } => "tool_metrics",
         AgentEvent::ProviderFallback { .. } => "provider_fallback",

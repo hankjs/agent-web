@@ -1,4 +1,6 @@
-use crate::agent::{Artifact, DelegatedTask, TaskResult, TaskStatus};
+use crate::agent::{Artifact, DelegatedTask, LoopDetector, TaskResult, TaskStatus};
+use crate::context::summary::truncate_tool_result_default;
+use crate::retry::stream_with_retry;
 use crate::AgentEvent;
 use anyhow::Result;
 use hank_provider::{
@@ -7,12 +9,16 @@ use hank_provider::{
 };
 use hank_web_tools::{Tool, ToolOutput};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 const WORKER_MAX_ITERATIONS: usize = 25;
+const LLM_STREAM_TIMEOUT_SECS: u64 = 120;
+const TOOL_TIMEOUT_SECS: u64 = 30;
+const LOOP_TERMINATE_COUNT: usize = 3;
 
 /// WorkerAgent executes a delegated task using a flat stream-tools loop.
 pub struct WorkerAgent {
@@ -69,6 +75,7 @@ impl WorkerAgent {
         let mut artifacts = Vec::new();
         let mut final_text = String::new();
         let mut consecutive_max_tokens = 0u32;
+        let mut loop_detector = LoopDetector::new();
 
         for iteration in 0..WORKER_MAX_ITERATIONS {
             if cancel.is_cancelled() {
@@ -94,7 +101,7 @@ impl WorkerAgent {
                 phase: "worker".to_string(),
             }).await;
 
-            let mut stream = self.provider.stream(req).await?;
+            let mut stream = stream_with_retry(&self.provider, req).await?;
             let mut assistant_content: Vec<ContentBlock> = Vec::new();
             let mut current_text = String::new();
             let mut current_tool_id = String::new();
@@ -108,6 +115,10 @@ impl WorkerAgent {
                 let event = tokio::select! {
                     event = stream.next() => event,
                     _ = cancel.cancelled() => { cancelled = true; None }
+                    _ = tokio::time::sleep(Duration::from_secs(LLM_STREAM_TIMEOUT_SECS)) => {
+                        warn!("Worker LLM stream timeout after {}s for task {}", LLM_STREAM_TIMEOUT_SECS, task.id);
+                        None
+                    }
                 };
                 let Some(event) = event else { break };
                 match event {
@@ -212,6 +223,44 @@ impl WorkerAgent {
                                 artifacts: vec![],
                             });
                         }
+
+                        // Check for loop detection
+                        if loop_detector.record(name, input) {
+                            loop_detector.consecutive_loops += 1;
+                            let pattern = loop_detector.loop_pattern();
+                            let _ = event_tx
+                                .send(AgentEvent::LoopDetected {
+                                    pattern: pattern.clone(),
+                                    window_size: 6,
+                                })
+                                .await;
+
+                            if loop_detector.consecutive_loops >= LOOP_TERMINATE_COUNT {
+                                warn!(
+                                    "Worker loop detection: {} consecutive loops, terminating task {}",
+                                    loop_detector.consecutive_loops, task.id
+                                );
+                                return Ok(TaskResult {
+                                    task_id: task.id.clone(),
+                                    status: TaskStatus::Failed,
+                                    summary: format!("Loop detected: {}. Task terminated.", pattern),
+                                    artifacts,
+                                });
+                            }
+
+                            // Inject nudge message
+                            let nudge = Message {
+                                role: Role::User,
+                                content: vec![ContentBlock::Text {
+                                    text: format!(
+                                        "⚠️ Loop detected: {}. Vary your approach or use different tools.",
+                                        pattern
+                                    ),
+                                }],
+                            };
+                            messages.push(nudge);
+                        }
+
                         let input_str = serde_json::to_string(input).unwrap_or_default();
                         let _ = event_tx
                             .send(AgentEvent::ToolStart {
@@ -220,7 +269,23 @@ impl WorkerAgent {
                                 input: input_str,
                             })
                             .await;
-                        let output = self.execute_tool(name, input.clone()).await;
+
+                        let output = match tokio::time::timeout(
+                            Duration::from_secs(TOOL_TIMEOUT_SECS),
+                            self.execute_tool(name, input.clone()),
+                        )
+                        .await
+                        {
+                            Ok(tool_output) => tool_output,
+                            Err(_) => {
+                                warn!("Worker tool {} timed out after {}s for task {}", name, TOOL_TIMEOUT_SECS, task.id);
+                                ToolOutput {
+                                    content: format!("Tool execution timed out after {}s", TOOL_TIMEOUT_SECS),
+                                    is_error: true,
+                                }
+                            }
+                        };
+
                         let _ = event_tx
                             .send(AgentEvent::ToolResult {
                                 id: id.clone(),
@@ -238,9 +303,10 @@ impl WorkerAgent {
                             });
                         }
 
+                        let content = truncate_tool_result_default(&output.content);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
-                            content: output.content,
+                            content,
                             is_error: output.is_error,
                         });
                     }

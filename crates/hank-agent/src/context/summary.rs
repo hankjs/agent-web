@@ -1,8 +1,51 @@
-use hank_provider::{CompletionRequest, LlmProvider, Message, StreamEvent};
+use hank_provider::{CompletionRequest, ContentBlock, LlmProvider, Message, StreamEvent};
 use tokio_stream::StreamExt;
 use tracing::{debug, warn};
 
-/// Rough token estimation: chars / 4
+/// 工具结果截断的默认上限（字符数）
+const TOOL_RESULT_MAX_CHARS: usize = 40_000;
+
+/// 截断工具结果：保留 60% head + 40% tail，中间插入截断提示。
+/// 防止单次工具调用撑爆 context window。
+pub fn truncate_tool_result(content: &str, max_chars: usize) -> String {
+    if content.len() <= max_chars {
+        return content.to_string();
+    }
+    let head_len = max_chars * 60 / 100;
+    let tail_len = max_chars * 40 / 100;
+    let original_len = content.len();
+    // 安全切分：在 char boundary 上截断
+    let head_end = content
+        .char_indices()
+        .take_while(|&(i, _)| i <= head_len)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(head_len.min(content.len()));
+    let tail_start = content
+        .char_indices()
+        .rev()
+        .take_while(|&(i, _)| content.len() - i <= tail_len)
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(content.len().saturating_sub(tail_len));
+    format!(
+        "{}\n\n...[truncated {} of {} chars]...\n\n{}",
+        &content[..head_end],
+        original_len - head_end - (content.len() - tail_start),
+        original_len,
+        &content[tail_start..]
+    )
+}
+
+/// 使用默认上限截断工具结果
+pub fn truncate_tool_result_default(content: &str) -> String {
+    truncate_tool_result(content, TOOL_RESULT_MAX_CHARS)
+}
+
+/// Token 估算：根据字符类型选择不同的分割系数。
+/// - ASCII/Latin 字符：~4 chars/token
+/// - CJK 字符（中日韩）：~1.5 chars/token
+/// - Image：估算 1000 tokens（占位）
 pub fn estimate_tokens(messages: &[Message]) -> usize {
     messages
         .iter()
@@ -10,17 +53,49 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
             m.content
                 .iter()
                 .map(|block| match block {
-                    hank_provider::ContentBlock::Text { text } => text.len(),
-                    hank_provider::ContentBlock::Image { .. } => 0,
+                    hank_provider::ContentBlock::Text { text } => estimate_text_tokens(text),
+                    hank_provider::ContentBlock::Image { .. } => 1000,
                     hank_provider::ContentBlock::ToolUse { input, .. } => {
-                        input.to_string().len()
+                        let s = input.to_string();
+                        estimate_text_tokens(&s)
                     }
-                    hank_provider::ContentBlock::ToolResult { content, .. } => content.len(),
+                    hank_provider::ContentBlock::ToolResult { content, .. } => {
+                        estimate_text_tokens(content)
+                    }
                 })
                 .sum::<usize>()
         })
         .sum::<usize>()
-        / 4
+}
+
+/// 估算单段文本的 token 数，区分 CJK 和 ASCII
+fn estimate_text_tokens(text: &str) -> usize {
+    let mut cjk_chars = 0usize;
+    let mut other_bytes = 0usize;
+    for ch in text.chars() {
+        if is_cjk(ch) {
+            cjk_chars += 1;
+        } else {
+            other_bytes += ch.len_utf8();
+        }
+    }
+    // CJK: ~1.5 chars per token, ASCII: ~4 bytes per token
+    let cjk_tokens = (cjk_chars as f64 / 1.5).ceil() as usize;
+    let ascii_tokens = other_bytes / 4;
+    cjk_tokens + ascii_tokens
+}
+
+/// 判断字符是否为 CJK 统一表意字符
+fn is_cjk(ch: char) -> bool {
+    matches!(ch,
+        '\u{4E00}'..='\u{9FFF}' |   // CJK Unified Ideographs
+        '\u{3400}'..='\u{4DBF}' |   // CJK Extension A
+        '\u{F900}'..='\u{FAFF}' |   // CJK Compatibility Ideographs
+        '\u{3000}'..='\u{303F}' |   // CJK Symbols and Punctuation
+        '\u{3040}'..='\u{309F}' |   // Hiragana
+        '\u{30A0}'..='\u{30FF}' |   // Katakana
+        '\u{AC00}'..='\u{D7AF}'     // Hangul Syllables
+    )
 }
 
 /// Generate a summary of messages for context compression.
@@ -65,6 +140,38 @@ pub fn summarize_messages(messages: &[Message]) -> String {
     }
 
     summary_parts.join("\n")
+}
+
+/// Microcompact messages: remove most content from old ToolResult blocks
+/// while preserving structure. Keeps first 80 chars + original length info.
+/// Returns estimated tokens saved.
+pub fn microcompact(messages: &mut Vec<Message>, preserve_recent: usize) -> usize {
+    if messages.len() <= preserve_recent + 1 {
+        return 0;
+    }
+
+    let before_tokens = estimate_tokens(messages);
+    let cutoff = messages.len().saturating_sub(preserve_recent);
+
+    // Compact ToolResult blocks in all messages before the preserve window
+    for msg in messages.iter_mut().take(cutoff) {
+        for block in &mut msg.content {
+            if let ContentBlock::ToolResult { content, tool_use_id: _, is_error: _ } = block {
+                if content.len() > 80 {
+                    let original_len = content.len();
+                    let first_80 = if content.len() >= 80 {
+                        content[..80].to_string()
+                    } else {
+                        content.clone()
+                    };
+                    *content = format!("{}...[truncated from {} chars]", first_80, original_len);
+                }
+            }
+        }
+    }
+
+    let after_tokens = estimate_tokens(messages);
+    (before_tokens.saturating_sub(after_tokens)).min(before_tokens)
 }
 
 /// Summarize messages using an LLM for higher-quality context compression.

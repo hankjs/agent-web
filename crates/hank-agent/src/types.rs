@@ -18,6 +18,12 @@ pub enum AgentEvent {
     WorkerCompleted { task_id: String, status: TaskStatus, summary: String },
     /// Verification result from the Verifier
     Verification { verdict: Verdict, issues: Vec<String> },
+    /// Loop detected in agent execution
+    LoopDetected { pattern: String, window_size: usize },
+    /// Token budget warning
+    TokenWarning { used_tokens: usize, total_budget: usize, percent: u8, action: String },
+    /// Compression triggered
+    CompressionTriggered { before_tokens: usize, after_tokens: usize, strategy: String },
     /// LLM call metrics (token usage + latency)
     Metrics {
         input_tokens: u32,
@@ -25,6 +31,7 @@ pub enum AgentEvent {
         latency_ms: u64,
         model: String,
         provider: String,
+        phase: Option<String>,
     },
     /// Tool execution metrics
     ToolMetrics {
