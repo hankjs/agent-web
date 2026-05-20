@@ -48,6 +48,17 @@ export const enum BlockKind {
   PlannerDecision = "planner_decision",
   AskUser = "ask_user",
   RequirementReview = "requirement_review",
+  TaskReview = "task_review",
+}
+
+export interface TaskItem {
+  id: string;
+  groupName: string;
+  groupOrder: number;
+  taskOrder: number;
+  title: string;
+  description: string;
+  fields: Record<string, string>;  // 任意键值字段（如 files, acceptance, 或自定义）
 }
 
 /** 后端事件类型枚举 */
@@ -71,7 +82,8 @@ export type Block =
   | { kind: BlockKind.ExploreRound; objective: string; reasoning?: string; tools: Array<{ id: string; name: string; input?: string; result?: string; isError?: boolean; isRunning: boolean; expanded: boolean }>; expanded: boolean; isRunning: boolean }
   | { kind: BlockKind.PlannerDecision; reasoning: string; action: string; objective?: string; expanded: boolean }
   | { kind: BlockKind.AskUser; toolUseId: string; questions: AskUserQuestion[]; answered: boolean; activeTab: number }
-  | { kind: BlockKind.RequirementReview; documentName: string; content: string; confirmed: boolean };
+  | { kind: BlockKind.RequirementReview; documentName: string; content: string; confirmed: boolean }
+  | { kind: BlockKind.TaskReview; title: string; tasks: TaskItem[]; confirmed: boolean };
 
 export interface ExploreAgentOptions {
   sessionId: string;

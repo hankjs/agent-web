@@ -211,7 +211,7 @@ export async function runTaskGenerator(
 ): Promise<string> {
   const prompt = buildTaskGeneratorPrompt({ requirementContent, workDir });
   const { text } = await callLLM(
-    "你是一个任务分解专家，输出 Markdown 格式的任务文档。",
+    "你是一个任务分解专家，输出 JSON 格式的任务列表。",
     prompt,
     undefined,
     signal,

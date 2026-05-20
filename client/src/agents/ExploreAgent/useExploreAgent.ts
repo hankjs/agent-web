@@ -23,6 +23,7 @@ import {
   type Block,
   type DocumentSection,
   type ToolUseBlock,
+  type TaskItem,
 } from "./types";
 import {
   runDocUpdater,
@@ -35,7 +36,7 @@ import {
 } from "./docUpdater";
 import { useDocHistory } from "./useDocHistory";
 import { ContextCache } from "./contextCache";
-import { safeInput, parseFindings, trimMessages } from "./utils";
+import { safeInput, parseFindings, trimMessages, parseTasksMarkdown } from "./utils";
 
 const enc = encodingForModel("gpt-4o"); // cl100k_base compatible
 
@@ -604,7 +605,50 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         });
       }
 
-      // 创建 Change 记录（不再传本地路径）
+      // 解析 JSON 为结构化 TaskItem[]，解析失败或为空则重试
+      let tasks = parseTasksMarkdown(tasksMarkdown);
+      let retries = 0;
+      while (tasks.length === 0 && retries < 2) {
+        retries++;
+        if (getSignal().aborted) return;
+        options.onBlock({ kind: BlockKind.Text, content: `任务解析为空，正在重新生成 (${retries}/2)...` });
+        const retry = await runTaskGenerator(requirementContent, options.workDir, getSignal());
+        tasks = parseTasksMarkdown(retry);
+      }
+
+      if (tasks.length === 0) {
+        options.onBlock({ kind: BlockKind.Error, content: "任务生成失败：多次尝试后仍无法解析出有效任务，请检查需求文档内容后重试。" });
+        state.value.phase = "waiting_user";
+        options.onStreaming(false);
+        return;
+      }
+
+      state.value.phase = "waiting_user";
+      options.onBlock({ kind: BlockKind.TaskReview, title, tasks, confirmed: false });
+      options.onStreaming(false);
+
+      // 记录事件，刷新后可恢复
+      await logEvent("explore:task_review", { title, tasks }, "user");
+
+    } catch (e: any) {
+      if (e.name === "AbortError") return;
+      options.onBlock({ kind: BlockKind.Error, content: `任务生成失败: ${e.message}` });
+      state.value.phase = "done";
+      options.onStreaming(false);
+      options.onComplete();
+    }
+  }
+
+  /** 用户确认 TaskReview 后，写入数据库 */
+  async function handleTaskConfirm(tasks: TaskItem[]) {
+    state.value.phase = "acting";
+    options.onStreaming(true);
+
+    try {
+      // 将 TaskItem[] 转回 markdown 格式写入 Change
+      const tasksMarkdown = tasksToMarkdown(tasks);
+      const title = state.value.documentName || "需求文档";
+
       const res = await authFetch("/api/changes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -619,13 +663,75 @@ export function useExploreAgent(options: ExploreAgentOptions) {
         await logEvent("explore:complete", { title }, "user");
       }
     } catch (e: any) {
-      if (e.name === "AbortError") return;
-      options.onBlock({ kind: BlockKind.Error, content: `任务生成失败: ${e.message}` });
+      options.onBlock({ kind: BlockKind.Error, content: `任务提交失败: ${e.message}` });
     }
 
     state.value.phase = "done";
     options.onStreaming(false);
     options.onComplete();
+  }
+
+  /** 用户要求重新生成任务列表 */
+  async function handleTaskRegenerate(feedback: string) {
+    state.value.phase = "acting";
+    options.onBlock({ kind: BlockKind.Text, content: "正在根据反馈重新生成任务..." });
+    options.onStreaming(true);
+
+    try {
+      const requirementContent = assembleMarkdown(state.value.documentSections, state.value.documentName);
+      // 将反馈注入 prompt，重新生成
+      const feedbackPrompt = feedback ? `\n\n用户反馈：${feedback}\n请根据以上反馈调整任务拆分。` : "";
+      const tasksMarkdown = await runTaskGenerator(requirementContent + feedbackPrompt, options.workDir, getSignal());
+
+      let tasks = parseTasksMarkdown(tasksMarkdown);
+      let retries = 0;
+      while (tasks.length === 0 && retries < 2) {
+        retries++;
+        if (getSignal().aborted) return;
+        options.onBlock({ kind: BlockKind.Text, content: `任务解析为空，正在重新生成 (${retries}/2)...` });
+        const retry = await runTaskGenerator(requirementContent + feedbackPrompt, options.workDir, getSignal());
+        tasks = parseTasksMarkdown(retry);
+      }
+
+      if (tasks.length === 0) {
+        options.onBlock({ kind: BlockKind.Error, content: "重新生成失败：无法解析出有效任务。" });
+        state.value.phase = "waiting_user";
+        options.onStreaming(false);
+        return;
+      }
+
+      state.value.phase = "waiting_user";
+      options.onBlock({ kind: BlockKind.TaskReview, title: state.value.documentName || "需求文档", tasks, confirmed: false });
+      options.onStreaming(false);
+
+      await logEvent("explore:task_review", { title: state.value.documentName || "需求文档", tasks }, "user");
+    } catch (e: any) {
+      if (e.name === "AbortError") return;
+      options.onBlock({ kind: BlockKind.Error, content: `重新生成失败: ${e.message}` });
+      state.value.phase = "waiting_user";
+      options.onStreaming(false);
+    }
+  }
+
+  /** TaskItem[] 转 JSON 字符串存储 */
+  function tasksToMarkdown(tasks: TaskItem[]): string {
+    const groups = new Map<string, TaskItem[]>();
+    for (const t of tasks) {
+      const key = t.groupName;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(t);
+    }
+    const output = {
+      groups: [...groups.entries()].map(([name, items]) => ({
+        name,
+        tasks: items.sort((a, b) => a.taskOrder - b.taskOrder).map(item => ({
+          title: item.title,
+          description: item.description,
+          fields: item.fields,
+        })),
+      })),
+    };
+    return JSON.stringify(output, null, 2);
   }
 
   function emitAskUser(params: { questions: Array<{ header: string; question: string; options: Array<{ label: string; description?: string }> }> }) {
@@ -985,6 +1091,16 @@ export function useExploreAgent(options: ExploreAgentOptions) {
       state.value.turnCount = readCodeTurns;
       isFirstTurn.value = false;
     }
+
+    // 恢复 phase：如果有 task_review 或 confirm_requirement 但没有 complete，说明在等待用户
+    const hasComplete = allEvents.some(e => e.event_type === "explore:complete");
+    const hasTaskReview = allEvents.some(e => e.event_type === "explore:task_review");
+    const hasConfirmReq = allEvents.some(e => e.event_type === "explore:confirm_requirement");
+    if (hasComplete) {
+      state.value.phase = "done";
+    } else if (hasTaskReview || hasConfirmReq) {
+      state.value.phase = "waiting_user";
+    }
   }
 
   async function undoDoc() {
@@ -1016,5 +1132,5 @@ export function useExploreAgent(options: ExploreAgentOptions) {
     await saveDocDiff("用户编辑", [{ sectionId, oldContent, newContent }]);
   }
 
-  return { state, handleUserInput, handleRequirementConfirm, resume, cancel, markDone, docHistory, undoDoc, redoDoc, editSection, restoreDocFromFile, restoreAgentState };
+  return { state, handleUserInput, handleRequirementConfirm, handleTaskConfirm, handleTaskRegenerate, resume, cancel, markDone, docHistory, undoDoc, redoDoc, editSection, restoreDocFromFile, restoreAgentState };
 }

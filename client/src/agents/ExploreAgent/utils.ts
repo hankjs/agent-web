@@ -1,9 +1,14 @@
 /**
  * 纯函数工具集 — 从 useExploreAgent 中提取，便于单元测试
  */
-import type { LlmMessage, Finding } from "./types";
+import type { LlmMessage, Finding, TaskItem } from "./types";
 
 const MAX_FULL_ROUNDS = 3;
+
+let _idCounter = 0;
+function nanoid(): string {
+  return `task_${Date.now().toString(36)}_${(++_idCounter).toString(36)}`;
+}
 
 /** Safely parse tc.input which may be string, null, or object */
 export function safeInput(raw: any): Record<string, any> {
@@ -93,4 +98,52 @@ export function trimMessages(msgs: LlmMessage[], maxFullRounds = MAX_FULL_ROUNDS
     }
   }
   return trimmed;
+}
+
+/**
+ * 解析 LLM 输出的任务 JSON 为 TaskItem[]
+ * 支持 ```json 代码块包裹或直接 JSON
+ */
+export function parseTasksMarkdown(raw: string): TaskItem[] {
+  const jsonMatch = raw.match(/```json\s*\n([\s\S]*?)\n```/);
+  const jsonStr = jsonMatch ? jsonMatch[1] : raw.trim();
+  console.log("[parseTasksMarkdown] input length:", raw.length, "jsonMatch:", !!jsonMatch, "jsonStr preview:", jsonStr.slice(0, 100));
+
+  try {
+    const data = JSON.parse(jsonStr);
+    const tasks: TaskItem[] = [];
+    const groups = data.groups || [];
+    for (let gi = 0; gi < groups.length; gi++) {
+      const group = groups[gi];
+      const groupName = group.name || `阶段 ${gi + 1}`;
+      const items = group.tasks || [];
+      for (let ti = 0; ti < items.length; ti++) {
+        const item = items[ti];
+        // fields 支持两种格式：新格式 item.fields 对象，或旧格式 item.files/item.acceptance
+        let fields: Record<string, string> = {};
+        if (item.fields && typeof item.fields === "object") {
+          for (const [k, v] of Object.entries(item.fields)) {
+            fields[k] = Array.isArray(v) ? v.join(", ") : String(v ?? "");
+          }
+        } else {
+          // 兼容旧格式
+          if (item.files) fields["文件"] = Array.isArray(item.files) ? item.files.join(", ") : String(item.files);
+          if (item.acceptance) fields["验收"] = String(item.acceptance);
+        }
+        tasks.push({
+          id: nanoid(),
+          groupName,
+          groupOrder: gi + 1,
+          taskOrder: ti + 1,
+          title: item.title || "",
+          description: item.description || "",
+          fields,
+        });
+      }
+    }
+    return tasks;
+  } catch {
+    console.error("[parseTasksMarkdown] JSON parse failed:", raw.slice(0, 200));
+    return [];
+  }
 }

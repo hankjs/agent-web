@@ -15,6 +15,8 @@ import AgentBlockTool from "../components/AgentBlockTool.vue";
 import AgentBlockExploreRound from "../components/AgentBlockExploreRound.vue";
 import AgentBlockPlannerDecision from "../components/AgentBlockPlannerDecision.vue";
 import AgentBlockAskUser from "../components/AgentBlockAskUser.vue";
+import TaskEditor from "../components/TaskEditor.vue";
+import RequirementReview from "../components/RequirementReview.vue";
 import PageLoading from "../components/PageLoading.vue";
 import ChangeChatPanel from "../panels/ChangeChatPanel.vue";
 import DocPreviewPanel from "../panels/DocPreviewPanel.vue";
@@ -99,6 +101,27 @@ function stop() {
   exploreAgent.cancel();
 }
 
+function handleTaskConfirm(block: Block, tasks: any[]) {
+  if (block.kind === "task_review") {
+    block.confirmed = true;
+  }
+  exploreAgent.handleTaskConfirm(tasks);
+}
+
+function handleTaskRegenerate(block: Block, feedback: string) {
+  if (block.kind === "task_review") {
+    block.confirmed = true;
+  }
+  exploreAgent.handleTaskRegenerate(feedback);
+}
+
+function handleRequirementConfirm(block: Block, confirmed: boolean) {
+  if (block.kind === "requirement_review") {
+    block.confirmed = confirmed;
+  }
+  exploreAgent.handleRequirementConfirm(confirmed);
+}
+
 async function initializeSession() {
   isInitializingSession.value = true;
   try {
@@ -162,6 +185,22 @@ onMounted(async () => {
             :is-streaming="askUserBusy"
             @select-option="(qIdx, opt) => selectOption(block, qIdx, opt)"
             @submit="() => submitAskUser(block)"
+          />
+          <RequirementReview
+            v-else-if="block.kind === 'requirement_review'"
+            :document-name="block.documentName"
+            :content="block.content"
+            :confirmed="block.confirmed"
+            @confirm="() => handleRequirementConfirm(block, true)"
+            @edit="() => handleRequirementConfirm(block, false)"
+          />
+          <TaskEditor
+            v-else-if="block.kind === 'task_review'"
+            :tasks="block.tasks"
+            :title="block.title"
+            :confirmed="block.confirmed"
+            @confirm="(tasks) => handleTaskConfirm(block, tasks)"
+            @regenerate="(feedback) => handleTaskRegenerate(block, feedback)"
           />
         </template>
         <div v-if="isStreaming && blocks.length === 0" class="streaming-dot"></div>

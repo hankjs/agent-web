@@ -31,34 +31,42 @@ const sections = computed(() => {
 </script>
 
 <template>
-  <div class="requirement-review border border-blue-200 rounded-lg p-4 bg-blue-50/50">
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="text-sm font-medium text-blue-900">需求文档确认</h3>
-      <span class="text-xs text-blue-600">{{ documentName }}</span>
+  <div class="req-review">
+    <div class="req-review-header">
+      <span class="req-review-title">需求文档确认</span>
+      <span class="req-review-name">{{ documentName }}</span>
     </div>
-
-    <div class="prose prose-sm max-w-none mb-4 max-h-96 overflow-y-auto bg-white rounded p-3 border border-blue-100">
-      <div v-for="(section, i) in sections" :key="i" class="mb-3">
-        <h4 class="text-sm font-semibold text-gray-800 mb-1">{{ section.title }}</h4>
-        <div class="text-xs text-gray-600 whitespace-pre-wrap">{{ section.body.trim() || '待填充' }}</div>
+    <div class="req-review-body">
+      <div v-for="(section, i) in sections" :key="i" class="req-review-section">
+        <div class="req-review-section-title">{{ section.title }}</div>
+        <div class="req-review-section-body">{{ section.body.trim() || '待填充' }}</div>
       </div>
-      <div v-if="sections.length === 0" class="text-xs text-gray-400 italic">文档内容为空</div>
+      <div v-if="sections.length === 0" class="req-review-empty">文档内容为空</div>
     </div>
-
-    <div v-if="!confirmed" class="flex gap-2">
-      <button
-        class="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
-        @click="emit('confirm')"
-      >
-        确认并生成任务
-      </button>
-      <button
-        class="px-3 py-1.5 text-xs font-medium text-blue-700 bg-white border border-blue-300 rounded hover:bg-blue-50 transition-colors"
-        @click="emit('edit')"
-      >
-        继续完善
-      </button>
+    <div class="req-review-footer">
+      <div v-if="confirmed" class="req-review-confirmed">已确认，正在生成任务文档...</div>
+      <template v-else>
+        <button class="req-review-btn primary" @click="emit('confirm')">确认并生成任务</button>
+        <button class="req-review-btn secondary" @click="emit('edit')">继续完善</button>
+      </template>
     </div>
-    <div v-else class="text-xs text-green-600 font-medium">已确认，正在生成任务文档...</div>
   </div>
 </template>
+
+<style scoped>
+.req-review { border: 1px solid color-mix(in oklch, var(--color-accent) 30%, transparent); border-radius: 8px; background: var(--color-surface-1); overflow: hidden; }
+.req-review-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--color-border-subtle); }
+.req-review-title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); }
+.req-review-name { font-size: 12px; color: var(--color-text-muted); }
+.req-review-body { padding: 12px 16px; max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.req-review-section-title { font-size: 13px; font-weight: 600; color: var(--color-text-primary); margin-bottom: 4px; }
+.req-review-section-body { font-size: 12px; color: var(--color-text-secondary); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.req-review-empty { font-size: 12px; color: var(--color-text-muted); font-style: italic; }
+.req-review-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--color-border-subtle); background: color-mix(in oklch, var(--color-surface-0) 75%, transparent); }
+.req-review-confirmed { font-size: 12px; color: var(--color-success); font-weight: 500; }
+.req-review-btn { padding: 7px 14px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.req-review-btn.primary { border: 1px solid var(--color-accent); background: var(--color-accent); color: var(--color-surface-0); }
+.req-review-btn.primary:hover { opacity: 0.9; }
+.req-review-btn.secondary { border: 1px solid var(--color-border-subtle); background: var(--color-surface-0); color: var(--color-text-secondary); }
+.req-review-btn.secondary:hover { background: var(--color-surface-2); border-color: var(--color-accent); color: var(--color-text-primary); }
+</style>

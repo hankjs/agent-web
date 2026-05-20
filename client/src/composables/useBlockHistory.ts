@@ -43,6 +43,16 @@ export function useBlockHistory(
 
             // 从本地文件恢复文档面板
             await exploreAgent.restoreDocFromFile();
+
+            // 填充 RequirementReview block 的文档内容（从恢复后的 documentSections 组装）
+            for (const block of blocks.value) {
+                if (block.kind === BlockKind.RequirementReview && !block.content) {
+                    const sections = exploreAgent.state.value.documentSections;
+                    if (sections.length > 0) {
+                        block.content = sections.map(s => `## ${s.title}\n\n${s.content}`).join("\n\n");
+                    }
+                }
+            }
         } catch (e) {
             console.error("[BlockHistory] loadHistory error:", e);
         }
@@ -75,13 +85,31 @@ function restoreBlocks(userEvents: RawEvent[], answerIndices: number[]): Block[]
                         isRunning: false,
                     };
                     restored.push(currentRound);
+                } else if (p.action === "confirm_requirement") {
+                    currentRound = null;
+                    // 不在这里恢复 — 由 explore:confirm_requirement 事件恢复
                 } else {
                     currentRound = null;
-                    // 恢复 PlannerDecision block（ask_user、confirm_requirement、finalize）
+                    // 恢复 PlannerDecision block（ask_user、finalize）
                     if (p.action && p.action !== "read_code") {
-                        const actionLabel = p.action === "ask_user" ? "向用户提问" : p.action === "confirm_requirement" ? "确认需求文档" : "完成探索";
+                        const actionLabel = p.action === "ask_user" ? "向用户提问" : "完成探索";
                         restored.push({ kind: BlockKind.PlannerDecision, reasoning: p.reasoning || "", action: actionLabel, objective: p.params?.objective, expanded: false });
                     }
+                }
+                break;
+            case "explore:confirm_requirement" as any:
+                currentRound = null;
+                {
+                    const evPos = userEvents.indexOf(ev);
+                    const hasTaskReviewOrComplete = userEvents.slice(evPos + 1).some(
+                        (e) => e.event_type === ExploreEvent.Complete || e.event_type === ("explore:task_review" as any)
+                    );
+                    restored.push({
+                        kind: BlockKind.RequirementReview,
+                        documentName: p.title || "",
+                        content: "",
+                        confirmed: hasTaskReviewOrComplete,
+                    });
                 }
                 break;
             case ExploreEvent.ToolCall:
@@ -147,6 +175,21 @@ function restoreBlocks(userEvents: RawEvent[], answerIndices: number[]): Block[]
             case ExploreEvent.Complete:
                 currentRound = null;
                 if (p.title) restored.push({ kind: BlockKind.Text, content: `探索完成: ${p.title}` });
+                break;
+            case "explore:task_review" as any:
+                currentRound = null;
+                {
+                    const evPos = userEvents.indexOf(ev);
+                    const hasCompleteAfter = userEvents.slice(evPos + 1).some(
+                        (e) => e.event_type === ExploreEvent.Complete
+                    );
+                    restored.push({
+                        kind: BlockKind.TaskReview,
+                        title: p.title || "",
+                        tasks: Array.isArray(p.tasks) ? p.tasks : [],
+                        confirmed: hasCompleteAfter,
+                    });
+                }
                 break;
         }
     }
