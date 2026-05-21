@@ -189,6 +189,12 @@ function exportContext() {
       case 'explore:status':
         lines.push(`[Status] ${p.message || ''}`)
         break
+      case 'explore:task_review':
+        lines.push(`[Task Review] title: "${p.title || ''}"`)
+        for (const t of (p.tasks || [])) {
+          lines.push(`  - [${t.groupName || t.group_name || ''}] ${t.title || ''}`)
+        }
+        break
       case 'explore:complete':
         lines.push(`[Explore Complete] title: "${p.title || ''}"`)
         if (p.summary) lines.push(`  summary:\n${p.summary}`)
@@ -218,7 +224,7 @@ const EXPLORE_TYPES = [
   'explore:thought', 'explore:action', 'explore:status',
   'explore:llm_call', 'explore:tool_call', 'explore:tool_result',
   'explore:observation', 'explore:summary_update',
-  'explore:question', 'explore:answer', 'explore:complete',
+  'explore:question', 'explore:answer', 'explore:task_review', 'explore:complete',
 ]
 
 const exploreEvents = computed(() => events.value.filter(e => EXPLORE_TYPES.includes(e.event_type)))

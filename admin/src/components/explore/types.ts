@@ -40,7 +40,7 @@ export function formatTime(dateStr: string): string {
 }
 
 export function getSide(type: string): Side {
-  if (type === 'explore:answer' || type === 'explore:question') return 'user'
+  if (type === 'explore:answer' || type === 'explore:question' || type === 'explore:task_review') return 'user'
   return 'agent'
 }
 
@@ -56,6 +56,7 @@ export function getLabel(type: string, p: any): string {
     case 'explore:summary_update': return '摘要压缩'
     case 'explore:question': return `提问 (${(p.questions || []).length} 题)`
     case 'explore:answer': return `回答: ${(p.content || '').slice(0, 100)}`
+    case 'explore:task_review': return `任务列表: ${(p.tasks || []).length} 项 — ${p.title || ''}`
     case 'explore:complete': return `完成: ${p.title || ''}`
     default: return type
   }
@@ -69,6 +70,7 @@ export function getColor(type: string): string {
     case 'explore:observation': return 'green'
     case 'explore:summary_update': return 'purple'
     case 'explore:question': case 'explore:answer': return 'amber'
+    case 'explore:task_review': return 'amber'
     case 'explore:complete': return 'emerald'
     case 'explore:status': return 'sky'
     default: return 'gray'
@@ -87,6 +89,7 @@ export function getIcon(type: string): string {
     case 'explore:summary_update': return '📝'
     case 'explore:question': return '❓'
     case 'explore:answer': return '💬'
+    case 'explore:task_review': return '📋'
     case 'explore:complete': return '✅'
     default: return '•'
   }
@@ -105,6 +108,23 @@ export function getDetailText(item: TimelineItem): string {
       }).join('\n')
       return `[${q.header || ''}] ${q.question}\n${opts}`
     }).join('\n\n')
+    case 'explore:task_review': {
+      const tasks = p.tasks || []
+      const groups = new Map<string, any[]>()
+      for (const t of tasks) {
+        const g = t.groupName || t.group_name || '未分组'
+        if (!groups.has(g)) groups.set(g, [])
+        groups.get(g)!.push(t)
+      }
+      const lines: string[] = [`标题: ${p.title || ''}\n`]
+      for (const [name, items] of groups) {
+        lines.push(`## ${name}`)
+        for (const item of items) {
+          lines.push(`  - ${item.title || item.name || ''}${item.description ? ': ' + item.description : ''}`)
+        }
+      }
+      return lines.join('\n')
+    }
     case 'explore:action': return `reasoning: ${p.reasoning}\naction: ${p.action}\nparams: ${JSON.stringify(p.params, null, 2)}`
     case 'explore:summary_update': return `Before:\n${(p.before || '').slice(0, 300)}\n\nAfter:\n${(p.after || '').slice(0, 300)}`
     case 'explore:llm_call': return `phase: ${p.phase}, round: ${p.round ?? '-'}, tools: ${p.tools_count}`
