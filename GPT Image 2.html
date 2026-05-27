@@ -1,0 +1,2600 @@
+<!DOCTYPE html>
+<!-- saved from url=(0039)http://image2.penguinsaichat.dpdns.org/ -->
+<html lang="zh-CN"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPT Image 2 · 文生图 / 图生图工作台</title>
+  <style>
+    :root {
+      --bg: #070a10;
+      --panel: rgba(17, 22, 34, 0.92);
+      --panel-2: rgba(255, 255, 255, 0.045);
+      --line: rgba(255, 255, 255, 0.12);
+      --line-2: rgba(255, 255, 255, 0.18);
+      --text: rgba(255, 255, 255, 0.92);
+      --muted: rgba(255, 255, 255, 0.62);
+      --muted-2: rgba(255, 255, 255, 0.40);
+      --brand: #8b5cff;
+      --brand-2: #00d4ff;
+      --ok: #40d67a;
+      --warn: #ffba4d;
+      --danger: #ff5f73;
+      --radius: 18px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --left-w: 560px;
+      --header-h: 64px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 0%, rgba(139, 92, 255, 0.26), transparent 30rem),
+        radial-gradient(circle at 90% 12%, rgba(0, 212, 255, 0.16), transparent 36rem),
+        radial-gradient(circle at 50% 110%, rgba(64, 214, 122, 0.08), transparent 30rem),
+        linear-gradient(180deg, #0a0d15 0%, #06080d 100%);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.030) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.030) 1px, transparent 1px);
+      background-size: 38px 38px;
+      mask-image: linear-gradient(to bottom, rgba(0,0,0,.92), transparent 75%);
+    }
+
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+
+    .app {
+      position: relative;
+      z-index: 1;
+      height: 100vh;
+      width: calc(100vw - 16px);
+      margin: 0 auto;
+      padding: 8px 0 10px;
+      display: grid;
+      grid-template-rows: var(--header-h) minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 0 8px;
+    }
+
+    .title h1 {
+      margin: 0;
+      font-size: clamp(24px, 2.2vw, 42px);
+      line-height: .95;
+      letter-spacing: -.065em;
+      font-weight: 950;
+    }
+
+    .title p {
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+
+    .pill {
+      height: 34px;
+      padding: 0 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 850;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.065);
+      white-space: nowrap;
+    }
+
+    .layout {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: var(--left-w) 8px minmax(0, 1fr);
+      gap: 8px;
+      padding: 0 8px;
+    }
+
+    .resizer {
+      min-width: 8px;
+      height: 100%;
+      cursor: col-resize;
+      position: relative;
+      border-radius: 999px;
+      background: linear-gradient(to bottom, transparent, rgba(255,255,255,.13), transparent);
+    }
+    .resizer::after {
+      content: "";
+      position: absolute;
+      inset: 38% 2px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.22);
+      box-shadow: 0 0 18px rgba(139,92,255,.3);
+    }
+    .resizer:hover::after, body.dragging .resizer::after { background: linear-gradient(to bottom, var(--brand), var(--brand-2)); }
+
+    .card {
+      min-height: 0;
+      overflow: hidden;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 0 20px 80px rgba(0,0,0,.36);
+      backdrop-filter: blur(18px);
+    }
+
+    .settings { display: grid; grid-template-rows: 46px minmax(0,1fr); }
+    .panel-head {
+      height: 46px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.026);
+    }
+    .panel-head h2 { margin: 0; font-size: 14px; letter-spacing: -.02em; }
+
+    .panel-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 10px 12px 12px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,.22) transparent;
+    }
+    .panel-body::-webkit-scrollbar, .result-grid::-webkit-scrollbar, pre::-webkit-scrollbar, .history-list::-webkit-scrollbar { width: 7px; height: 7px; }
+    .panel-body::-webkit-scrollbar-thumb, .result-grid::-webkit-scrollbar-thumb, pre::-webkit-scrollbar-thumb, .history-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 999px; }
+
+    .section {
+      position: relative;
+      margin-bottom: 10px;
+      padding: 10px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.09);
+      background: var(--panel-2);
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-height: 28px;
+      margin: -2px 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: -.01em;
+    }
+
+    .tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      padding: 5px;
+      margin-bottom: 10px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.052);
+    }
+
+    .tab {
+      border: 0;
+      height: 36px;
+      color: var(--muted);
+      background: transparent;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 900;
+      transition: 140ms ease;
+    }
+    .tab.active {
+      color: white;
+      background: linear-gradient(135deg, rgba(139,92,255,.98), rgba(0,212,255,.82));
+      box-shadow: 0 10px 20px rgba(0,0,0,.24);
+    }
+
+    .notice {
+      padding: 9px 10px;
+      margin-bottom: 10px;
+      border-radius: 13px;
+      border: 1px solid rgba(255,186,77,.24);
+      background: rgba(255,186,77,.08);
+      color: rgba(255,234,202,.95);
+      font-size: 11px;
+      line-height: 1.48;
+    }
+
+    .field { margin-bottom: 9px; }
+    .field:last-child { margin-bottom: 0; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row.three { grid-template-columns: 1fr 1fr 1fr; }
+
+    label.caption {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: .01em;
+    }
+    label.caption span:last-child { color: var(--muted-2); }
+
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: rgba(5,8,14,.80);
+      color: var(--text);
+      border-radius: 12px;
+      outline: none;
+      font-size: 13px;
+      transition: 150ms ease;
+    }
+    input, select { height: 38px; padding: 0 10px; }
+    textarea { resize: vertical; min-height: 84px; padding: 10px; line-height: 1.5; }
+    textarea.prompt { min-height: 148px; }
+    input:focus, select:focus, textarea:focus {
+      border-color: rgba(139,92,255,.78);
+      box-shadow: 0 0 0 3px rgba(139,92,255,.14);
+    }
+
+    .hint { margin: 4px 0 0; color: var(--muted-2); font-size: 11px; line-height: 1.46; }
+    .hint-strong { color: rgba(255,255,255,.72); }
+    code { color: rgba(255,255,255,.84); }
+
+    .drop-zone {
+      position: relative;
+      min-height: 146px;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      text-align: center;
+      border: 1.5px dashed rgba(255,255,255,.24);
+      border-radius: 18px;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(139,92,255,.20), transparent 17rem),
+        rgba(5,8,14,.54);
+      transition: 150ms ease;
+    }
+    .drop-zone:hover, .drop-zone.dragging {
+      border-color: rgba(0,212,255,.76);
+      background:
+        radial-gradient(circle at 50% 0%, rgba(0,212,255,.22), transparent 17rem),
+        rgba(5,8,14,.68);
+      box-shadow: 0 0 0 3px rgba(0,212,255,.08);
+      transform: translateY(-1px);
+    }
+    .drop-zone strong { display: block; margin-bottom: 6px; font-size: 15px; letter-spacing: -.02em; }
+    .drop-zone span { display: block; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .drop-icon {
+      width: 54px;
+      height: 54px;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 9px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: linear-gradient(135deg, rgba(139,92,255,.34), rgba(0,212,255,.20));
+      font-size: 25px;
+    }
+    .file-input { display: none; }
+
+    .thumb-list {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 9px;
+    }
+    .thumb-item {
+      min-width: 0;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.045);
+    }
+    .thumb-img {
+      aspect-ratio: 1 / 1;
+      display: grid;
+      place-items: center;
+      background:
+        linear-gradient(45deg, rgba(255,255,255,.045) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(255,255,255,.045) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, rgba(255,255,255,.045) 75%),
+        linear-gradient(-45deg, transparent 75%, rgba(255,255,255,.045) 75%);
+      background-size: 18px 18px;
+      background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+    }
+    .thumb-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .thumb-meta {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: center;
+      padding: 6px;
+    }
+    .thumb-meta b {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 850;
+    }
+
+    .mini-btn, .ghost, .primary, .secondary {
+      border: 0;
+      font-weight: 900;
+      transition: transform 140ms ease, opacity 140ms ease, box-shadow 140ms ease;
+    }
+    .ghost, .mini-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: rgba(255,255,255,.075);
+    }
+    .ghost { height: 32px; padding: 0 10px; border-radius: 10px; font-size: 12px; }
+    .mini-btn { height: 26px; padding: 0 8px; border-radius: 9px; font-size: 11px; }
+    .ghost:hover, .mini-btn:hover, .primary:hover, .secondary:hover { transform: translateY(-1px); }
+
+    .actions {
+      position: sticky;
+      bottom: -12px;
+      display: grid;
+      grid-template-columns: 1fr 110px;
+      gap: 8px;
+      margin: 8px -12px -12px;
+      padding: 10px 12px 12px;
+      border-top: 1px solid var(--line);
+      background: linear-gradient(to top, rgba(17,22,34,.99), rgba(17,22,34,.92));
+    }
+    .primary, .secondary { height: 42px; border-radius: 13px; color: white; }
+    .primary { background: linear-gradient(135deg, var(--brand), var(--brand-2)); box-shadow: 0 12px 26px rgba(94,79,255,.28); }
+    .secondary { background: rgba(255,255,255,.09); border: 1px solid var(--line); color: var(--text); }
+    .primary:disabled, .secondary:disabled { opacity: .48; cursor: not-allowed; transform: none; box-shadow: none; }
+
+    .output { display: grid; grid-template-rows: 56px minmax(0,1fr) auto; }
+    .status {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 190px;
+      gap: 12px;
+      align-items: center;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.03);
+    }
+    .status-title { margin-bottom: 4px; font-weight: 950; letter-spacing: -.03em; font-size: 14px; }
+    .status-sub { color: var(--muted); font-size: 12px; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .progress-wrap { text-align: right; }
+    .progress-num { color: var(--muted); font-size: 12px; font-weight: 900; margin-bottom: 6px; }
+    .progress { height: 9px; border-radius: 999px; overflow: hidden; border: 1px solid var(--line); background: rgba(255,255,255,.09); }
+    .progress > i { display: block; height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, var(--brand), var(--brand-2), var(--ok)); transition: width 240ms ease; }
+
+    .stage { min-height: 0; overflow: hidden; display: grid; place-items: center; padding: 10px 12px; }
+    .empty {
+      width: min(560px, 100%);
+      padding: 34px 24px;
+      text-align: center;
+      border-radius: 24px;
+      border: 1px solid var(--line);
+      background: radial-gradient(circle at top left, rgba(139,92,255,.16), transparent 16rem), rgba(255,255,255,.035);
+    }
+    .empty-icon {
+      width: 62px;
+      height: 62px;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 12px;
+      border-radius: 21px;
+      border: 1px solid var(--line);
+      background: linear-gradient(135deg, rgba(139,92,255,.28), rgba(0,212,255,.18));
+      font-size: 28px;
+    }
+    .empty h3 { margin: 0 0 8px; font-size: 20px; letter-spacing: -.04em; }
+    .empty p { margin: 0; color: var(--muted); line-height: 1.6; font-size: 13px; }
+
+
+    .result-card { width: 100%; height: 100%; display: none; min-height: 0; }
+    .result-grid {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+      align-content: start;
+      gap: 14px;
+      overflow: auto;
+      padding: 2px 4px 10px 2px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,.22) transparent;
+    }
+    .result-grid.one, .result-grid.two, .result-grid.three, .result-grid.four, .result-grid.many {
+      grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+    }
+    .image-card {
+      position: relative;
+      min-height: 318px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: 52px minmax(188px, 1fr) 48px;
+      border-radius: 22px;
+      border: 1px solid rgba(139, 92, 255, .22);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.035)),
+        rgba(5,8,14,.74);
+      box-shadow: 0 18px 50px rgba(0,0,0,.26);
+      transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+    }
+    .image-card:hover {
+      transform: translateY(-6px) scale(1.012);
+      border-color: rgba(0,212,255,.78);
+      box-shadow:
+        0 24px 64px rgba(0,0,0,.42),
+        0 0 0 1px rgba(0,212,255,.42),
+        0 0 34px rgba(0,212,255,.22);
+    }
+    .image-card.failed { border-color: rgba(255,95,115,.35); }
+    .image-card.done { border-color: rgba(64,214,122,.30); }
+    .image-card.done:hover { border-color: rgba(64,214,122,.72); box-shadow: 0 24px 64px rgba(0,0,0,.42), 0 0 0 1px rgba(64,214,122,.38), 0 0 34px rgba(64,214,122,.20); }
+    .image-card.failed:hover { border-color: rgba(255,95,115,.72); box-shadow: 0 24px 64px rgba(0,0,0,.42), 0 0 0 1px rgba(255,95,115,.38), 0 0 34px rgba(255,95,115,.20); }
+    .card-delete {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 8;
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,.22);
+      background: rgba(7, 11, 18, .84);
+      color: #fff;
+      font-size: 18px;
+      font-weight: 950;
+      line-height: 1;
+      opacity: 0;
+      transform: translateY(-4px) scale(.88);
+      transition: opacity 160ms ease, transform 160ms ease, background 160ms ease, border-color 160ms ease;
+      backdrop-filter: blur(12px);
+    }
+    .card-delete:hover {
+      background: rgba(255, 95, 115, .92);
+      border-color: rgba(255,255,255,.42);
+    }
+    .image-card:hover .card-delete,
+    .image-card:focus-within .card-delete {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    .image-top {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px 8px;
+      border-bottom: 1px solid rgba(255,255,255,.10);
+      background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.018));
+    }
+    .image-title { min-width: 0; }
+    .image-title b {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      letter-spacing: -.02em;
+    }
+    .image-title small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted-2);
+      font-size: 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .status-badge {
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.12);
+      color: var(--muted);
+      background: rgba(255,255,255,.07);
+      font-size: 11px;
+      font-weight: 950;
+      white-space: nowrap;
+    }
+    .image-card.pending .status-badge { color: #d9cfff; background: rgba(139,92,255,.16); border-color: rgba(139,92,255,.34); }
+    .image-card.done .status-badge { color: #caffdc; background: rgba(64,214,122,.13); border-color: rgba(64,214,122,.30); }
+    .image-card.failed .status-badge { color: #ffd4da; background: rgba(255,95,115,.13); border-color: rgba(255,95,115,.32); }
+    .image-preview {
+      width: 100%;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      padding: 10px;
+      border: 0;
+      color: inherit;
+      background:
+        linear-gradient(45deg, rgba(255,255,255,.045) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(255,255,255,.045) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, rgba(255,255,255,.045) 75%),
+        linear-gradient(-45deg, transparent 75%, rgba(255,255,255,.045) 75%);
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    }
+    button.image-preview { cursor: zoom-in; }
+    .image-preview img { max-width: 100%; max-height: 100%; display: block; object-fit: contain; border-radius: 16px; box-shadow: 0 12px 36px rgba(0,0,0,.30); }
+    .image-placeholder {
+      width: 100%;
+      min-height: 176px;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      text-align: center;
+      color: var(--muted);
+      border-radius: 18px;
+      border: 1px dashed rgba(255,255,255,.16);
+      background: radial-gradient(circle at top, rgba(139,92,255,.12), transparent 13rem), rgba(0,0,0,.20);
+    }
+    .spinner {
+      width: 34px;
+      height: 34px;
+      margin: 0 auto 10px;
+      border-radius: 999px;
+      border: 3px solid rgba(255,255,255,.12);
+      border-top-color: rgba(0,212,255,.85);
+      animation: spin 900ms linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .image-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 7px;
+      padding: 7px 8px;
+      border-top: 1px solid rgba(255,255,255,.10);
+      background: rgba(0,0,0,.28);
+    }
+    .image-actions .ghost { height: 30px; padding: 0 9px; font-size: 11px; }
+    .image-error {
+      padding: 0 12px;
+      color: rgba(255,212,218,.95);
+      font-size: 12px;
+      line-height: 1.55;
+      word-break: break-word;
+    }
+    .preview-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: grid;
+      grid-template-rows: 56px minmax(0,1fr);
+      background: rgba(0,0,0,.82);
+      backdrop-filter: blur(12px);
+    }
+    .preview-modal.hidden { display: none !important; }
+    .preview-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 14px;
+      border-bottom: 1px solid rgba(255,255,255,.12);
+      background: rgba(7,10,16,.82);
+    }
+    .preview-toolbar b { font-size: 13px; letter-spacing: -.02em; }
+    .preview-toolbar span { color: var(--muted); font-size: 12px; }
+    .preview-actions { display: flex; gap: 8px; align-items: center; }
+    .preview-viewer {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+    }
+    .preview-viewer img {
+      display: block;
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: calc(100vh - 104px);
+      border-radius: 12px;
+      box-shadow: 0 30px 90px rgba(0,0,0,.52);
+      background: #111;
+    }
+    .preview-viewer img.actual-size {
+      max-width: none;
+      max-height: none;
+    }
+
+    .bottom { border-top: 1px solid var(--line); background: rgba(0,0,0,.2); }
+    details.bottom-section[open] { border-top: 1px solid var(--line); }
+    summary {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 12px;
+      cursor: pointer;
+      user-select: none;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      list-style: none;
+    }
+    summary::-webkit-details-marker { display: none; }
+    .console { padding: 0 12px 12px; }
+    pre {
+      margin: 0;
+      max-height: 120px;
+      overflow: auto;
+      padding: 10px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(5,8,14,.72);
+      color: rgba(255,255,255,.8);
+      font-size: 11px;
+      line-height: 1.48;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .history-list { display: grid; gap: 7px; max-height: 144px; overflow: auto; padding: 0 12px 12px; }
+    .history-item {
+      display: grid;
+      grid-template-columns: 42px minmax(0,1fr) auto;
+      gap: 8px;
+      align-items: center;
+      min-height: 52px;
+      padding: 5px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.045);
+    }
+    .history-item img { width: 42px; height: 42px; object-fit: cover; border-radius: 9px; background: rgba(255,255,255,.08); }
+    .history-item b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 2px; font-size: 12px; }
+    .history-item small { color: var(--muted-2); font-size: 11px; }
+    .hidden { display: none !important; }
+
+    @media (max-width: 1100px) {
+      html, body { overflow: auto; }
+      .app { height: auto; min-height: 100vh; grid-template-rows: auto auto; }
+      header { grid-template-columns: 1fr; }
+      .layout { grid-template-columns: 1fr; }
+      .resizer { display: none; }
+      .output { height: 720px; }
+      .title p { white-space: normal; }
+    }
+    @media (max-width: 680px) {
+      .app { width: calc(100vw - 10px); }
+      .row, .row.three { grid-template-columns: 1fr; }
+      .status { grid-template-columns: 1fr; padding: 10px 12px; }
+      .thumb-list { grid-template-columns: repeat(2, minmax(0,1fr)); }
+      .result-grid.two, .result-grid.three, .result-grid.four { grid-template-columns: 1fr; }
+      .actions { grid-template-columns: 1fr; }
+    }
+  </style>
+<style id="pp_style">:root {
+  --color-primary: #306eff;
+  --color-primary-hover: #4a80ff;
+  --color-primary-active: #175cff;
+  --color-primary-disabled: rgba(48, 110, 255, 0.5);
+  --el-color-error: #ff663b;
+  --transition: 0.2s cubic-bezier(0.645, 0.045, 0.355, 1);
+}
+#no-select {
+  -webkit-touch-callout: none;
+  /* iOS Safari */
+  -webkit-user-select: none;
+  /* Safari */
+  -moz-user-select: none;
+  /* Old versions of Firefox */
+  -ms-user-select: none;
+  /* Internet Explorer/Edge */
+  user-select: none;
+}
+a.pp-restore-btn {
+  --size: 24px;
+  height: var(--size) !important;
+  width: var(--size) !important;
+  display: inline-block;
+  vertical-align: middle !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  z-index: 999 !important;
+  cursor: pointer !important;
+  background-color: transparent !important;
+  position: relative;
+}
+a.pp-restore-btn::after,
+a.pp-restore-btn::before {
+  display: none;
+}
+a.pp-restore-btn div {
+  margin: 0 !important;
+}
+a.pp-restore-btn::before,
+a.pp-restore-btn::after {
+  display: none !important;
+}
+a.pp-restore-btn:hover .pp-tip {
+  display: block;
+}
+a.pp-restore-btn:hover .pp-btn {
+  background-image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjgiIGhlaWdodD0iMjgiIHZpZXdCb3g9IjAgMCAyOCAyOCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTAgNEMwIDEuNzkwODYgMS43OTA4NiAwIDQgMEgyOFYyOEg0QzEuNzkwODYgMjggMCAyNi4yMDkxIDAgMjRWNFoiIGZpbGw9IiMzMDZFRkYiLz4KPHBhdGggb3BhY2l0eT0iMC45ODU2MDEiIGZpbGwtcnVsZT0iZXZlbm9kZCIgY2xpcC1ydWxlPSJldmVub2RkIiBkPSJNMTUuNzI0MiA4LjYyMDM4QzE1LjQ4NDggOC41OTAwOCAxNS4yODEyIDguNDMwNzkgMTUuMTk0MyA4LjIwNTYyTDE0LjQ3NDIgNi4zNDExNUMxNC40MTQ2IDYuMTg2ODMgMTQuNTQxMiA2LjAyNDc0IDE0LjcwNTQgNi4wNDUxN0wyMi4yODM0IDYuOTg4MzhDMjIuNjcyOCA3LjAzNjg1IDIzLjAwNjQgNy4yOTAxNiAyMy4xNTc3IDcuNjUyMjNMMjQgOS42Njc2OEwxNS43MjQyIDguNjIwMzhaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBvcGFjaXR5PSIwLjk4NTYwMSIgZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xMi4yOTE0IDguNjIwMzhDMTIuNTMwOSA4LjU5MDA4IDEyLjczNDQgOC40MzA3OSAxMi44MjE0IDguMjA1NjJMMTMuNTQxNCA2LjM0MTE1QzEzLjYwMSA2LjE4NjgzIDEzLjQ3NDQgNi4wMjQ3NCAxMy4zMTAzIDYuMDQ1MTdMNS43MzIyNiA2Ljk4ODM4QzUuMzQyODUgNy4wMzY4NSA1LjAwOTIyIDcuMjkwMTYgNC44NTc5MSA3LjY1MjIzTDQuMDE1NjIgOS42Njc2OEw3LjQ0MzQzIDkuMjMzODlMMTIuMjkxNCA4LjYyMDM4WiIgZmlsbD0id2hpdGUiLz4KPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik00IDkuNjY3NzJIMjRWMjAuNjUyMUMyNCAyMS44ODc1IDIyLjk5ODUgMjIuODg4OSAyMS43NjMyIDIyLjg4ODlINi4yMzY4M0M1LjAwMTQ2IDIyLjg4ODkgNCAyMS44ODc1IDQgMjAuNjUyMVY5LjY2NzcyWiIgZmlsbD0id2hpdGUiLz4KPHBhdGggZD0iTTExLjc3NzMgMTkuNTU1NUMxMS43NzczIDE5LjU1NTUgMTIuODc3MSAyMCAxMy45ODkyIDIwQzE1LjEwMTQgMjAgMTYuMjIxOCAxOS41NTU1IDE2LjIyMTggMTkuNTU1NSIgc3Ryb2tlPSIjMzA2RUZGIiBzdHJva2Utd2lkdGg9IjEuMTE4NDIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8cGF0aCBkPSJNMTAuNDQ1NyAxMy45OTk5VjE1Ljc3NzciIHN0cm9rZT0iIzMwNkVGRiIgc3Ryb2tlLXdpZHRoPSIxLjc4OTQ3IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTE3LjU1NTEgMTMuOTk5OVYxNS43Nzc3IiBzdHJva2U9IiMzMDZFRkYiIHN0cm9rZS13aWR0aD0iMS43ODk0NyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPgo=);
+}
+a.pp-restore-btn .pp-btn {
+  height: var(--size);
+  width: var(--size);
+  background: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjgiIGhlaWdodD0iMjgiIHZpZXdCb3g9IjAgMCAyOCAyOCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3QgeD0iMC4yNSIgeT0iMC4yNSIgd2lkdGg9IjI3LjUiIGhlaWdodD0iMjcuNSIgcng9IjMuNzUiIGZpbGw9IndoaXRlIi8+CjxyZWN0IHg9IjAuMjUiIHk9IjAuMjUiIHdpZHRoPSIyNy41IiBoZWlnaHQ9IjI3LjUiIHJ4PSIzLjc1IiBmaWxsPSIjMzA2RUZGIiBmaWxsLW9wYWNpdHk9IjAuMSIvPgo8cmVjdCB4PSIwLjI1IiB5PSIwLjI1IiB3aWR0aD0iMjcuNSIgaGVpZ2h0PSIyNy41IiByeD0iMy43NSIgc3Ryb2tlPSIjMzA2RUZGIiBzdHJva2Utd2lkdGg9IjAuNSIvPgo8cGF0aCBkPSJNMCA0QzAgMS43OTA4NiAxLjc5MDg2IDAgNCAwSDI0QzI2LjIwOTEgMCAyOCAxLjc5MDg2IDI4IDRWMjRDMjggMjYuMjA5MSAyNi4yMDkxIDI4IDI0IDI4SDRDMS43OTA4NiAyOCAwIDI2LjIwOTEgMCAyNFY0WiIgZmlsbD0iIzMwNkVGRiIvPgo8cGF0aCBvcGFjaXR5PSIwLjk4NTYwMSIgZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xNS43MjQyIDguNjIwMzhDMTUuNDg0OCA4LjU5MDA4IDE1LjI4MTIgOC40MzA3OSAxNS4xOTQzIDguMjA1NjJMMTQuNDc0MiA2LjM0MTE1QzE0LjQxNDYgNi4xODY4MyAxNC41NDEyIDYuMDI0NzQgMTQuNzA1NCA2LjA0NTE3TDIyLjI4MzQgNi45ODgzOEMyMi42NzI4IDcuMDM2ODUgMjMuMDA2NCA3LjI5MDE2IDIzLjE1NzcgNy42NTIyM0wyNCA5LjY2NzY4TDE1LjcyNDIgOC42MjAzOFoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIG9wYWNpdHk9IjAuOTg1NjAxIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiIGNsaXAtcnVsZT0iZXZlbm9kZCIgZD0iTTEyLjI5MTQgOC42MjAzOEMxMi41MzA5IDguNTkwMDggMTIuNzM0NCA4LjQzMDc5IDEyLjgyMTQgOC4yMDU2MkwxMy41NDE0IDYuMzQxMTVDMTMuNjAxIDYuMTg2ODMgMTMuNDc0NCA2LjAyNDc0IDEzLjMxMDMgNi4wNDUxN0w1LjczMjI2IDYuOTg4MzhDNS4zNDI4NSA3LjAzNjg1IDUuMDA5MjIgNy4yOTAxNiA0Ljg1NzkxIDcuNjUyMjNMNC4wMTU2MiA5LjY2NzY4TDcuNDQzNDMgOS4yMzM4OUwxMi4yOTE0IDguNjIwMzhaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBmaWxsLXJ1bGU9ImV2ZW5vZGQiIGNsaXAtcnVsZT0iZXZlbm9kZCIgZD0iTTQgOS42Njc3MkgyNFYyMC42NTIxQzI0IDIxLjg4NzUgMjIuOTk4NSAyMi44ODg5IDIxLjc2MzIgMjIuODg4OUg2LjIzNjgzQzUuMDAxNDYgMjIuODg4OSA0IDIxLjg4NzUgNCAyMC42NTIxVjkuNjY3NzJaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBkPSJNMTEuNzc3MyAxOS41NTU1QzExLjc3NzMgMTkuNTU1NSAxMi44NzcxIDIwIDEzLjk4OTIgMjBDMTUuMTAxNCAyMCAxNi4yMjE4IDE5LjU1NTUgMTYuMjIxOCAxOS41NTU1IiBzdHJva2U9IiMzMDZFRkYiIHN0cm9rZS13aWR0aD0iMS4xMTg0MiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxwYXRoIGQ9Ik0xMC40NDU3IDEzLjk5OTlWMTUuNzc3NyIgc3Ryb2tlPSIjMzA2RUZGIiBzdHJva2Utd2lkdGg9IjEuNzg5NDciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8cGF0aCBkPSJNMTcuNTU1MSAxMy45OTk5VjE1Ljc3NzciIHN0cm9rZT0iIzMwNkVGRiIgc3Ryb2tlLXdpZHRoPSIxLjc4OTQ3IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPC9zdmc+Cg==) no-repeat center / 100%;
+}
+a.pp-restore-btn .pp-tip {
+  -webkit-touch-callout: none;
+  /* iOS Safari */
+  -webkit-user-select: none;
+  /* Safari */
+  -moz-user-select: none;
+  /* Old versions of Firefox */
+  -ms-user-select: none;
+  /* Internet Explorer/Edge */
+  user-select: none;
+  background: rgba(38, 38, 38, 0.9);
+  border-bottom-right-radius: 4px;
+  border-top-right-radius: 4px;
+  box-sizing: border-box;
+  color: #fff;
+  display: none;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 400;
+  height: var(--size);
+  line-height: var(--size);
+  padding: 0 4px !important;
+  position: fixed;
+  z-index: 9999999999;
+  white-space: nowrap;
+}
+#pp_context_menu,
+#pp .context-menu {
+  position: fixed;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  padding: 6px 8px 8px;
+  margin: 0;
+  z-index: 9999999999;
+}
+#pp_context_menu li,
+#pp .context-menu li {
+  cursor: pointer;
+  border-radius: 6px;
+  color: #000;
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 400;
+  height: 40px;
+  line-height: 40px;
+  padding: 0 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  list-style: none;
+  white-space: nowrap;
+}
+#pp_context_menu li.title,
+#pp .context-menu li.title {
+  cursor: default;
+  color: #666;
+  font-size: 12px;
+  height: 32px;
+  line-height: 32px;
+  position: relative;
+  margin-bottom: 14px;
+}
+#pp_context_menu li.title:hover,
+#pp .context-menu li.title:hover {
+  background: unset;
+}
+#pp_context_menu li.title::after,
+#pp .context-menu li.title::after {
+  content: '';
+  position: absolute;
+  display: block;
+  height: 1px;
+  inset: auto -8px -6px;
+  background: rgba(0, 0, 0, 0.1);
+}
+#pp_context_menu li:hover,
+#pp .context-menu li:hover {
+  background: #f2f3f4;
+}
+#pp_landing_page {
+  display: none;
+  position: fixed;
+  z-index: 9999999999;
+  top: 6px;
+  right: 6px;
+  width: 380px;
+  min-height: 504px;
+  max-height: calc(100vh - 12px);
+  border: none;
+  border-radius: 16px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+  background: #fff;
+  outline: 0.5px solid #e5e5e5;
+}
+#pp_close_landing_page {
+  display: none;
+  position: fixed;
+  z-index: 9999999999;
+  top: 18px;
+  right: 18px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  color: #ddd;
+}
+#pp_close_landing_page:hover {
+  color: #fff;
+}
+#pp_modal {
+  width: 640px;
+  background: #fff;
+  border-radius: 16px;
+  padding: 32px;
+  border: none;
+  top: 50%;
+  left: 50%;
+  margin: 0;
+  transform: translate(-50%, -50%);
+  font-style: normal !important;
+}
+#pp_modal_wrap {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 9999999999;
+}
+#pp_modal_wrap * {
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, sans-serif, apple color emoji, segoe ui emoji, Segoe UI Symbol, noto color emoji;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  font-variant: tabular-nums;
+  font-feature-settings: 'tnum';
+  transition: all var(--transition);
+}
+#pp_modal_wrap a {
+  display: inline-block;
+  text-decoration: none !important;
+  cursor: pointer !important;
+}
+#pp_modal .pp_header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+#pp_modal_title {
+  font-weight: 600;
+  font-size: 18px;
+  line-height: 27px;
+}
+#pp_modal_close {
+  width: 24px;
+  height: 24px;
+  background: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjYiIHZpZXdCb3g9IjAgMCAyNCAyNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xMy40MDgzIDE0LjEzNzhMMTcuMjkxMSAxOC4yMjZDMTcuNjgxNiAxOC42Mzc5IDE3LjY4MTYgMTkuMzA1NyAxNy4yOTExIDE5LjcxNzZDMTYuOTAwNiAyMC4xMjk2IDE2LjI2NzQgMjAuMTI5NiAxNS44NzY5IDE5LjcxNzZMMTEuOTk1NCAxNS42MzA3TDguMTE5NDMgMTkuNzI2QzcuNzI4OTEgMjAuMTM4IDcuMDk1NzQgMjAuMTM4IDYuNzA1MjIgMTkuNzI2QzYuMzE0NjkgMTkuMzE0MSA2LjMxNDY5IDE4LjY0NjMgNi43MDUyMiAxOC4yMzQ0TDEwLjU3OTkgMTQuMTQwNEw2LjY5NzI4IDEwLjA1MjNDNi4zMDY3NiA5LjY0MDM1IDYuMzA2NzYgOC45NzI1MSA2LjY5NzI4IDguNTYwNkM3LjA4NzgxIDguMTQ4NjkgNy43MjA5NyA4LjE0ODY5IDguMTExNSA4LjU2MDZMMTEuOTkyOSAxMi42NDc0TDE1Ljg2ODggOC41NTIxQzE2LjI1OTMgOC4xNDAxOSAxNi44OTI1IDguMTQwMTkgMTcuMjgzIDguNTUyMUMxNy42NzM1IDguOTY0MDEgMTcuNjczNSA5LjYzMTg0IDE3LjI4MyAxMC4wNDM4TDEzLjQwODMgMTQuMTM3OFoiIGZpbGw9IiM2NjY2NjYiLz4KPC9zdmc+Cg==) no-repeat center / cover;
+}
+#pp_modal_body {
+  padding: 24px 0 32px;
+}
+#pp_modal_input {
+  width: 100%;
+  background: #f2f3f4;
+  border-radius: 4px;
+  font-weight: 400;
+  font-size: 14px;
+  padding: 12px 16px;
+  border: none;
+  resize: none;
+  outline: none;
+}
+#pp_modal_valid_message {
+  overflow: hidden;
+  -ms-text-overflow: ellipsis;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ff663b;
+  position: absolute;
+  line-height: 26px;
+  height: 26px;
+  max-width: 576px;
+}
+#pp_modal .pp_footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+#pp_modal_cancel {
+  font-weight: 400;
+  font-size: 14px;
+  color: #000;
+  padding: 0 16px;
+  line-height: 36px;
+  height: 36px;
+}
+#pp_modal_cancel:hover {
+  background: #f5f7fa;
+}
+#pp_modal_confirm {
+  min-width: 120px;
+  line-height: 36px;
+  height: 36px;
+  padding: 0 16px;
+  font-weight: 600;
+  font-size: 14px;
+  color: #fff;
+  border-radius: 4px;
+  text-align: center;
+  display: flex !important;
+  align-items: center;
+  margin-left: 16px;
+  background: var(--color-primary);
+}
+#pp_modal_confirm:hover {
+  background: var(--color-primary-hover);
+}
+#pp_modal_confirm:active {
+  background: var(--color-primary-active);
+}
+#pp_modal_confirm.disabled,
+#pp_modal_confirm:disabled {
+  background: var(--color-primary-disabled);
+  opacity: 0.5;
+}
+#pp_modal_confirm_icon {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  background: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjUiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNSAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xMS41IDExVjVDMTEuNSA0LjQ0NzcyIDExLjk0NzcgNCAxMi41IDRDMTMuMDUyMyA0IDEzLjUgNC40NDc3MiAxMy41IDVWMTFIMTkuNUMyMC4wNTIzIDExIDIwLjUgMTEuNDQ3NyAyMC41IDEyQzIwLjUgMTIuNTUyMyAyMC4wNTIzIDEzIDE5LjUgMTNIMTMuNVYxOUMxMy41IDE5LjU1MjMgMTMuMDUyMyAyMCAxMi41IDIwQzExLjk0NzcgMjAgMTEuNSAxOS41NTIzIDExLjUgMTlWMTNINS41QzQuOTQ3NzIgMTMgNC41IDEyLjU1MjMgNC41IDEyQzQuNSAxMS40NDc3IDQuOTQ3NzIgMTEgNS41IDExSDExLjVaIiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4K) no-repeat center / cover;
+}
+#pp_float_ball {
+  position: fixed;
+  z-index: 9999999999;
+  right: 0;
+  bottom: 20%;
+  display: flex;
+  flex-direction: column-reverse;
+}
+#pp_float_ball_main:hover {
+  width: 64px;
+  border: 0;
+  background: var(--color-primary) url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggb3BhY2l0eT0iMC45ODU2MDEiIGZpbGwtcnVsZT0iZXZlbm9kZCIgY2xpcC1ydWxlPSJldmVub2RkIiBkPSJNMTQuMDY5MSA1LjMyNjFDMTMuNzgxNyA1LjI4OTczIDEzLjUzNzUgNS4wOTg1OSAxMy40MzMxIDQuODI4MzhMMTIuNTY5IDIuNTkxMDJDMTIuNDk3NSAyLjQwNTg0IDEyLjY0OTQgMi4yMTEzMyAxMi44NDY0IDIuMjM1ODRMMjEuOTQgMy4zNjc3QzIyLjQwNzMgMy40MjU4NiAyMi44MDc3IDMuNzI5ODMgMjIuOTg5MyA0LjE2NDMxTDI0IDYuNTgyODVMMTQuMDY5MSA1LjMyNjFaIiBmaWxsPSJ3aGl0ZSIvPgo8cGF0aCBvcGFjaXR5PSIwLjk4NTYwMSIgZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik05Ljk1MjQgNS4zMjYxQzEwLjIzOTggNS4yODk3MyAxMC40ODQgNS4wOTg1OSAxMC41ODg0IDQuODI4MzhMMTEuNDUyNCAyLjU5MTAyQzExLjUyNCAyLjQwNTg0IDExLjM3MjEgMi4yMTEzMyAxMS4xNzUxIDIuMjM1ODRMMi4wODE0NSAzLjM2NzdDMS42MTQxNiAzLjQyNTg2IDEuMjEzOCAzLjcyOTgzIDEuMDMyMjIgNC4xNjQzMUwwLjAyMTQ4NDQgNi41ODI4NUw0LjEzNDg1IDYuMDYyMzFMOS45NTI0IDUuMzI2MVoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGZpbGwtcnVsZT0iZXZlbm9kZCIgY2xpcC1ydWxlPSJldmVub2RkIiBkPSJNMCA2LjU4MzVIMjRWMTkuNzY0OEMyNCAyMS4yNDcyIDIyLjc5ODIgMjIuNDQ5IDIxLjMxNTggMjIuNDQ5SDIuNjg0MkMxLjIwMTc2IDIyLjQ0OSAwIDIxLjI0NzIgMCAxOS43NjQ4VjYuNTgzNVoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik05LjMzMjAzIDE4LjQ0NzNDOS4zMzIwMyAxOC40NDczIDEwLjY1MTcgMTguOTgwNiAxMS45ODYzIDE4Ljk4MDZDMTMuMzIwOSAxOC45ODA2IDE0LjY2NTQgMTguNDQ3MyAxNC42NjU0IDE4LjQ0NzMiIHN0cm9rZT0iIzMwNmVmZiIgc3Ryb2tlLXdpZHRoPSIxLjM0MjEiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8cGF0aCBkPSJNNy43MzQ0NiAxMS43ODA2VjEzLjkxMzkiIHN0cm9rZT0iIzMwNmVmZiIgc3Ryb2tlLXdpZHRoPSIyLjE0NzM2IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTE2LjI1OTkgMTEuNzgwNlYxMy45MTM5IiBzdHJva2U9IiMzMDZlZmYiIHN0cm9rZS13aWR0aD0iMi4xNDczNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+Cjwvc3ZnPgo=) no-repeat center / 24px;
+}
+#pp_float_ball_main {
+  position: relative;
+  cursor: pointer;
+  width: 50px;
+  height: 44px;
+  box-shadow: 0 8px 16px 0 rgba(8, 6, 33, 0.1);
+  border-radius: 44px 0 0 44px;
+  border: 0.5px solid #0000001a;
+  box-sizing: border-box;
+  background: #fff url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggb3BhY2l0eT0iMC45ODU2MDEiIGZpbGwtcnVsZT0iZXZlbm9kZCIgY2xpcC1ydWxlPSJldmVub2RkIiBkPSJNMTQuMDY5MSA1LjMyNjM0QzEzLjc4MTcgNS4yODk5OCAxMy41Mzc1IDUuMDk4ODQgMTMuNDMzMSA0LjgyODYzTDEyLjU2OSAyLjU5MTI2QzEyLjQ5NzUgMi40MDYwOCAxMi42NDk0IDIuMjExNTcgMTIuODQ2NCAyLjIzNjA5TDIxLjk0IDMuMzY3OTRDMjIuNDA3MyAzLjQyNjExIDIyLjgwNzcgMy43MzAwNyAyMi45ODkzIDQuMTY0NTZMMjQgNi41ODMxTDE0LjA2OTEgNS4zMjYzNFoiIGZpbGw9IiMzMDZlZmYiLz4KPHBhdGggb3BhY2l0eT0iMC45ODU2MDEiIGZpbGwtcnVsZT0iZXZlbm9kZCIgY2xpcC1ydWxlPSJldmVub2RkIiBkPSJNOS45NTI0IDUuMzI2MzRDMTAuMjM5OCA1LjI4OTk4IDEwLjQ4NCA1LjA5ODg0IDEwLjU4ODQgNC44Mjg2M0wxMS40NTI0IDIuNTkxMjZDMTEuNTI0IDIuNDA2MDggMTEuMzcyMSAyLjIxMTU3IDExLjE3NTEgMi4yMzYwOUwyLjA4MTQ1IDMuMzY3OTRDMS42MTQxNiAzLjQyNjExIDEuMjEzOCAzLjczMDA3IDEuMDMyMjIgNC4xNjQ1NkwwLjAyMTQ4NDQgNi41ODMxTDQuMTM0ODUgNi4wNjI1NUw5Ljk1MjQgNS4zMjYzNFoiIGZpbGw9IiMzMDZlZmYiLz4KPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0wIDYuNTgzNzRIMjRWMTkuNzY1QzI0IDIxLjI0NzQgMjIuNzk4MiAyMi40NDkyIDIxLjMxNTggMjIuNDQ5MkgyLjY4NDJDMS4yMDE3NiAyMi40NDkyIDAgMjEuMjQ3NCAwIDE5Ljc2NVY2LjU4Mzc0WiIgZmlsbD0iIzMwNmVmZiIvPgo8cGF0aCBkPSJNOS4zMzIwMyAxOC40NDc4QzkuMzMyMDMgMTguNDQ3OCAxMC42NTE3IDE4Ljk4MTEgMTEuOTg2MyAxOC45ODExQzEzLjMyMDkgMTguOTgxMSAxNC42NjU0IDE4LjQ0NzggMTQuNjY1NCAxOC40NDc4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjEuMzQyMSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CjxwYXRoIGQ9Ik03LjczNDQ2IDExLjc4MDZWMTMuOTEzOSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyLjE0NzM2IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTE2LjI1OTkgMTEuNzgwNlYxMy45MTM5IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIuMTQ3MzYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K) no-repeat center / 24px;
+  transition: all var(--transition);
+}
+#pp_float_ball_tip {
+  display: none;
+  z-index: -1;
+  position: absolute;
+  background-color: #457cff;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 200px;
+  right: 82px;
+  border-radius: 8px;
+  padding: 24px 12px;
+  text-align: center;
+}
+#pp_float_ball_tip_close {
+  position: absolute;
+  display: block;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
+  mask: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjYiIHZpZXdCb3g9IjAgMCAyNCAyNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0xMy40MDgzIDE0LjEzNzhMMTcuMjkxMSAxOC4yMjZDMTcuNjgxNiAxOC42Mzc5IDE3LjY4MTYgMTkuMzA1NyAxNy4yOTExIDE5LjcxNzZDMTYuOTAwNiAyMC4xMjk2IDE2LjI2NzQgMjAuMTI5NiAxNS44NzY5IDE5LjcxNzZMMTEuOTk1NCAxNS42MzA3TDguMTE5NDMgMTkuNzI2QzcuNzI4OTEgMjAuMTM4IDcuMDk1NzQgMjAuMTM4IDYuNzA1MjIgMTkuNzI2QzYuMzE0NjkgMTkuMzE0MSA2LjMxNDY5IDE4LjY0NjMgNi43MDUyMiAxOC4yMzQ0TDEwLjU3OTkgMTQuMTQwNEw2LjY5NzI4IDEwLjA1MjNDNi4zMDY3NiA5LjY0MDM1IDYuMzA2NzYgOC45NzI1MSA2LjY5NzI4IDguNTYwNkM3LjA4NzgxIDguMTQ4NjkgNy43MjA5NyA4LjE0ODY5IDguMTExNSA4LjU2MDZMMTEuOTkyOSAxMi42NDc0TDE1Ljg2ODggOC41NTIxQzE2LjI1OTMgOC4xNDAxOSAxNi44OTI1IDguMTQwMTkgMTcuMjgzIDguNTUyMUMxNy42NzM1IDguOTY0MDEgMTcuNjczNSA5LjYzMTg0IDE3LjI4MyAxMC4wNDM4TDEzLjQwODMgMTQuMTM3OFoiIGZpbGw9IiM2NjY2NjYiLz4KPC9zdmc+Cg==) no-repeat center / cover;
+  background: #fff;
+}
+#pp_float_ball_tip_icon {
+  display: inline-block;
+  width: 54px;
+  height: 54px;
+  background: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTMiIGhlaWdodD0iNTQiIHZpZXdCb3g9IjAgMCA1MyA1NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik0yMy40MzEgMTguMzQ4MkMyMy44NjEyIDE4LjI5NDIgMjQuMjI3MiAxOC4wMDg4IDI0LjM4NDUgMTcuNjA0N0wyNS43MTE0IDE0LjE5NDhDMjUuODE5NCAxMy45MTcyIDI1LjU5MTkgMTMuNjI0OCAyNS4yOTYzIDEzLjY2MTNMMTEuMzYyNyAxNS4zODI1QzEwLjY2MzMgMTUuNDY4OSAxMC4wNjM0IDE1LjkyMjcgOS43ODk5MSAxNi41NzIyTDguMjM4NjcgMjAuMjU2MUg4LjIwODk4VjQwLjc3ODNDOC4yMDg5OCA0Mi43MzUgOS43OTUyOCA0NC4zMjEzIDExLjc1MjEgNDQuMzIxM0g0MS4zNDU3QzQzLjMwMjUgNDQuMzIxMyA0NC44ODg4IDQyLjczNSA0NC44ODg4IDQwLjc3ODNWMjAuMjU2M0w0NC44ODk3IDIwLjI1NjRMNDMuMzM4MyAxNi41NzIyQzQzLjA2NDggMTUuOTIyNyA0Mi40NjUgMTUuNDY4OSA0MS43NjU1IDE1LjM4MjVMMjcuODMyIDEzLjY2MTNDMjcuNTM2MyAxMy42MjQ4IDI3LjMwODggMTMuOTE3MiAyNy40MTY4IDE0LjE5NDhMMjguNzQzOCAxNy42MDQ3QzI4LjkwMSAxOC4wMDg4IDI5LjI2NyAxOC4yOTQyIDI5LjY5NzIgMTguMzQ4Mkw0NC44ODc2IDIwLjI1NjFIOC4yNDA2TDE0LjUyNTEgMTkuNDY2OEwyMy40MzEgMTguMzQ4MloiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGZpbGwtcnVsZT0iZXZlbm9kZCIgY2xpcC1ydWxlPSJldmVub2RkIiBkPSJNMjIuODg2MSAzNy4wOTY5QzIyLjcyNjEgMzYuNjc4OSAyMy4wNTY4IDM2LjI4MTIgMjMuNTA0MyAzNi4yODEySDI5LjQ5MjJDMjkuOTM5NyAzNi4yODEyIDMwLjI3MDQgMzYuNjc4OSAzMC4xMTA0IDM3LjA5NjlDMjkuNzI4MSAzOC4wOTU2IDI4Ljc2NzcgMzkuNjU2MiAyNi40OTgzIDM5LjY1NjJDMjQuMjI4OCAzOS42NTYyIDIzLjI2ODQgMzguMDk1NiAyMi44ODYxIDM3LjA5NjlaIiBmaWxsPSIjMzA2ZWZmIi8+CjxwYXRoIGQ9Ik0yMC4wMjc1IDI4LjE0MjJWMzEuMzc4MSIgc3Ryb2tlPSIjMzA2ZWZmIiBzdHJva2Utd2lkdGg9IjMuMjE5MzkiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8cGF0aCBkPSJNMzMuMDcwNSAyOC4xNDIyVjMxLjM3ODEiIHN0cm9rZT0iIzMwNmVmZiIgc3Ryb2tlLXdpZHRoPSIzLjIxOTM5IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPHBhdGggZD0iTTAuODI4MTI1IDI4LjgwNzZDMC44MjgxMjUgMjQuNzY1MiA0LjEwNTA5IDIxLjQ4ODMgOC4xNDc0NCAyMS40ODgzSDguMjM4MTlWMzYuMTI2OUg4LjE0NzQ0QzQuMTA1MDkgMzYuMTI2OSAwLjgyODEyNSAzMi44NDk5IDAuODI4MTI1IDI4LjgwNzZaIiBmaWxsPSIjMjgzNjU3Ii8+CjxwYXRoIGQ9Ik01Mi4xNjggMjguODA3NkM1Mi4xNjggMjQuNzY1MiA0OC44OTEgMjEuNDg4MyA0NC44NDg3IDIxLjQ4ODNINDQuNzU3OVYzNi4xMjY5SDQ0Ljg0ODdDNDguODkxIDM2LjEyNjkgNTIuMTY4IDMyLjg0OTkgNTIuMTY4IDI4LjgwNzZaIiBmaWxsPSIjMjgzNjU3Ii8+CjxwYXRoIGQ9Ik02Ljg4MDg2IDM0LjQ0ODdDNi44ODA4NiAzNC40NDg3IDEwLjk3OTYgMzkuMDYzMSAxNS4xODEgMzkuMDYzMSIgc3Ryb2tlPSIjMjgzNjU3IiBzdHJva2Utd2lkdGg9IjEuODI5ODMiLz4KPGVsbGlwc2UgY3g9IjE1LjY0OCIgY3k9IjM5LjA1NDIiIHJ4PSIxLjQ4MjAxIiByeT0iMS40NjM4NiIgZmlsbD0iIzI4MzY1NyIvPgo8cGF0aCBkPSJNNi44ODA4NiAyMi42MDUxQzYuODgwODYgMjIuNjA1MSA4LjIwODYyIDguNzMzNDIgMjYuNTQ4NSA5LjMwMzc3QzQ0Ljg4ODUgOS44NzQxMyA0NiAyMi4xNzggNDYgMjIuMTc4IiBzdHJva2U9IiMyODM2NTciIHN0cm9rZS13aWR0aD0iMi4xOTU3OSIvPgo8L3N2Zz4K) no-repeat center / 100%;
+}
+#pp_float_ball_tip_desc {
+  font-size: 16px;
+  color: #fff;
+  font-weight: 600;
+}
+#pp_float_ball_tip_btn {
+  margin-top: 12px;
+  background: #fff;
+  padding: 4px 12px;
+  line-height: 22px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+  color: var(--color-primary);
+  text-decoration: none;
+  display: inline-block;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+#pp_float_ball_tip_btn:hover {
+  background: #ecf2ff;
+}
+#pp_float_ball_tip::after {
+  content: '';
+  position: absolute;
+  border-radius: 0 2px;
+  width: 14px;
+  height: 14px;
+  display: block;
+  background: #457cff;
+  top: 50%;
+  transform: translateY(-50%) rotate(45deg);
+  right: -7px;
+}
+#pp_float_ball_context_menu {
+  position: fixed;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  padding: 6px 8px 8px;
+  margin: 0;
+  z-index: 9999999999;
+  display: none;
+}
+#pp_float_ball_context_menu li {
+  cursor: pointer;
+  border-radius: 6px;
+  color: #000;
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 400;
+  height: 40px;
+  line-height: 40px;
+  padding: 0 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  list-style: none;
+  white-space: nowrap;
+}
+#pp_float_ball_context_menu li.title {
+  cursor: default;
+  color: #666;
+  font-size: 12px;
+  height: 32px;
+  line-height: 32px;
+  position: relative;
+  margin-bottom: 14px;
+}
+#pp_float_ball_context_menu li.title:hover {
+  background: unset;
+}
+#pp_float_ball_context_menu li.title::after {
+  content: '';
+  position: absolute;
+  display: block;
+  height: 1px;
+  inset: auto -8px -6px;
+  background: rgba(0, 0, 0, 0.1);
+}
+#pp_float_ball_context_menu li:hover {
+  background: #f2f3f4;
+}
+#pp_alert {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  position: fixed;
+  line-height: 1.2;
+  box-sizing: border-box;
+  padding: 12px 24px;
+  background: var(--color-primary);
+  border-radius: 4px;
+  color: #fff;
+  font-size: 14px;
+  gap: 8px;
+  box-shadow: 0 0 12px 0 #7fa4dc;
+}
+</style></head>
+<body>
+  <main class="app">
+    <header>
+      <div class="title">
+        <h1>GPT Image 2 工作台</h1>
+        <p>文生图 POST /v1/images/generations · 图生图 POST /v1/images/edits · 所有分辨率统一使用 gpt-image-2</p>
+      </div>
+    </header>
+
+    <section class="layout">
+      <aside class="card settings">
+        <div class="panel-head">
+          <h2>生成参数</h2>
+          <button class="ghost" id="clearBtn" type="button">清空</button>
+        </div>
+
+        <div class="panel-body">
+          <section class="section">
+            <div class="section-head"><span>基础设置</span><span>Images API</span></div>
+            <div class="tabs">
+              <button class="tab active" type="button" data-mode="txt2img">文生图</button>
+              <button class="tab" type="button" data-mode="img2img">图生图</button>
+            </div>
+            <div class="field">
+              <label class="caption">API Key <span>Authorization: Bearer</span></label>
+              <input id="apiKey" type="password" placeholder="输入你的 API Key" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="caption">模型 <span>固定 model</span></label>
+              <input id="model" type="text" value="gpt-image-2" readonly="">
+              <p class="hint">当前分辨率将使用 <code>gpt-image-2</code>。</p>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><span>请求参数</span><span>单张链路，多张循环</span></div>
+            <div class="row">
+              <div class="field">
+                <label class="caption">生成数量 <span>前端循环次数</span></label>
+                <input id="imageCount" type="number" min="1" max="20" step="1" value="1">
+              </div>
+              <div class="field">
+        <label class="caption">比例 <span>ratio preset</span></label>
+        <select id="ratioPreset">
+          <option value="auto" selected="">自动 auto</option>
+          <option value="square">1:1</option>
+          <option value="landscape">3:2</option>
+          <option value="portrait">2:3</option>
+          <option value="ratio43">4:3</option>
+          <option value="ratio34">3:4</option>
+          <option value="ratio169">16:9</option>
+          <option value="ratio916">9:16</option>
+          <option value="ratio219">21:9</option>
+          <option value="ratio921">9:21</option>
+          <option value="custom">自定义尺寸优先</option>
+        </select>
+      </div><div class="field">
+        <label class="caption">分辨率 <span>resolution preset</span></label>
+        <select id="resolutionPreset">
+          <option value="auto" selected="">自动 auto</option>
+          <option value="1k">1K</option>
+          <option value="2k">2K</option>
+          <option value="4k">4K</option>
+          <option value="custom">自定义尺寸优先</option>
+        </select>
+      </div><div class="field" style="display: none;">
+                <label class="caption">尺寸 <span>size</span></label>
+                <select id="size"><option value="auto">auto</option><option value="1536x1024">1536x1024</option><option value="1024x1536">1024x1536</option><option value="2880x2880">2880x2880</option>
+                  <option value="1024x1024" selected="">1024x1024</option>
+                  <option value="2048x2048">2048x2048</option>
+                  <option value="2048x1152">2048x1152</option>
+                  <option value="2048x1536">2048x1536</option>
+                  <option value="1536x2048">1536x2048</option>
+                  <option value="3840x2160">3840x2160</option>
+                  <option value="2160x3840">2160x3840</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="field">
+                <label class="caption">自定义尺寸 <span>例如 1280x720</span></label>
+                <input id="customSize" type="text" placeholder="选择自定义时填写">
+              </div>
+              <div class="field">
+                <label class="caption">返回格式 <span>response_format</span></label>
+                <select id="responseFormat">
+                  <option value="url" selected="">url</option>
+                  <option value="b64_json">b64_json</option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="field">
+                <label class="caption">质量 <span>quality</span></label>
+                <select id="quality"><option value="auto">auto</option>
+                  <option value="">不发送</option>
+                  <option value="high" selected="">high</option>
+                  <option value="medium">medium</option>
+                  <option value="low">low</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="caption">输出格式 <span>output_format</span></label>
+                <select id="outputFormat">
+                  <option value="">不发送</option>
+                  <option value="png" selected="">png</option>
+                  <option value="jpeg">jpeg</option>
+                  <option value="webp">webp</option>
+                </select>
+              </div>
+            </div>
+            <p class="hint">提示：每次请求都会发送 <code>n: 1</code>，返回格式按上方 <code>response_format</code> 选择。</p>
+          </section>
+
+          <section class="section hidden" id="imageSection">
+            <div class="section-head"><span>图生图参考图</span><span>multipart image</span></div>
+            <div class="field">
+              <label class="caption">本地图片 <span>支持多张拖拽 / 粘贴</span></label>
+              <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="拖拽或选择图片">
+                <input class="file-input" id="imageInput" type="file" accept="image/*" multiple="">
+                <div>
+                  <div class="drop-icon">⇪</div>
+                  <strong>拖拽图片到这里，或点击选择本地图片</strong>
+                  <span>图生图会把图片作为 multipart/form-data 的 <code>image[]</code> 字段上传到 <code>/v1/images/edits</code>。</span>
+                </div>
+              </div>
+              <div class="thumb-list" id="thumbList"></div>
+            </div>
+          </section>
+
+
+          <section class="section">
+            <div class="section-head"><span>提示词</span><span>prompt</span></div>
+            <div class="field">
+              <label class="caption">图片描述 / 编辑说明 <span>必填</span></label>
+              <textarea id="prompt" class="prompt" placeholder="例如：一只橘猫坐在未来城市的窗边，电影感光影">一只橘猫坐在未来城市的窗边，电影感光影</textarea>
+            </div>
+          </section>
+
+          <div class="actions">
+            <button class="primary" id="generateBtn" type="button">提交任务</button>
+            <button class="secondary" id="cancelBtn" type="button" disabled="">停止</button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="resizer" id="resizer" title="拖拽调整参数区宽度"></div>
+
+      <section class="card output">
+        <div class="status">
+          <div>
+            <div class="status-title" id="statusTitle">文生图模式</div>
+            <div class="status-sub" id="statusSub">只提交提示词，走 /v1/images/generations</div>
+          </div>
+          <div class="progress-wrap">
+            <div class="progress-num" id="progressText">0%</div>
+            <div class="progress"><i id="progressBar"></i></div>
+          </div>
+        </div>
+
+        <div class="stage">
+          <div class="empty" id="emptyState">
+            <div class="empty-icon">✦</div>
+            <h3>等待生成图片</h3>
+            <p>文生图走 <b>/v1/images/generations</b>；图生图走 <b>/v1/images/edits</b>。多张图片会按次数并行请求并在右侧卡片式展示，未完成时也能继续提交新任务。</p>
+          </div>
+          <div class="result-card" id="resultCard">
+            <div class="result-grid one" id="resultGrid"></div>
+          </div>
+        </div>
+
+        <div class="bottom">
+          <details class="bottom-section">
+            <summary>
+              <span>任务日志 / 原始响应</span>
+              <button class="ghost" id="copyLogBtn" type="button">复制日志</button>
+            </summary>
+            <div class="console"><pre id="log">暂无日志</pre></div>
+          </details>
+          <details class="bottom-section">
+            <summary>
+              <span>最近结果</span>
+              <button class="ghost" id="clearHistoryBtn" type="button">清空历史</button>
+            </summary>
+            <div class="history-list" id="historyList"><div class="hint">暂无历史结果。</div></div>
+          </details>
+        </div>
+      </section>
+    </section>
+  </main>
+
+
+  <div class="preview-modal hidden" id="previewModal" aria-hidden="true">
+    <div class="preview-toolbar">
+      <div>
+        <b id="previewTitle">原图预览</b>
+        <span id="previewSub">使用接口返回的原始图片地址 / Base64，不经过 canvas 重绘或压缩。</span>
+      </div>
+      <div class="preview-actions">
+        <button class="ghost" id="toggleActualSizeBtn" type="button">1:1 原图</button>
+        <button class="ghost" id="previewOpenBtn" type="button">新窗口打开</button>
+        <button class="ghost" id="previewCloseBtn" type="button">关闭</button>
+      </div>
+    </div>
+    <div class="preview-viewer" id="previewViewer">
+      <img id="previewModalImg" alt="原图预览">
+    </div>
+  </div>
+
+  <script>
+    const UPSTREAM_BASE_URL = "https://penguinapi.vip";
+    let BASE_URL = location.protocol === "file:" ? UPSTREAM_BASE_URL : location.origin;
+    const MODEL = "gpt-image-2";
+    const FAST_MODEL = "gpt-image-2-fast";
+    const $ = (id) => document.getElementById(id);
+
+    function effectiveBaseUrl() {
+      return location.protocol === "file:" ? UPSTREAM_BASE_URL : location.origin;
+    }
+
+    const state = {
+      mode: "txt2img",
+      stop: false,
+      files: [],
+      logs: [],
+      latestResults: [],
+      taskSeq: 0,
+      controllers: new Map(),
+      progressTotal: 0,
+      progressDone: 0,
+      progressDisplay: 0,
+      progressTarget: 0,
+      progressTimer: null,
+      previewUrl: "",
+      previewActual: false
+    };
+
+    const els = {
+      resizer: $("resizer"),
+      apiKey: $("apiKey"),
+      model: $("model"),
+      imageCount: $("imageCount"),
+      ratioPreset: $("ratioPreset"),
+      resolutionPreset: $("resolutionPreset"),
+      size: $("size"),
+      customSize: $("customSize"),
+      responseFormat: $("responseFormat"),
+      quality: $("quality"),
+      outputFormat: $("outputFormat"),
+      imageSection: $("imageSection"),
+      dropZone: $("dropZone"),
+      imageInput: $("imageInput"),
+      thumbList: $("thumbList"),
+      prompt: $("prompt"),
+      generateBtn: $("generateBtn"),
+      cancelBtn: $("cancelBtn"),
+      clearBtn: $("clearBtn"),
+      statusTitle: $("statusTitle"),
+      statusSub: $("statusSub"),
+      progressText: $("progressText"),
+      progressBar: $("progressBar"),
+      emptyState: $("emptyState"),
+      resultCard: $("resultCard"),
+      resultGrid: $("resultGrid"),
+      log: $("log"),
+      copyLogBtn: $("copyLogBtn"),
+      historyList: $("historyList"),
+      clearHistoryBtn: $("clearHistoryBtn"),
+      previewModal: $("previewModal"),
+      previewTitle: $("previewTitle"),
+      previewSub: $("previewSub"),
+      previewViewer: $("previewViewer"),
+      previewModalImg: $("previewModalImg"),
+      previewCloseBtn: $("previewCloseBtn"),
+      previewOpenBtn: $("previewOpenBtn"),
+      toggleActualSizeBtn: $("toggleActualSizeBtn"),
+      mappedSizeBox: $("mappedSizeBox"),
+      mappedSizeValue: $("mappedSizeValue")
+    };
+    function setStatus(title, sub = "") {
+      els.statusTitle.textContent = title;
+      els.statusSub.textContent = sub;
+    }
+
+    function renderProgress(value) {
+      const shown = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+      els.progressText.textContent = shown + "%";
+      els.progressBar.style.width = shown + "%";
+    }
+
+    function stopProgressAnimation() {
+      if (!state.progressTimer) return;
+      clearInterval(state.progressTimer);
+      state.progressTimer = null;
+    }
+
+    function startProgressAnimation() {
+      if (state.progressTimer) return;
+      state.progressTimer = setInterval(() => {
+        const active = state.controllers.size;
+        let target = state.progressTarget;
+        if (active > 0 && state.progressTotal > 0) {
+          const perTask = 100 / state.progressTotal;
+          target = Math.min(95, ((state.progressDone / state.progressTotal) * 100) + (perTask * 0.85 * active));
+        }
+
+        const delta = target - state.progressDisplay;
+        if (Math.abs(delta) < 0.25) {
+          state.progressDisplay = target;
+          renderProgress(state.progressDisplay);
+          if (active === 0) stopProgressAnimation();
+          return;
+        }
+
+        const step = active > 0
+          ? Math.max(0.25, Math.min(1.6, Math.abs(delta) * 0.08))
+          : Math.max(1, Math.abs(delta) * 0.28);
+        state.progressDisplay += Math.sign(delta) * step;
+        renderProgress(state.progressDisplay);
+      }, 160);
+    }
+
+    function setProgress(n, options = {}) {
+      const value = Math.max(0, Math.min(100, Number(n) || 0));
+      state.progressTarget = value;
+      if (options.immediate) {
+        stopProgressAnimation();
+        state.progressDisplay = value;
+        renderProgress(value);
+        return;
+      }
+      startProgressAnimation();
+    }
+
+    function compact(value) {
+      if (value instanceof File) return { file: value.name, type: value.type, size: formatBytes(value.size) };
+      if (typeof value === "string") {
+        if (value.startsWith("data:image/")) return value.slice(0, 54) + `...（base64 已省略，长度 ${value.length}）`;
+        if (value.length > 900) return value.slice(0, 900) + `...（已截断，长度 ${value.length}）`;
+        return value;
+      }
+      if (Array.isArray(value)) return value.map(compact);
+      if (value && typeof value === "object") {
+        const out = {};
+        for (const [k, v] of Object.entries(value)) out[k] = compact(v);
+        return out;
+      }
+      return value;
+    }
+
+    function log(message, data) {
+      const time = new Date().toLocaleTimeString();
+      const line = data ? `[${time}] ${message}\n${JSON.stringify(compact(data), null, 2)}` : `[${time}] ${message}`;
+      state.logs.unshift(line);
+      state.logs = state.logs.slice(0, 80);
+      els.log.textContent = state.logs.join("\n\n");
+    }
+
+    function formatBytes(bytes) {
+      const n = Number(bytes) || 0;
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      return (n / 1024 / 1024).toFixed(1) + " MB";
+    }
+
+    function getCount() {
+      const n = parseInt(els.imageCount.value || "1", 10);
+      return Math.max(1, Math.min(20, Number.isFinite(n) ? n : 1));
+    }
+
+    const SIZE_PRESET_MATRIX = {
+      auto: {
+        auto: "auto"
+      },
+      "1k": {
+        square: "1024x1024",
+        landscape: "1536x1024",
+        portrait: "1024x1536",
+        ratio43: "1152x864",
+        ratio34: "864x1152",
+        ratio169: "1536x864",
+        ratio916: "864x1536",
+        ratio219: "1536x656",
+        ratio921: "656x1536"
+      },
+      "2k": {
+        square: "2048x2048",
+        landscape: "2048x1536",
+        portrait: "1536x2048",
+        widescreen: "2048x1152",
+        ratio43: "2048x1536",
+        ratio34: "1536x2048",
+        ratio169: "2048x1152",
+        ratio916: "1152x2048",
+        ratio219: "2048x880",
+        ratio921: "880x2048"
+      },
+      "4k": {
+        square: "2880x2880",
+        landscape: "3840x2160",
+        portrait: "2160x3840",
+        ratio43: "3328x2496",
+        ratio34: "2496x3328",
+        ratio169: "3840x2160",
+        ratio916: "2160x3840",
+        ratio219: "3840x1648",
+        ratio921: "1648x3840"
+      }
+    };
+
+    function getMappedSize(ratio = els.ratioPreset?.value || "auto", resolution = els.resolutionPreset?.value || "auto") {
+      const effectiveRatio = ratio === "auto" && resolution !== "auto" && resolution !== "custom" ? "ratio169" : ratio;
+      const size = SIZE_PRESET_MATRIX[resolution]?.[effectiveRatio];
+      if (size) return size;
+      if (resolution === "auto" || ratio === "auto") return "auto";
+      return "";
+    }
+
+    function getSelectedModel() {
+      const resolution = els.resolutionPreset?.value || "auto";
+      return MODEL;
+    }
+
+    function updateModelDisplay() {
+      if (!els.model) return;
+      const selectedModel = getSelectedModel();
+      els.model.value = selectedModel;
+      const hint = els.model.parentElement?.querySelector(".hint");
+      if (hint) {
+        hint.innerHTML = selectedModel === FAST_MODEL
+          ? "当前分辨率将使用 <code>gpt-image-2</code>。"
+          : "当前分辨率将使用 <code>gpt-image-2</code>。";
+      }
+    }
+
+    function getSize() {
+      if (els.size.value === "custom") return els.customSize.value.trim() || "1024x1024";
+      if (els.size.value) return els.size.value;
+      return getMappedSize() || "auto";
+    }
+
+    function validateSize(size) {
+      if (String(size).toLowerCase() === "auto") return { ok: true };
+      const match = /^(\d+)x(\d+)$/i.exec(size);
+      if (!match) return { ok: false, message: "尺寸格式应为 宽x高，例如 1024x1024" };
+      const width = Number(match[1]);
+      const height = Number(match[2]);
+      const longEdge = Math.max(width, height);
+      const shortEdge = Math.min(width, height);
+      const totalPixels = width * height;
+      if (totalPixels < 655360 || totalPixels > 8294400) return { ok: false, message: "尺寸不合法：总像素必须在 655,360 到 8,294,400 之间" };
+      return { ok: true };
+    }
+
+    function getUrlList() {
+      return [];
+    }
+
+    function syncRatioFromSize(size) {
+      if (!els.ratioPreset) return;
+      if (size === "auto") {
+        els.ratioPreset.value = "auto";
+        if (els.resolutionPreset) els.resolutionPreset.value = "auto";
+        return;
+      }
+      for (const [resolution, ratios] of Object.entries(SIZE_PRESET_MATRIX)) {
+        for (const [ratio, mapped] of Object.entries(ratios)) {
+          if (mapped === size) {
+            els.ratioPreset.value = ratio;
+            if (els.resolutionPreset) els.resolutionPreset.value = resolution;
+            return;
+          }
+        }
+      }
+      els.ratioPreset.value = "custom";
+      if (els.resolutionPreset) els.resolutionPreset.value = "custom";
+    }
+
+    function applyPresetMapping() {
+      if (!els.ratioPreset || !els.resolutionPreset) return;
+      const ratio = els.ratioPreset.value;
+      const resolution = els.resolutionPreset.value;
+      if (ratio === "custom" || resolution === "custom") {
+        els.size.value = "custom";
+        updateModelDisplay();
+        return;
+      }
+      const mapped = getMappedSize(ratio, resolution) || "auto";
+      els.size.value = mapped;
+      els.customSize.value = "";
+      updateModelDisplay();
+    }
+
+    function enhanceImage2Controls() {
+      if (!els.size || document.getElementById("ratioPreset")) return;
+
+      const sizeSelect = els.size;
+      const sizeField = sizeSelect.closest(".field");
+      const sizeRow = sizeField?.parentElement;
+      const customRow = els.customSize?.closest(".row");
+
+      const ratioField = document.createElement("div");
+      ratioField.className = "field";
+      ratioField.innerHTML = `
+        <label class="caption">比例 <span>ratio preset</span></label>
+        <select id="ratioPreset">
+          <option value="auto" selected>自动 auto</option>
+          <option value="square">1:1</option>
+          <option value="landscape">3:2</option>
+          <option value="portrait">2:3</option>
+          <option value="ratio43">4:3</option>
+          <option value="ratio34">3:4</option>
+          <option value="ratio169">16:9</option>
+          <option value="ratio916">9:16</option>
+          <option value="ratio219">21:9</option>
+          <option value="ratio921">9:21</option>
+          <option value="custom">自定义尺寸优先</option>
+        </select>
+      `;
+      const resolutionField = document.createElement("div");
+      resolutionField.className = "field";
+      resolutionField.innerHTML = `
+        <label class="caption">分辨率 <span>resolution preset</span></label>
+        <select id="resolutionPreset">
+          <option value="auto" selected>自动 auto</option>
+          <option value="1k">1K</option>
+          <option value="2k">2K</option>
+          <option value="4k">4K</option>
+          <option value="custom">自定义尺寸优先</option>
+        </select>
+      `;
+      sizeRow?.insertBefore(ratioField, sizeField);
+      sizeRow?.insertBefore(resolutionField, sizeField);
+      if (sizeField) sizeField.style.display = "none";
+
+      [["auto", "auto"], ["1536x1024", "1536x1024"], ["1024x1536", "1024x1536"], ["2048x2048", "2048x2048"], ["2880x2880", "2880x2880"]].reverse().forEach(([value, label]) => {
+        if ([...sizeSelect.options].some(option => option.value === value)) return;
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        sizeSelect.insertBefore(option, sizeSelect.firstChild);
+      });
+
+      if (!els.quality.querySelector('option[value="auto"]')) {
+        const autoOption = document.createElement("option");
+        autoOption.value = "auto";
+        autoOption.textContent = "auto";
+        els.quality.insertBefore(autoOption, els.quality.firstChild);
+      }
+
+      els.ratioPreset = document.getElementById("ratioPreset");
+      els.resolutionPreset = document.getElementById("resolutionPreset");
+      els.mappedSizeBox = null;
+      els.mappedSizeValue = null;
+    }
+
+    function createCommonPayload() {
+      const body = {
+        model: getSelectedModel(),
+        prompt: els.prompt.value.trim(),
+        size: getSize(),
+        n: 1
+      };
+      if (els.responseFormat.value) body.response_format = els.responseFormat.value;
+      if (els.quality.value) body.quality = els.quality.value;
+      if (els.outputFormat.value) body.output_format = els.outputFormat.value;
+      return body;
+    }
+
+    function createGenerationBody() {
+      return createCommonPayload();
+    }
+
+    function createEditJsonBody() {
+      const body = createCommonPayload();
+      body.images = [];
+      return body;
+    }
+
+    function createEditFormData() {
+      const base = createCommonPayload();
+      const form = new FormData();
+      Object.entries(base).forEach(([key, value]) => form.append(key, value));
+      state.files.forEach(item => form.append("image[]", item.file, item.file.name || "image.png"));
+      return form;
+    }
+
+    function summarizeFormData(form) {
+      const summary = {};
+      for (const [key, value] of form.entries()) {
+        const item = value instanceof File ? { file: value.name, type: value.type, size: formatBytes(value.size) } : value;
+        if (summary[key]) {
+          if (!Array.isArray(summary[key])) summary[key] = [summary[key]];
+          summary[key].push(item);
+        } else {
+          summary[key] = item;
+        }
+      }
+      return summary;
+    }
+
+    async function parseResponse(res) {
+      const contentType = res.headers.get("content-type") || "";
+      const text = await res.text();
+      let json;
+      try { json = JSON.parse(text); } catch { json = { raw: text, content_type: contentType }; }
+      if (!res.ok) {
+        if (Array.isArray(json?.data) && json.data.length) return json;
+        const msg = json?.error?.message || json?.message || json?.raw || `HTTP ${res.status}`;
+        throw new Error(`HTTP ${res.status}?${msg}`);
+      }
+      return json;
+    }
+
+    function formatNetworkError(endpoint, err) {
+      if (err?.name === "AbortError") return err;
+      const message = err?.message || String(err);
+      if (message === "Failed to fetch" || message.includes("NetworkError")) {
+        return new Error(`请求 ${endpoint} 已发出，但浏览器无法读取响应。常见原因是接口响应缺少 CORS 头、OPTIONS 预检失败、HTTPS/代理中途断开，或返回体过大被网关切断。后端如果显示成功，请重点检查 https://penguinapi.vip 的 CORS/代理返回。`);
+      }
+      return err;
+    }
+
+    function normalizeApiKey(value) {
+      return String(value || "")
+        .trim()
+        .replace(/^["']|["']$/g, "")
+        .replace(/^authorization\s*:\s*/i, "")
+        .replace(/^bearer\s+/i, "")
+        .trim();
+    }
+
+    function getApiKey() {
+      return normalizeApiKey(els.apiKey.value);
+    }
+
+    async function postJson(endpoint, body, options = {}) {
+      const headers = new Headers();
+      headers.append("Accept", "application/json");
+      headers.append("Authorization", `Bearer ${normalizeApiKey(options.apiKey || els.apiKey.value)}`);
+      headers.append("Content-Type", "application/json");
+      try {
+        const res = await fetch(BASE_URL + endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          redirect: "follow",
+          signal: options.signal
+        });
+        return parseResponse(res);
+      } catch (err) {
+        throw formatNetworkError(endpoint, err);
+      }
+    }
+
+    async function postForm(endpoint, form, options = {}) {
+      const headers = new Headers();
+      headers.append("Accept", "application/json");
+      headers.append("Authorization", `Bearer ${normalizeApiKey(options.apiKey || els.apiKey.value)}`);
+      // 不要手动设置 multipart/form-data 的 Content-Type，浏览器会自动带 boundary。
+      try {
+        const res = await fetch(BASE_URL + endpoint, {
+          method: "POST",
+          headers,
+          body: form,
+          redirect: "follow",
+          signal: options.signal
+        });
+        return parseResponse(res);
+      } catch (err) {
+        throw formatNetworkError(endpoint, err);
+      }
+    }
+
+    function createRequestSnapshot(total) {
+      return {
+        id: ++state.taskSeq,
+        apiKey: getApiKey(),
+        model: getSelectedModel(),
+        mode: state.mode,
+        total,
+        prompt: els.prompt.value.trim(),
+        size: getSize(),
+        responseFormat: els.responseFormat.value,
+        quality: els.quality.value,
+        outputFormat: els.outputFormat.value,
+        files: state.files.map(item => item.file),
+        urls: [],
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    function shouldUseResponsesApi(snapshot) {
+      return snapshot?.model === FAST_MODEL;
+    }
+
+    function fileToDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error || new Error("读取图片失败"));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function buildResponsesPayloadFromSnapshot(snapshot) {
+      const content = [{
+        type: "input_text",
+        text: snapshot.prompt
+      }];
+
+      if (snapshot.mode === "img2img" && Array.isArray(snapshot.files) && snapshot.files.length) {
+        for (const file of snapshot.files) {
+          const dataUrl = await fileToDataUrl(file);
+          content.push({ type: "input_image", image_url: dataUrl });
+        }
+      }
+
+      const imageTool = { type: "image_generation" };
+      if (snapshot.size && snapshot.size !== "auto") imageTool.size = snapshot.size;
+      if (snapshot.quality) imageTool.quality = snapshot.quality;
+      if (snapshot.outputFormat) imageTool.output_format = snapshot.outputFormat;
+
+      return {
+        model: snapshot.model,
+        input: snapshot.mode === "img2img" ? [{ role: "user", content }] : snapshot.prompt,
+        stream: false,
+        tools: [imageTool],
+        tool_choice: { type: "image_generation" }
+      };
+    }
+
+    function commonPayloadFromSnapshot(snapshot) {
+      const body = {
+        model: snapshot.model,
+        prompt: snapshot.prompt,
+        size: snapshot.size,
+        n: 1
+      };
+      if (snapshot.responseFormat) body.response_format = snapshot.responseFormat;
+      if (snapshot.quality) body.quality = snapshot.quality;
+      if (snapshot.outputFormat) body.output_format = snapshot.outputFormat;
+      return body;
+    }
+
+    function editJsonBodyFromSnapshot(snapshot) {
+      const body = commonPayloadFromSnapshot(snapshot);
+      body.images = [];
+      return body;
+    }
+
+    function editFormDataFromSnapshot(snapshot) {
+      const base = commonPayloadFromSnapshot(snapshot);
+      const form = new FormData();
+      Object.entries(base).forEach(([key, value]) => form.append(key, value));
+      snapshot.files.forEach(file => form.append("image[]", file, file.name || "image.png"));
+      return form;
+    }
+
+    function normalizeImageUrl(url) {
+      if (!url) return "";
+      if (String(url).startsWith("data:") || String(url).startsWith("blob:")) return String(url);
+      try { return new URL(String(url), BASE_URL).href; } catch (_) { return String(url); }
+    }
+
+    function guessMimeFromFormat() {
+      const fmt = (els.outputFormat?.value || "png").toLowerCase();
+      if (fmt === "jpeg" || fmt === "jpg") return "image/jpeg";
+      if (fmt === "webp") return "image/webp";
+      return "image/png";
+    }
+
+    function toDataImageUrl(value, mime = guessMimeFromFormat()) {
+      if (!value) return "";
+      const s = String(value).trim();
+      if (s.startsWith("data:image/")) return s;
+      return `data:${mime};base64,${s}`;
+    }
+
+    function responseToImageUrls(json) {
+      const out = [];
+      const pushItem = (item = {}) => {
+        const revised = item.revised_prompt || item.prompt || "";
+        if (item.b64_json) out.push({ url: toDataImageUrl(item.b64_json), revised_prompt: revised });
+        if (item.image_base64) out.push({ url: toDataImageUrl(item.image_base64), revised_prompt: revised });
+        if (item.base64) out.push({ url: toDataImageUrl(item.base64), revised_prompt: revised });
+        if (item.result && item.type === "image_generation_call") out.push({ url: toDataImageUrl(item.result), revised_prompt: revised });
+        if (item.url) out.push({ url: normalizeImageUrl(item.url), revised_prompt: revised });
+        if (item.image_url) {
+          const u = typeof item.image_url === "string" ? item.image_url : item.image_url.url;
+          if (u) out.push({ url: normalizeImageUrl(u), revised_prompt: revised });
+        }
+      };
+
+      const data = Array.isArray(json?.data) ? json.data : [];
+      data.forEach(pushItem);
+      if (!out.length && Array.isArray(json?.result?.data)) json.result.data.forEach(pushItem);
+      if (!out.length && Array.isArray(json?.output)) json.output.forEach(pushItem);
+      if (!out.length) pushItem(json);
+      if (!out.length) throw new Error("接口已返回，但响应中没有可展示的图片字段：data[].b64_json / data[].url / image_url。请复制日志给我排查返回结构。");
+      return out;
+    }
+
+    async function prepareDisplayUrl(rawUrl, apiKey) {
+      const url = normalizeImageUrl(rawUrl);
+      if (!url || url.startsWith("data:") || url.startsWith("blob:")) {
+        return { url, displayUrl: url };
+      }
+
+      // 某些中转站返回的图片 URL 需要 Authorization，img 标签不能带请求头。
+      // 这里先尝试把图片按原始字节取回并转成 blob: URL，只改变前端展示链路，不压缩、不重绘图片。
+      try {
+        const headers = new Headers();
+        headers.append("Accept", "image/*,*/*");
+        if (apiKey && url.startsWith(BASE_URL)) headers.append("Authorization", `Bearer ${apiKey}`);
+        const res = await fetch(url, { method: "GET", headers, mode: "cors" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        if (blob.type && !blob.type.startsWith("image/")) throw new Error(`返回类型不是图片：${blob.type}`);
+        return { url, displayUrl: URL.createObjectURL(blob) };
+      } catch (err) {
+        log("图片直链转 Blob 失败，回退使用原始 URL", { url, message: err.message || String(err) });
+        return { url, displayUrl: url };
+      }
+    }
+
+    function validateGenerateInput() {
+      const apiKey = getApiKey();
+      const prompt = els.prompt.value.trim();
+      const size = getSize();
+      const validation = validateSize(size);
+
+      if (!apiKey) return "请先填写 API Key。";
+      if (!prompt) return "请先填写提示词。";
+      if (!validation.ok) return validation.message;
+      if (state.mode === "img2img" && state.files.length === 0) {
+        return "图生图模式请至少上传 1 张本地参考图。";
+      }
+      return "";
+    }
+
+    async function generate() {
+      const error = validateGenerateInput();
+      if (error) return alert(error);
+
+      const total = getCount();
+      const snapshot = createRequestSnapshot(total);
+      const endpoint = shouldUseResponsesApi(snapshot)
+        ? "/v1/responses"
+        : (snapshot.mode === "txt2img" ? "/v1/images/generations" : "/v1/images/edits");
+      const batchNo = snapshot.id;
+      const cards = [];
+
+      for (let i = 0; i < total; i++) {
+        cards.push({
+          id: `batch-${batchNo}-${i + 1}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          batchNo,
+          index: i + 1,
+          total,
+          status: "pending",
+          mode: snapshot.mode,
+          endpoint,
+          size: snapshot.size,
+          prompt: snapshot.prompt,
+          url: "",
+          displayUrl: "",
+          revised_prompt: "",
+          error: "",
+          createdAt: snapshot.createdAt
+        });
+      }
+
+      if (state.controllers.size === 0) {
+        state.progressTotal = 0;
+        state.progressDone = 0;
+        setProgress(0, { immediate: true });
+      }
+      state.latestResults = cards.concat(state.latestResults);
+      state.progressTotal += total;
+      setProgress(Math.max(3, (state.progressDone / state.progressTotal) * 100));
+      renderCards();
+      setStatus("已提交任务", `本次 ${total} 个请求已并行发出；你可以继续点击“开始生成”提交新任务。`);
+      log("提交新批次", { batch: batchNo, base_url: BASE_URL, endpoint, mode: snapshot.mode, model: snapshot.model, total, n_per_request: 1, parallel: true });
+
+      cards.forEach(card => runImageTask(card, snapshot));
+    }
+
+    async function runImageTask(card, snapshot) {
+      const endpoint = card.endpoint;
+      const controller = new AbortController();
+      state.controllers.set(card.id, controller);
+      updateActiveState();
+
+      try {
+        let json;
+        if (endpoint === "/v1/responses") {
+          const body = await buildResponsesPayloadFromSnapshot(snapshot);
+          log(`批次 #${card.batchNo} / 图片 ${card.index}/${card.total} Responses 请求`, body);
+          json = await postJson(endpoint, body, { apiKey: snapshot.apiKey, signal: controller.signal });
+        } else if (snapshot.mode === "txt2img") {
+          const body = commonPayloadFromSnapshot(snapshot);
+          log(`批次 #${card.batchNo} / 图片 ${card.index}/${card.total} 文生图请求`, body);
+          json = await postJson(endpoint, body, { apiKey: snapshot.apiKey, signal: controller.signal });
+        } else if (snapshot.files.length > 0) {
+          const form = editFormDataFromSnapshot(snapshot);
+          log(`批次 #${card.batchNo} / 图片 ${card.index}/${card.total} 图生图 multipart 请求`, summarizeFormData(form));
+          json = await postForm(endpoint, form, { apiKey: snapshot.apiKey, signal: controller.signal });
+        } else {
+          const body = editJsonBodyFromSnapshot(snapshot);
+          log(`批次 #${card.batchNo} / 图片 ${card.index}/${card.total} 图生图 JSON URL 请求`, body);
+          json = await postJson(endpoint, body, { apiKey: snapshot.apiKey, signal: controller.signal });
+        }
+
+        log(`批次 #${card.batchNo} / 图片 ${card.index}/${card.total} 响应`, json);
+        const imageItems = responseToImageUrls(json);
+        const first = imageItems[0];
+        const firstDisplay = await prepareDisplayUrl(first.url, snapshot.apiKey);
+        card.status = "done";
+        card.url = firstDisplay.url;
+        card.displayUrl = firstDisplay.displayUrl;
+        card.revised_prompt = first.revised_prompt || "";
+        card.json = json;
+        card.error = "";
+
+        // 如果接口单次返回多张，也保留全部图片，每张都独立卡片展示。
+        const cardIndex = state.latestResults.indexOf(card);
+        if (cardIndex >= 0) {
+          imageItems.slice(1).forEach((img, extraIndex) => {
+            state.latestResults.splice(cardIndex + extraIndex + 1, 0, {
+              id: `${card.id}-extra-${extraIndex + 1}`,
+              batchNo: card.batchNo,
+              index: `${card.index}.${extraIndex + 2}`,
+              total: card.total,
+              status: "done",
+              mode: card.mode,
+              endpoint: card.endpoint,
+              size: card.size,
+              prompt: card.prompt,
+              url: normalizeImageUrl(img.url),
+              displayUrl: normalizeImageUrl(img.url),
+              revised_prompt: img.revised_prompt || "",
+              error: "",
+              createdAt: card.createdAt,
+              json
+            });
+          });
+        }
+
+        saveHistory({ url: card.url, prompt: snapshot.prompt, model: MODEL, size: snapshot.size, time: new Date().toISOString(), mode: snapshot.mode });
+      } catch (err) {
+        card.status = "failed";
+        card.error = err.name === "AbortError" ? "任务已取消" : (err.message || String(err));
+        log(`批次 #${card.batchNo} / 图片 ${card.index}/${card.total} 失败`, { message: card.error });
+      } finally {
+        state.controllers.delete(card.id);
+        state.progressDone += 1;
+        renderCards();
+        updateActiveState();
+      }
+    }
+
+    function updateActiveState() {
+      const active = state.controllers.size;
+      els.cancelBtn.disabled = active === 0;
+      const realProgress = state.progressTotal ? (state.progressDone / state.progressTotal) * 100 : 0;
+      const visibleProgress = active > 0
+        ? Math.min(95, realProgress + ((100 / state.progressTotal) * 0.85 * active))
+        : realProgress;
+      setProgress(visibleProgress);
+      if (active > 0) {
+        setStatus("任务运行中", `当前并行请求 ${active} 个；无需等待完成，可继续提交新任务。`);
+      } else if (state.progressTotal > 0) {
+        setStatus("当前任务已结束", `已完成/失败 ${state.progressDone}/${state.progressTotal} 个请求。`);
+      }
+    }
+
+    function cancelActiveRequests() {
+      if (!state.controllers.size) return;
+      state.controllers.forEach(controller => controller.abort());
+      setStatus("正在取消任务", "已向所有进行中的 fetch 请求发送 Abort 信号。");
+    }
+
+    function renderResults(results) {
+      state.latestResults = results.map((item, index) => ({
+        id: `history-${Date.now()}-${index}`,
+        batchNo: "历史",
+        index: index + 1,
+        total: results.length,
+        status: "done",
+        mode: item.mode || "history",
+        endpoint: "",
+        size: item.size || "",
+        prompt: item.prompt || "",
+        url: normalizeImageUrl(item.url),
+        displayUrl: item.displayUrl || normalizeImageUrl(item.url),
+        revised_prompt: item.revised_prompt || "",
+        error: "",
+        createdAt: new Date().toISOString(),
+        json: item.json || {}
+      }));
+      renderCards();
+    }
+
+    function renderCards() {
+      const cards = state.latestResults || [];
+      if (!cards.length) {
+        els.emptyState.style.display = "grid";
+        els.resultCard.style.display = "none";
+        els.resultGrid.innerHTML = "";
+        return;
+      }
+
+      els.emptyState.style.display = "none";
+      els.resultCard.style.display = "block";
+      els.resultGrid.className = "result-grid many";
+      els.resultGrid.innerHTML = cards.map((item) => renderImageCard(item)).join("");
+      bindCardActions(cards);
+    }
+
+    function renderImageCard(item) {
+      const statusText = item.status === "done" ? "已完成" : item.status === "failed" ? "失败" : "生成中";
+      const modeText = item.mode === "txt2img" ? "文生图" : item.mode === "img2img" ? "图生图" : item.mode;
+      const title = `#${escapeHtml(item.batchNo)}-${escapeHtml(item.index)} ${modeText}`;
+      const sub = escapeHtml(item.size || "");
+      const displaySrc = item.displayUrl || item.url;
+      const preview = item.status === "done" && displaySrc
+        ? `<button class="image-preview" type="button" data-preview="${escapeAttr(item.id)}"><img src="${escapeAttr(displaySrc)}" alt="生成结果 ${escapeAttr(item.index)}" title="${escapeAttr(item.revised_prompt || item.prompt || "")}" loading="lazy" /></button>`
+        : item.status === "failed"
+          ? `<div class="image-preview"><div class="image-placeholder"><div class="image-error">${escapeHtml(item.error || "生成失败")}</div></div></div>`
+          : `<div class="image-preview"><div class="image-placeholder"><div><div class="spinner"></div><b>thinking</b><br><small>可继续提交下一批任务</small></div></div></div>`;
+      const disabled = item.status === "done" && item.url ? "" : "disabled";
+      return `
+        <div class="image-card ${escapeAttr(item.status)}" data-card="${escapeAttr(item.id)}">
+          <button class="card-delete" type="button" data-delete="${escapeAttr(item.id)}" title="删除">×</button>
+          <div class="image-top">
+            <div class="image-title"><b title="${escapeAttr(item.prompt || "")}">${title}</b><small>${sub}</small></div>
+            <span class="status-badge">${statusText}</span>
+          </div>
+          ${preview}
+          <div class="image-actions">
+            <button class="ghost" type="button" data-preview="${escapeAttr(item.id)}" ${disabled}>预览</button>
+            <button class="ghost" type="button" data-open="${escapeAttr(item.id)}" ${disabled}>打开</button>
+            <button class="ghost" type="button" data-copy="${escapeAttr(item.id)}" ${disabled}>复制</button>
+            <button class="ghost" type="button" data-download="${escapeAttr(item.id)}" ${disabled}>下载</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function bindCardActions(cards) {
+      const byId = new Map(cards.map(item => [String(item.id), item]));
+      els.resultGrid.querySelectorAll("[data-delete]").forEach(btn => {
+        btn.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const id = btn.dataset.delete;
+          const controller = state.controllers.get(id);
+          if (controller) {
+            controller.abort();
+            state.controllers.delete(id);
+          }
+          state.latestResults = state.latestResults.filter(item => String(item.id) !== id);
+          renderCards();
+          updateActiveState();
+          setStatus("已删除图片卡片", "");
+        });
+      });
+
+      els.resultGrid.querySelectorAll("[data-preview]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const item = byId.get(btn.dataset.preview);
+          if (item?.url) openPreview(item);
+        });
+      });
+
+      els.resultGrid.querySelectorAll("[data-open]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const item = byId.get(btn.dataset.open);
+          const src = item?.displayUrl || item?.url;
+          if (!src) return;
+          const win = window.open();
+          if (win) {
+            win.document.title = "生成结果原图";
+            win.document.write(`<body style="margin:0;background:#111;display:grid;place-items:center;min-height:100vh;"><img src="${src}" style="max-width:100%;height:auto;display:block;"></body>`);
+          }
+        });
+      });
+
+      els.resultGrid.querySelectorAll("[data-copy]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const item = byId.get(btn.dataset.copy);
+          if (!item?.url) return;
+          await navigator.clipboard.writeText(item.url);
+          setStatus("已复制图片数据/URL", item.url.startsWith("data:") ? "已复制 Base64 data URL" : item.url);
+        });
+      });
+
+      els.resultGrid.querySelectorAll("[data-download]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const item = byId.get(btn.dataset.download);
+          const src = item?.displayUrl?.startsWith("blob:") ? item.displayUrl : (item?.url || item?.displayUrl);
+          if (!src) return;
+          await downloadImage(src, `gpt-image-2-${Date.now()}-${String(item.index).replace(/\W+/g, "-")}.png`);
+        });
+      });
+    }
+
+    function openPreview(item) {
+      const src = item.displayUrl || item.url;
+      state.previewUrl = src;
+      state.previewActual = false;
+      els.previewModalImg.classList.remove("actual-size");
+      els.previewModalImg.src = src;
+      els.previewTitle.textContent = `原图预览 · #${item.batchNo}-${item.index}`;
+      els.previewSub.textContent = "当前预览直接使用接口返回的原始图片字节 / Base64，不经过 canvas 重绘、不重新压缩。";
+      els.toggleActualSizeBtn.textContent = "1:1 原图";
+      els.previewModal.classList.remove("hidden");
+      els.previewModal.setAttribute("aria-hidden", "false");
+    }
+
+    function closePreview() {
+      els.previewModal.classList.add("hidden");
+      els.previewModal.setAttribute("aria-hidden", "true");
+      els.previewModalImg.removeAttribute("src");
+      state.previewUrl = "";
+      state.previewActual = false;
+    }
+
+    function toggleActualSize() {
+      if (!state.previewUrl) return;
+      state.previewActual = !state.previewActual;
+      els.previewModalImg.classList.toggle("actual-size", state.previewActual);
+      els.toggleActualSizeBtn.textContent = state.previewActual ? "适应窗口" : "1:1 原图";
+    }
+
+    function triggerDownload(url, filename) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+
+    async function downloadImage(url, filename) {
+      try {
+        if (url.startsWith("data:") || url.startsWith("blob:")) {
+          triggerDownload(url, filename);
+          setStatus("已开始下载", filename);
+          return;
+        }
+
+        const normalized = normalizeImageUrl(url);
+        const headers = new Headers();
+        headers.append("Accept", "image/*,*/*");
+        const apiKey = getApiKey();
+        if (apiKey && normalized.startsWith(BASE_URL)) headers.append("Authorization", `Bearer ${apiKey}`);
+        const res = await fetch(normalized, { method: "GET", headers, mode: "cors" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        triggerDownload(objectUrl, filename);
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+        setStatus("已开始下载", filename);
+      } catch (err) {
+        log("图片下载失败", { url, message: err.message || String(err) });
+        setStatus("下载失败", "图片直链不允许跨域读取或需要鉴权，无法由纯前端强制下载。");
+      }
+    }
+
+    function fileToDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error("读取文件失败"));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function addFiles(files) {
+      const picked = Array.from(files || []).filter(file => file.type && file.type.startsWith("image/"));
+      if (!picked.length) return;
+      if (state.mode !== "img2img") {
+        state.mode = "img2img";
+        document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.mode === "img2img"));
+        updateModeUI();
+      }
+      for (const file of picked) {
+        const dataUrl = await fileToDataUrl(file);
+        state.files.push({ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, file, dataUrl });
+      }
+      renderThumbs();
+      setStatus("参考图已置入", `当前共 ${state.files.length} 张参考图`);
+      els.imageInput.value = "";
+    }
+
+    async function setMaskFile(file) {
+      if (!file || !file.type?.startsWith("image/")) return;
+      const dataUrl = await fileToDataUrl(file);
+      state.mask = { file, dataUrl };
+      renderMaskThumb();
+      setStatus("蒙版已置入", file.name || "mask image");
+      els.maskInput.value = "";
+    }
+
+    function renderThumbs() {
+      if (!state.files.length) {
+        els.thumbList.innerHTML = "";
+        return;
+      }
+      els.thumbList.innerHTML = state.files.map(item => `
+        <div class="thumb-item">
+          <div class="thumb-img"><img src="${escapeAttr(item.dataUrl)}" alt="${escapeAttr(item.file.name)}" /></div>
+          <div class="thumb-meta">
+            <b title="${escapeAttr(item.file.name)}">${escapeHtml(item.file.name)} · ${formatBytes(item.file.size)}</b>
+            <button class="mini-btn" type="button" data-remove="${escapeAttr(item.id)}">移除</button>
+          </div>
+        </div>
+      `).join("");
+      els.thumbList.querySelectorAll("[data-remove]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          state.files = state.files.filter(item => item.id !== btn.dataset.remove);
+          renderThumbs();
+          setStatus("已移除参考图", `当前剩余 ${state.files.length} 张参考图`);
+        });
+      });
+    }
+
+    function renderMaskThumb() {}
+    function clearMaskImage() {}
+    function clearAllMask() {}
+
+    function updateModeUI() {
+      const isEdit = state.mode === "img2img";
+      els.imageSection.classList.toggle("hidden", !isEdit);
+      setStatus(isEdit ? "图生图模式" : "文生图模式", isEdit ? "上传本地参考图后走 /v1/images/edits；返回格式按 response_format 选择" : "只提交提示词，走 /v1/images/generations");
+    }
+
+    function saveHistory(item) {
+      try {
+        const list = JSON.parse(localStorage.getItem("gptImage2History") || "[]");
+        if (item.url?.startsWith("data:")) {
+          log("历史记录跳过", { reason: "Base64 图片过大，不写入 localStorage" });
+          renderHistory();
+          return;
+        }
+        list.unshift(item);
+        localStorage.setItem("gptImage2History", JSON.stringify(list.slice(0, 30)));
+        renderHistory();
+      } catch (err) {
+        log("历史记录写入失败", { message: err.message || String(err) });
+      }
+    }
+
+    function renderHistory() {
+      const list = JSON.parse(localStorage.getItem("gptImage2History") || "[]");
+      if (!list.length) {
+        els.historyList.innerHTML = `<div class="hint">暂无历史结果。</div>`;
+        return;
+      }
+      els.historyList.innerHTML = list.map((item, index) => `
+        <div class="history-item">
+          <img src="${escapeAttr(item.url)}" alt="" />
+          <div>
+            <b title="${escapeAttr(item.prompt)}">${escapeHtml(item.prompt || "Untitled")}</b>
+            <small>${escapeHtml(item.mode || "")} · ${escapeHtml(item.size || "")} · ${new Date(item.time).toLocaleString()}</small>
+          </div>
+          <button class="ghost" type="button" data-history="${index}">查看</button>
+        </div>
+      `).join("");
+      els.historyList.querySelectorAll("[data-history]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const item = list[Number(btn.dataset.history)];
+          if (!item) return;
+          renderResults([{ url: item.url, revised_prompt: "", json: {} }]);
+          setProgress(100);
+          setStatus("已载入历史结果", item.url);
+        });
+      });
+    }
+
+    function resetForm() {
+      els.imageCount.value = "1";
+      if (els.ratioPreset) els.ratioPreset.value = "auto";
+      if (els.resolutionPreset) els.resolutionPreset.value = "auto";
+      els.size.value = "auto";
+      els.customSize.value = "";
+      els.responseFormat.value = "url";
+      els.quality.value = "auto";
+      els.outputFormat.value = "png";
+      els.prompt.value = "一只橘猫坐在未来城市的窗边，电影感光影";
+      state.files = [];
+      state.logs = [];
+      state.latestResults = [];
+      state.progressTotal = 0;
+      state.progressDone = 0;
+      renderThumbs();
+      renderMaskThumb();
+      els.log.textContent = "暂无日志";
+      els.emptyState.style.display = "grid";
+      els.resultCard.style.display = "none";
+      els.resultGrid.innerHTML = "";
+      setProgress(0, { immediate: true });
+      updateModeUI();
+    }
+
+    function bindDropZone(zone, onFiles) {
+      ["dragenter", "dragover"].forEach(type => {
+        zone.addEventListener(type, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          zone.classList.add("dragging");
+        });
+      });
+      ["dragleave", "drop"].forEach(type => {
+        zone.addEventListener(type, (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          zone.classList.remove("dragging");
+        });
+      });
+      zone.addEventListener("drop", (e) => onFiles(e.dataTransfer.files));
+    }
+
+    function bindResize() {
+      let startX = 0;
+      let startWidth = 0;
+      els.resizer.addEventListener("pointerdown", (e) => {
+        startX = e.clientX;
+        startWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--left-w")) || 560;
+        document.body.classList.add("dragging");
+        els.resizer.setPointerCapture(e.pointerId);
+      });
+      els.resizer.addEventListener("pointermove", (e) => {
+        if (!document.body.classList.contains("dragging")) return;
+        const max = Math.min(window.innerWidth * .72, 980);
+        const next = Math.max(430, Math.min(max, startWidth + e.clientX - startX));
+        document.documentElement.style.setProperty("--left-w", next + "px");
+        localStorage.setItem("gptImage2LeftWidth", String(Math.round(next)));
+      });
+      els.resizer.addEventListener("pointerup", (e) => {
+        document.body.classList.remove("dragging");
+        try { els.resizer.releasePointerCapture(e.pointerId); } catch (_) {}
+      });
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+      }[ch]));
+    }
+    function escapeAttr(s) { return escapeHtml(s).replace(/`/g, "&#096;"); }
+
+    function bindEvents() {
+      bindResize();
+
+      document.querySelectorAll(".tab").forEach(btn => {
+        btn.addEventListener("click", () => {
+          document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          state.mode = btn.dataset.mode;
+          updateModeUI();
+        });
+      });
+
+      els.dropZone.addEventListener("click", () => els.imageInput.click());
+      els.dropZone.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          els.imageInput.click();
+        }
+      });
+      els.imageInput.addEventListener("change", (e) => addFiles(e.target.files));
+      bindDropZone(els.dropZone, addFiles);
+      els.ratioPreset?.addEventListener("change", applyPresetMapping);
+      els.resolutionPreset?.addEventListener("change", applyPresetMapping);
+      els.size.addEventListener("change", () => {
+        if (els.size.value === "custom") {
+          if (els.ratioPreset) els.ratioPreset.value = "custom";
+          if (els.resolutionPreset) els.resolutionPreset.value = "custom";
+        }
+        else syncRatioFromSize(els.size.value);
+        updateModelDisplay();
+      });
+      els.customSize.addEventListener("input", () => {
+        if (!els.customSize.value.trim()) return;
+        els.size.value = "custom";
+        if (els.ratioPreset) els.ratioPreset.value = "custom";
+        if (els.resolutionPreset) els.resolutionPreset.value = "custom";
+        updateModelDisplay();
+      });
+
+
+      window.addEventListener("paste", (e) => {
+        if (state.mode !== "img2img") return;
+        const files = Array.from(e.clipboardData?.files || []).filter(file => file.type.startsWith("image/"));
+        if (files.length) addFiles(files);
+      });
+
+      els.generateBtn.addEventListener("click", generate);
+      els.cancelBtn.addEventListener("click", cancelActiveRequests);
+      els.clearBtn.addEventListener("click", resetForm);
+      els.previewCloseBtn.addEventListener("click", closePreview);
+      els.previewModal.addEventListener("click", (e) => { if (e.target === els.previewModal) closePreview(); });
+      els.previewOpenBtn.addEventListener("click", () => { if (state.previewUrl) window.open(state.previewUrl, "_blank", "noopener,noreferrer"); });
+      els.toggleActualSizeBtn.addEventListener("click", toggleActualSize);
+      window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !els.previewModal.classList.contains("hidden")) closePreview(); });
+      els.copyLogBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        await navigator.clipboard.writeText(els.log.textContent || "");
+        setStatus("已复制日志", "可用于排查请求与响应问题。");
+      });
+      els.clearHistoryBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        localStorage.removeItem("gptImage2History");
+        renderHistory();
+      });
+      els.apiKey.addEventListener("change", () => {
+        const key = getApiKey();
+        els.apiKey.value = key;
+        localStorage.setItem("gptImage2ApiKey", key);
+      });
+    }
+
+    function init() {
+      localStorage.removeItem("gptImage2BaseUrl");
+      BASE_URL = effectiveBaseUrl();
+      els.apiKey.value = localStorage.getItem("gptImage2ApiKey") || "";
+      const savedW = localStorage.getItem("gptImage2LeftWidth");
+      if (savedW) document.documentElement.style.setProperty("--left-w", savedW + "px");
+      enhanceImage2Controls();
+      renderHistory();
+      syncRatioFromSize(getSize());
+      updateModelDisplay();
+      updateModeUI();
+      bindEvents();
+    }
+
+    init();
+  </script>
+
+
+
+<i id="__PIKPAK_EXTENSION__" style="display: none;">1.8.6</i></body></html>
