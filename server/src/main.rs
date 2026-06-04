@@ -4,6 +4,7 @@ mod changes;
 mod chat;
 mod checkpoints;
 mod config;
+mod image_gen;
 mod llm;
 pub mod provider_registry;
 pub mod response;
@@ -123,6 +124,11 @@ async fn main() -> Result<()> {
         .route("/api/sessions/{id}/events", get(routes::get_session_events))
         .route("/api/settings", put(routes::update_settings))
         .route("/api/providers", get(routes::list_providers))
+        // Image providers (public list for client)
+        .route("/api/image-providers", get(image_gen::list_image_providers))
+        // Image generation
+        .route("/api/image/generate", post(image_gen::generate_image))
+        .route("/api/image/edit", post(image_gen::edit_image))
         .route("/api/sessions/{id}/chat", post(chat::chat_handler))
         .route("/api/sessions/{id}/stop", post(chat::stop_handler))
         .route("/api/sessions/{id}/events/resume", get(chat::resume_handler))
@@ -194,6 +200,11 @@ async fn main() -> Result<()> {
         .route("/api/admin/providers", post(admin::create_provider))
         .route("/api/admin/providers/{id}", put(admin::update_provider))
         .route("/api/admin/providers/{id}", delete(admin::delete_provider))
+        // Image providers admin
+        .route("/api/admin/image-providers", get(admin::list_image_providers))
+        .route("/api/admin/image-providers", post(admin::create_image_provider))
+        .route("/api/admin/image-providers/{id}", put(admin::update_image_provider))
+        .route("/api/admin/image-providers/{id}", delete(admin::delete_image_provider))
         // Admin requirement docs & tasks
         .route("/api/admin/requirement-docs", get(requirement_docs::admin_list_docs))
         .route("/api/admin/requirement-docs/{id}", get(requirement_docs::admin_get_doc))

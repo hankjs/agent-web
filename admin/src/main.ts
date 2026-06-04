@@ -18,6 +18,7 @@ const router = createRouter({
     { path: '/prompts', component: () => import('./views/PromptLab.vue') },
     { path: '/users', component: () => import('./views/Users.vue') },
     { path: '/providers', component: () => import('./views/Providers.vue') },
+    { path: '/image-providers', component: () => import('./views/ImageProviders.vue') },
   ],
 })
 

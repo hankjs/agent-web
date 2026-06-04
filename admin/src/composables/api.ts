@@ -239,6 +239,23 @@ export const api = {
     return request<void>(`/api/admin/providers/${id}`, { method: 'DELETE' })
   },
 
+  // Image provider management
+  listImageProviders() {
+    return request<Provider[]>('/api/admin/image-providers')
+  },
+
+  createImageProvider(data: { name: string; provider_type: string; api_key: string; base_url?: string; default_model?: string; models?: Record<string, string>; priority?: number; enabled?: boolean }) {
+    return request<Provider>('/api/admin/image-providers', { method: 'POST', body: JSON.stringify(data) })
+  },
+
+  updateImageProvider(id: string, data: { name: string; provider_type: string; api_key: string; base_url?: string; default_model?: string; models?: Record<string, string>; priority?: number; enabled?: boolean }) {
+    return request<{ status: string }>(`/api/admin/image-providers/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+  },
+
+  deleteImageProvider(id: string) {
+    return request<void>(`/api/admin/image-providers/${id}`, { method: 'DELETE' })
+  },
+
   chatGenerate(prompt: string, context?: string) {
     return fetch('/api/admin/chat/generate', {
       method: 'POST',

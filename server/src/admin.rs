@@ -493,6 +493,64 @@ pub async fn delete_provider(
     }
 }
 
+// --- Image Provider Management ---
+
+pub async fn list_image_providers(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.db.list_image_providers_ordered().await {
+        Ok(providers) => R::ok(providers),
+        Err(e) => R::internal_error(e),
+    }
+}
+
+pub async fn create_image_provider(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateProviderRequest>,
+) -> impl IntoResponse {
+    let models_json = body.models
+        .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string()))
+        .unwrap_or_else(|| "{}".to_string());
+    match state.db.create_image_provider(
+        &body.name, &body.provider_type, &body.api_key,
+        body.base_url.as_deref().unwrap_or(""),
+        body.default_model.as_deref().unwrap_or(""),
+        &models_json, body.priority.unwrap_or(0), body.enabled.unwrap_or(true),
+    ).await {
+        Ok(record) => R::created(serde_json::json!(record)),
+        Err(e) => R::bad_request(e),
+    }
+}
+
+pub async fn update_image_provider(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateProviderRequest>,
+) -> impl IntoResponse {
+    let models_json = body.models
+        .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string()))
+        .unwrap_or_else(|| "{}".to_string());
+    match state.db.update_image_provider(
+        &id, &body.name, &body.provider_type, &body.api_key,
+        body.base_url.as_deref().unwrap_or(""),
+        body.default_model.as_deref().unwrap_or(""),
+        &models_json, body.priority.unwrap_or(0), body.enabled.unwrap_or(true),
+    ).await {
+        Ok(()) => R::ok(serde_json::json!({"status": "ok"})),
+        Err(e) => R::internal_error(e),
+    }
+}
+
+pub async fn delete_image_provider(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.delete_image_provider(&id).await {
+        Ok(()) => R::no_content(),
+        Err(e) => R::internal_error(e),
+    }
+}
+
 // --- AI Generate ---
 
 #[derive(Deserialize)]

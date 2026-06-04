@@ -465,6 +465,25 @@ impl Database {
         .execute(&pool)
         .await?;
 
+        // Image providers table (separate from chat providers)
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS image_providers (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(128) NOT NULL UNIQUE,
+                provider_type VARCHAR(32) NOT NULL,
+                api_key VARCHAR(512) NOT NULL,
+                base_url VARCHAR(512) NOT NULL DEFAULT '',
+                default_model VARCHAR(128) NOT NULL DEFAULT '',
+                models TEXT NOT NULL,
+                priority INT NOT NULL DEFAULT 0,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at DATETIME NOT NULL DEFAULT NOW(),
+                INDEX idx_image_providers_priority (priority)
+            ) DEFAULT CHARSET=utf8mb4",
+        )
+        .execute(&pool)
+        .await?;
+
         // Local events table (client-reported ACP execution records)
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS local_events (
@@ -1289,6 +1308,63 @@ impl Database {
     pub async fn delete_provider(&self, id: &str) -> Result<()> {
         db_retry!(
             sqlx::query("DELETE FROM providers WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    // Image Providers
+    pub async fn list_image_providers_ordered(&self) -> Result<Vec<ProviderRecord>> {
+        let rows = db_retry!(
+            sqlx::query_as::<_, ProviderRecord>(
+                "SELECT id, name, provider_type, api_key, base_url, default_model, models, priority, enabled, created_at FROM image_providers ORDER BY priority ASC"
+            )
+            .fetch_all(&self.pool)
+        )?;
+        Ok(rows)
+    }
+
+    pub async fn create_image_provider(
+        &self, name: &str, provider_type: &str, api_key: &str,
+        base_url: &str, default_model: &str, models: &str, priority: i32, enabled: bool,
+    ) -> Result<ProviderRecord> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        db_retry!(
+            sqlx::query(
+                "INSERT INTO image_providers (id, name, provider_type, api_key, base_url, default_model, models, priority, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&id).bind(name).bind(provider_type).bind(api_key)
+            .bind(base_url).bind(default_model).bind(models).bind(priority).bind(enabled).bind(now)
+            .execute(&self.pool)
+        )?;
+        Ok(ProviderRecord {
+            id, name: name.to_string(), provider_type: provider_type.to_string(),
+            api_key: api_key.to_string(), base_url: base_url.to_string(),
+            default_model: default_model.to_string(), models: models.to_string(),
+            priority, enabled, created_at: now,
+        })
+    }
+
+    pub async fn update_image_provider(
+        &self, id: &str, name: &str, provider_type: &str, api_key: &str,
+        base_url: &str, default_model: &str, models: &str, priority: i32, enabled: bool,
+    ) -> Result<()> {
+        db_retry!(
+            sqlx::query(
+                "UPDATE image_providers SET name=?, provider_type=?, api_key=?, base_url=?, default_model=?, models=?, priority=?, enabled=? WHERE id=?"
+            )
+            .bind(name).bind(provider_type).bind(api_key).bind(base_url)
+            .bind(default_model).bind(models).bind(priority).bind(enabled).bind(id)
+            .execute(&self.pool)
+        )?;
+        Ok(())
+    }
+
+    pub async fn delete_image_provider(&self, id: &str) -> Result<()> {
+        db_retry!(
+            sqlx::query("DELETE FROM image_providers WHERE id = ?")
                 .bind(id)
                 .execute(&self.pool)
         )?;

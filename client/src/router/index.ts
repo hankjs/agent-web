@@ -70,6 +70,16 @@ const router = createRouter({
           name: "admin-tasks",
           component: () => import("../views/AdminTasks.vue"),
         },
+        {
+          path: "admin/image-providers",
+          name: "admin-image-providers",
+          component: () => import("../views/AdminImageProviders.vue"),
+        },
+        {
+          path: "image-gen",
+          name: "image-gen",
+          component: () => import("../views/ImageGen.vue"),
+        },
       ],
     },
   ],
