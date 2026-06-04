@@ -1,0 +1,303 @@
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..e83ba36
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,30 @@
++# Requirements Tracker
++
++A zero-dependency Node.js requirements tracker that stores requirements in `requirements.json`.
++
++## Usage
++
++List requirements:
++
++```sh
++npm run demo
++node bin/reqs.js list
++```
++
++Add a requirement:
++
++```sh
++node bin/reqs.js add "Review acceptance criteria"
++```
++
++Toggle completion:
++
++```sh
++node bin/reqs.js toggle REQ-001
++```
++
++Run tests:
++
++```sh
++npm test
++```
+diff --git a/bin/reqs.js b/bin/reqs.js
+new file mode 100755
+index 0000000..6b8e9a2
+--- /dev/null
++++ b/bin/reqs.js
+@@ -0,0 +1,52 @@
++#!/usr/bin/env node
++
++const {
++  listRequirements,
++  addRequirement,
++  toggleRequirement
++} = require('../src/requirements');
++
++function printRequirements(requirements) {
++  for (const requirement of requirements) {
++    const marker = requirement.completed ? 'x' : ' ';
++    console.log(`[${marker}] ${requirement.id} ${requirement.title}`);
++  }
++}
++
++function usage() {
++  console.log('Usage: reqs <list|add|toggle> [title|id]');
++}
++
++function main(argv) {
++  const [command, ...args] = argv;
++
++  try {
++    if (command === 'list') {
++      printRequirements(listRequirements());
++      return;
++    }
++
++    if (command === 'add') {
++      const title = args.join(' ');
++      const requirement = addRequirement(title);
++      console.log(`Added ${requirement.id}: ${requirement.title}`);
++      return;
++    }
++
++    if (command === 'toggle') {
++      const [id] = args;
++      const requirement = toggleRequirement(id);
++      const state = requirement.completed ? 'completed' : 'open';
++      console.log(`${requirement.id} is now ${state}.`);
++      return;
++    }
++
++    usage();
++    process.exitCode = 1;
++  } catch (error) {
++    console.error(error.message);
++    process.exitCode = 1;
++  }
++}
++
++main(process.argv.slice(2));
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..7f1f647
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,14 @@
++{
++  "name": "requirements-tracker",
++  "version": "1.0.0",
++  "description": "A zero-dependency Node.js requirements tracker.",
++  "main": "src/requirements.js",
++  "bin": {
++    "reqs": "bin/reqs.js"
++  },
++  "scripts": {
++    "test": "node --test",
++    "demo": "node bin/reqs.js list"
++  },
++  "license": "MIT"
++}
+diff --git a/requirements.json b/requirements.json
+new file mode 100644
+index 0000000..971de3b
+--- /dev/null
++++ b/requirements.json
+@@ -0,0 +1,17 @@
++[
++  {
++    "id": "REQ-001",
++    "title": "Capture stakeholder needs",
++    "completed": false
++  },
++  {
++    "id": "REQ-002",
++    "title": "Define acceptance criteria",
++    "completed": false
++  },
++  {
++    "id": "REQ-003",
++    "title": "Validate implementation coverage",
++    "completed": true
++  }
++]
+diff --git a/src/requirements.js b/src/requirements.js
+new file mode 100644
+index 0000000..8013933
+--- /dev/null
++++ b/src/requirements.js
+@@ -0,0 +1,68 @@
++const fs = require('node:fs');
++const path = require('node:path');
++
++const defaultFilePath = path.join(__dirname, '..', 'requirements.json');
++
++function readRequirements(filePath = defaultFilePath) {
++  const content = fs.readFileSync(filePath, 'utf8');
++  return JSON.parse(content);
++}
++
++function writeRequirements(requirements, filePath = defaultFilePath) {
++  fs.writeFileSync(filePath, `${JSON.stringify(requirements, null, 2)}\n`);
++}
++
++function nextId(requirements) {
++  const highest = requirements.reduce((max, requirement) => {
++    const match = /^REQ-(\d+)$/.exec(requirement.id);
++    return match ? Math.max(max, Number(match[1])) : max;
++  }, 0);
++
++  return `REQ-${String(highest + 1).padStart(3, '0')}`;
++}
++
++function listRequirements(filePath = defaultFilePath) {
++  return readRequirements(filePath);
++}
++
++function addRequirement(title, filePath = defaultFilePath) {
++  if (!title || !title.trim()) {
++    throw new Error('Requirement title is required.');
++  }
++
++  const requirements = readRequirements(filePath);
++  const requirement = {
++    id: nextId(requirements),
++    title: title.trim(),
++    completed: false
++  };
++
++  requirements.push(requirement);
++  writeRequirements(requirements, filePath);
++
++  return requirement;
++}
++
++function toggleRequirement(id, filePath = defaultFilePath) {
++  if (!id || !id.trim()) {
++    throw new Error('Requirement id is required.');
++  }
++
++  const requirements = readRequirements(filePath);
++  const requirement = requirements.find((item) => item.id === id);
++
++  if (!requirement) {
++    throw new Error(`Requirement not found: ${id}`);
++  }
++
++  requirement.completed = !requirement.completed;
++  writeRequirements(requirements, filePath);
++
++  return requirement;
++}
++
++module.exports = {
++  listRequirements,
++  addRequirement,
++  toggleRequirement
++};
+diff --git a/test/requirements.test.js b/test/requirements.test.js
+new file mode 100644
+index 0000000..d5c8349
+--- /dev/null
++++ b/test/requirements.test.js
+@@ -0,0 +1,86 @@
++const assert = require('node:assert/strict');
++const fs = require('node:fs');
++const os = require('node:os');
++const path = require('node:path');
++const test = require('node:test');
++
++const {
++  listRequirements,
++  addRequirement,
++  toggleRequirement
++} = require('../src/requirements');
++
++const sampleRequirements = [
++  {
++    id: 'REQ-001',
++    title: 'Capture stakeholder needs',
++    completed: false
++  },
++  {
++    id: 'REQ-002',
++    title: 'Define acceptance criteria',
++    completed: false
++  },
++  {
++    id: 'REQ-003',
++    title: 'Validate implementation coverage',
++    completed: true
++  }
++];
++
++function createRequirementsFile() {
++  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'reqs-test-'));
++  const filePath = path.join(directory, 'requirements.json');
++  fs.writeFileSync(filePath, `${JSON.stringify(sampleRequirements, null, 2)}\n`);
++  return { directory, filePath };
++}
++
++test('lists requirements from a requirements file', () => {
++  const { directory, filePath } = createRequirementsFile();
++
++  try {
++    assert.deepEqual(listRequirements(filePath), sampleRequirements);
++  } finally {
++    fs.rmSync(directory, { recursive: true, force: true });
++  }
++});
++
++test('adds a requirement with the next id', () => {
++  const { directory, filePath } = createRequirementsFile();
++
++  try {
++    const requirement = addRequirement('Confirm launch checklist', filePath);
++    const requirements = listRequirements(filePath);
++
++    assert.deepEqual(requirement, {
++      id: 'REQ-004',
++      title: 'Confirm launch checklist',
++      completed: false
++    });
++    assert.equal(requirements.length, 4);
++    assert.deepEqual(requirements.at(-1), requirement);
++  } finally {
++    fs.rmSync(directory, { recursive: true, force: true });
++  }
++});
++
++test('toggles a requirement completion state', () => {
++  const { directory, filePath } = createRequirementsFile();
++
++  try {
++    const requirement = toggleRequirement('REQ-001', filePath);
++    const requirements = listRequirements(filePath);
++
++    assert.deepEqual(requirement, {
++      id: 'REQ-001',
++      title: 'Capture stakeholder needs',
++      completed: true
++    });
++    assert.equal(requirements[0].completed, true);
++
++    const toggledAgain = toggleRequirement('REQ-001', filePath);
++    assert.equal(toggledAgain.completed, false);
++  } finally {
++    fs.rmSync(directory, { recursive: true, force: true });
++  }
++});

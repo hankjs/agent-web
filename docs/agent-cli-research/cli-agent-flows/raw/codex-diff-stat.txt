@@ -1,0 +1,7 @@
+ README.md                 | 30 +++++++++++++++++
+ bin/reqs.js               | 52 ++++++++++++++++++++++++++++
+ package.json              | 14 ++++++++
+ requirements.json         | 17 ++++++++++
+ src/requirements.js       | 68 +++++++++++++++++++++++++++++++++++++
+ test/requirements.test.js | 86 +++++++++++++++++++++++++++++++++++++++++++++++
+ 6 files changed, 267 insertions(+)

@@ -1,0 +1,6 @@
+/private/tmp/coding-agent-recordings/codex-project/README.md
+/private/tmp/coding-agent-recordings/codex-project/bin/reqs.js
+/private/tmp/coding-agent-recordings/codex-project/package.json
+/private/tmp/coding-agent-recordings/codex-project/requirements.json
+/private/tmp/coding-agent-recordings/codex-project/src/requirements.js
+/private/tmp/coding-agent-recordings/codex-project/test/requirements.test.js

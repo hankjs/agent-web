@@ -1,0 +1,80 @@
+
+> requirements-tracker@1.0.0 test
+> node --test
+
+TAP version 13
+# Subtest: listRequirements returns all items
+ok 1 - listRequirements returns all items
+  ---
+  duration_ms: 1.233042
+  type: 'test'
+  ...
+# Subtest: listRequirements returns a copy, not the original array
+ok 2 - listRequirements returns a copy, not the original array
+  ---
+  duration_ms: 0.124583
+  type: 'test'
+  ...
+# Subtest: addRequirement appends a new open requirement
+ok 3 - addRequirement appends a new open requirement
+  ---
+  duration_ms: 0.417625
+  type: 'test'
+  ...
+# Subtest: addRequirement assigns id = max + 1
+ok 4 - addRequirement assigns id = max + 1
+  ---
+  duration_ms: 0.051208
+  type: 'test'
+  ...
+# Subtest: addRequirement starts ids at 1 when empty
+ok 5 - addRequirement starts ids at 1 when empty
+  ---
+  duration_ms: 0.051208
+  type: 'test'
+  ...
+# Subtest: addRequirement does not mutate the original array
+ok 6 - addRequirement does not mutate the original array
+  ---
+  duration_ms: 0.046291
+  type: 'test'
+  ...
+# Subtest: addRequirement trims the title
+ok 7 - addRequirement trims the title
+  ---
+  duration_ms: 0.051583
+  type: 'test'
+  ...
+# Subtest: addRequirement throws on empty title
+ok 8 - addRequirement throws on empty title
+  ---
+  duration_ms: 0.165833
+  type: 'test'
+  ...
+# Subtest: toggleRequirement flips done state
+ok 9 - toggleRequirement flips done state
+  ---
+  duration_ms: 0.257583
+  type: 'test'
+  ...
+# Subtest: toggleRequirement does not mutate the original array
+ok 10 - toggleRequirement does not mutate the original array
+  ---
+  duration_ms: 0.273666
+  type: 'test'
+  ...
+# Subtest: toggleRequirement throws on unknown id
+ok 11 - toggleRequirement throws on unknown id
+  ---
+  duration_ms: 0.116791
+  type: 'test'
+  ...
+1..11
+# tests 11
+# suites 0
+# pass 11
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 47.457917

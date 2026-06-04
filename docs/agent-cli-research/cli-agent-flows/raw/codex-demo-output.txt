@@ -1,0 +1,7 @@
+
+> requirements-tracker@1.0.0 demo
+> node bin/reqs.js list
+
+[ ] REQ-001 Capture stakeholder needs
+[ ] REQ-002 Define acceptance criteria
+[x] REQ-003 Validate implementation coverage

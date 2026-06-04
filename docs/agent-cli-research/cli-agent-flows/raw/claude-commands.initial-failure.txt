@@ -1,0 +1,14 @@
+Working directory:
+/private/tmp/coding-agent-recordings/claude-project
+
+Captured version:
+claude --version > /private/tmp/coding-agent-recordings/claude-version.txt
+
+Captured help:
+claude --help > /private/tmp/coding-agent-recordings/claude-help.txt
+
+Initial project creation attempt:
+claude -p --output-format stream-json --debug-file /private/tmp/coding-agent-recordings/claude-debug.log --permission-mode dontAsk --tools default --settings '{"permissions":{"allow":["Bash(*)","Read(*)","Write(*)","Edit(*)","MultiEdit(*)"]}}' "$(cat /private/tmp/coding-agent-recordings/claude-user-prompt.txt)" > /private/tmp/coding-agent-recordings/claude-stream.jsonl
+
+Initial attempt result:
+Error: When using --print, --output-format=stream-json requires --verbose

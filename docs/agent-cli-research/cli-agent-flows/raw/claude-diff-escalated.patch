@@ -1,0 +1,337 @@
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..7067efc
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,63 @@
++# Requirements Tracker
++
++A tiny local requirements tracker with **zero third-party dependencies**. Built on Node's
++built-in modules and the `node:test` runner.
++
++## Requirements
++
++- Node.js 18+ (uses ES modules and `node --test`)
++
++## Data
++
++Requirements are stored in `requirements.json` as an array of objects:
++
++```json
++{ "id": 1, "title": "Users can create an account", "done": false }
++```
++
++## CLI
++
++The CLI lives in `bin/reqs.js`.
++
++```bash
++# List all requirements
++node bin/reqs.js list
++
++# Add a new requirement
++node bin/reqs.js add "Users can upload an avatar"
++
++# Toggle a requirement's done state by id
++node bin/reqs.js toggle 1
++```
++
++## Scripts
++
++```bash
++# Run the test suite
++npm test
++
++# Run the demo (lists current requirements)
++npm run demo
++```
++
++## Library API
++
++`src/requirements.js` exports three pure functions. Each returns a new array and never
++mutates its input.
++
++```js
++import {
++  listRequirements,
++  addRequirement,
++  toggleRequirement,
++} from "./src/requirements.js";
++
++const reqs = [];
++const withOne = addRequirement(reqs, "Write docs"); // [{ id: 1, title: "Write docs", done: false }]
++const done = toggleRequirement(withOne, 1);          // marks #1 as done
++const all = listRequirements(done);                  // returns a copy of the list
++```
++
++- `listRequirements(requirements)` — returns a shallow copy of the list.
++- `addRequirement(requirements, title)` — appends a new open requirement with `id = max + 1`. Throws if the title is empty.
++- `toggleRequirement(requirements, id)` — flips the `done` flag for the matching id. Throws if the id is not found.
+diff --git a/bin/reqs.js b/bin/reqs.js
+new file mode 100755
+index 0000000..bbd53c5
+--- /dev/null
++++ b/bin/reqs.js
+@@ -0,0 +1,83 @@
++#!/usr/bin/env node
++// CLI for the requirements tracker.
++// Usage:
++//   reqs list
++//   reqs add <title>
++//   reqs toggle <id>
++
++import { readFile, writeFile } from "node:fs/promises";
++import { fileURLToPath } from "node:url";
++import { dirname, join } from "node:path";
++import {
++  listRequirements,
++  addRequirement,
++  toggleRequirement,
++} from "../src/requirements.js";
++
++const __dirname = dirname(fileURLToPath(import.meta.url));
++const DATA_FILE = join(__dirname, "..", "requirements.json");
++
++async function load() {
++  const raw = await readFile(DATA_FILE, "utf8");
++  return JSON.parse(raw);
++}
++
++async function save(requirements) {
++  await writeFile(DATA_FILE, JSON.stringify(requirements, null, 2) + "\n");
++}
++
++function printList(requirements) {
++  if (requirements.length === 0) {
++    console.log("No requirements yet. Add one with: reqs add <title>");
++    return;
++  }
++  for (const r of requirements) {
++    const mark = r.done ? "[x]" : "[ ]";
++    console.log(`${mark} #${r.id} ${r.title}`);
++  }
++}
++
++async function main() {
++  const [command, ...args] = process.argv.slice(2);
++
++  switch (command) {
++    case "list":
++    case undefined: {
++      const requirements = await load();
++      printList(listRequirements(requirements));
++      break;
++    }
++    case "add": {
++      const title = args.join(" ");
++      const requirements = await load();
++      const next = addRequirement(requirements, title);
++      await save(next);
++      const added = next[next.length - 1];
++      console.log(`Added #${added.id} ${added.title}`);
++      break;
++    }
++    case "toggle": {
++      const id = Number(args[0]);
++      if (!Number.isInteger(id)) {
++        throw new Error("toggle requires a numeric id, e.g. reqs toggle 1");
++      }
++      const requirements = await load();
++      const next = toggleRequirement(requirements, id);
++      await save(next);
++      const updated = next.find((r) => r.id === id);
++      const state = updated.done ? "done" : "open";
++      console.log(`Toggled #${id} -> ${state}`);
++      break;
++    }
++    default: {
++      console.error(`Unknown command: ${command}`);
++      console.error("Usage: reqs <list|add <title>|toggle <id>>");
++      process.exitCode = 1;
++    }
++  }
++}
++
++main().catch((err) => {
++  console.error(err.message);
++  process.exitCode = 1;
++});
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..cc5c8ef
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,14 @@
++{
++  "name": "requirements-tracker",
++  "version": "1.0.0",
++  "description": "A tiny local requirements tracker with zero third-party dependencies.",
++  "type": "module",
++  "bin": {
++    "reqs": "bin/reqs.js"
++  },
++  "scripts": {
++    "test": "node --test",
++    "demo": "node bin/reqs.js list"
++  },
++  "license": "MIT"
++}
+diff --git a/requirements.json b/requirements.json
+new file mode 100644
+index 0000000..7cfc887
+--- /dev/null
++++ b/requirements.json
+@@ -0,0 +1,17 @@
++[
++  {
++    "id": 1,
++    "title": "Users can create an account",
++    "done": false
++  },
++  {
++    "id": 2,
++    "title": "Users can reset their password",
++    "done": true
++  },
++  {
++    "id": 3,
++    "title": "Admins can export requirements as JSON",
++    "done": false
++  }
++]
+diff --git a/src/requirements.js b/src/requirements.js
+new file mode 100644
+index 0000000..97c5b24
+--- /dev/null
++++ b/src/requirements.js
+@@ -0,0 +1,50 @@
++// Core requirements logic. Pure functions over an array of requirements.
++// A requirement is: { id: number, title: string, done: boolean }
++
++/**
++ * Return the list of requirements. Returns a shallow copy so callers
++ * cannot mutate the source array by accident.
++ * @param {Array} requirements
++ * @returns {Array}
++ */
++export function listRequirements(requirements) {
++  return [...requirements];
++}
++
++/**
++ * Add a new requirement with the given title. Returns a new array.
++ * The new id is one greater than the current maximum id (or 1 if empty).
++ * @param {Array} requirements
++ * @param {string} title
++ * @returns {Array}
++ */
++export function addRequirement(requirements, title) {
++  const trimmed = typeof title === "string" ? title.trim() : "";
++  if (!trimmed) {
++    throw new Error("A requirement title is required.");
++  }
++  const nextId = requirements.reduce((max, r) => Math.max(max, r.id), 0) + 1;
++  return [...requirements, { id: nextId, title: trimmed, done: false }];
++}
++
++/**
++ * Toggle the done state of the requirement with the given id.
++ * Returns a new array. Throws if the id is not found.
++ * @param {Array} requirements
++ * @param {number} id
++ * @returns {Array}
++ */
++export function toggleRequirement(requirements, id) {
++  let found = false;
++  const next = requirements.map((r) => {
++    if (r.id === id) {
++      found = true;
++      return { ...r, done: !r.done };
++    }
++    return r;
++  });
++  if (!found) {
++    throw new Error(`No requirement found with id ${id}.`);
++  }
++  return next;
++}
+diff --git a/test/requirements.test.js b/test/requirements.test.js
+new file mode 100644
+index 0000000..f99bc6e
+--- /dev/null
++++ b/test/requirements.test.js
+@@ -0,0 +1,74 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import {
++  listRequirements,
++  addRequirement,
++  toggleRequirement,
++} from "../src/requirements.js";
++
++const sample = () => [
++  { id: 1, title: "First", done: false },
++  { id: 2, title: "Second", done: true },
++];
++
++test("listRequirements returns all items", () => {
++  const reqs = sample();
++  assert.deepEqual(listRequirements(reqs), reqs);
++});
++
++test("listRequirements returns a copy, not the original array", () => {
++  const reqs = sample();
++  const result = listRequirements(reqs);
++  assert.notEqual(result, reqs);
++});
++
++test("addRequirement appends a new open requirement", () => {
++  const reqs = sample();
++  const next = addRequirement(reqs, "Third");
++  assert.equal(next.length, 3);
++  assert.deepEqual(next[2], { id: 3, title: "Third", done: false });
++});
++
++test("addRequirement assigns id = max + 1", () => {
++  const reqs = [{ id: 5, title: "Five", done: false }];
++  const next = addRequirement(reqs, "New");
++  assert.equal(next[1].id, 6);
++});
++
++test("addRequirement starts ids at 1 when empty", () => {
++  const next = addRequirement([], "First");
++  assert.equal(next[0].id, 1);
++});
++
++test("addRequirement does not mutate the original array", () => {
++  const reqs = sample();
++  addRequirement(reqs, "Third");
++  assert.equal(reqs.length, 2);
++});
++
++test("addRequirement trims the title", () => {
++  const next = addRequirement([], "  spaced  ");
++  assert.equal(next[0].title, "spaced");
++});
++
++test("addRequirement throws on empty title", () => {
++  assert.throws(() => addRequirement([], "   "), /title is required/);
++});
++
++test("toggleRequirement flips done state", () => {
++  const reqs = sample();
++  const next = toggleRequirement(reqs, 1);
++  assert.equal(next[0].done, true);
++  const back = toggleRequirement(next, 1);
++  assert.equal(back[0].done, false);
++});
++
++test("toggleRequirement does not mutate the original array", () => {
++  const reqs = sample();
++  toggleRequirement(reqs, 1);
++  assert.equal(reqs[0].done, false);
++});
++
++test("toggleRequirement throws on unknown id", () => {
++  assert.throws(() => toggleRequirement(sample(), 99), /No requirement found/);
++});

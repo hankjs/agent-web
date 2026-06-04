@@ -1,0 +1,21 @@
+Create a zero-dependency Node.js requirements tracker project in the current directory.
+
+Requirements:
+- package.json with test and demo scripts.
+- README.md with concise usage and project overview.
+- requirements.json containing exactly three sample requirements.
+- src/requirements.js exporting listRequirements, addRequirement, and toggleRequirement.
+- bin/reqs.js command line interface supporting:
+  - list
+  - add <title>
+  - toggle <id>
+- Tests using node:test.
+- Run the tests before your final response.
+
+Implementation constraints:
+- Use only built-in Node.js modules.
+- Keep the project small and readable.
+- Make bin/reqs.js executable.
+- Do not initialize git.
+
+Final response should summarize files created and test result.

@@ -1,0 +1,6 @@
+ A README.md
+ A bin/reqs.js
+ A package.json
+ A requirements.json
+ A src/requirements.js
+ A test/requirements.test.js
