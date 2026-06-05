@@ -508,6 +508,41 @@ pub async fn get_session_events(
     R::ok(serde_json::json!(unified))
 }
 
+/// GET /api/sessions/{id}/transcript — FR-SESSION-3: 导出用户可见会话记录（不含隐藏 prompt、内部推理、secret）
+pub async fn get_session_transcript(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let session = match state.db.get_session(&id).await {
+        Ok(Some(s)) => s,
+        Ok(None) => return R::not_found("session not found"),
+        Err(e) => return R::internal_error(e),
+    };
+
+    let messages = if let Some(ref leaf) = session.active_leaf_id {
+        state.db.get_branch_messages(&id, leaf).await.unwrap_or_default()
+    } else {
+        state.db.get_messages(&id).await.unwrap_or_default()
+    };
+
+    // 仅保留用户可见角色，不含内部系统消息
+    let transcript: Vec<serde_json::Value> = messages
+        .iter()
+        .filter(|m| m.role == "user" || m.role == "assistant")
+        .map(|m| serde_json::json!({
+            "role": m.role,
+            "content": m.content,
+            "created_at": m.created_at,
+        }))
+        .collect();
+
+    R::ok(serde_json::json!({
+        "session_id": id,
+        "transcript": transcript,
+        "message_count": transcript.len(),
+    }))
+}
+
 // GET /api/templates?category=requirement — client-accessible template listing
 #[derive(Deserialize)]
 pub struct TemplateQuery {

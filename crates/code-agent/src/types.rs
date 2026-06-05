@@ -1,6 +1,31 @@
 use crate::agent::{TaskStatus, Verdict};
 use serde::{Deserialize, Serialize};
 
+/// 文件变更类型
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChangeKind {
+    Add,
+    Update,
+    Delete,
+}
+
+/// 单个文件变更记录（用于 file.changed 事件与 artifact 索引）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileChange {
+    pub path: String,
+    pub kind: FileChangeKind,
+}
+
+/// run 的终态状态
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Success,
+    Failed,
+    Cancelled,
+}
+
 /// Events emitted by the agent loop to the caller (SSE stream)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -91,4 +116,113 @@ pub enum AgentEvent {
     },
     /// Streaming tool output delta (实时输出)
     ToolOutputDelta { id: String, chunk: String },
+
+    // ─── Run / Turn 生命周期事件 (FR-EVT-2/3, FR-LOOP-7) ───
+    /// 一次完整运行开始
+    RunStarted {
+        run_id: String,
+        timestamp: String,
+        cwd: Option<String>,
+        model: String,
+        permission_mode: String,
+        tools: Vec<String>,
+    },
+    /// 一次完整运行完成
+    RunCompleted {
+        run_id: String,
+        timestamp: String,
+        status: RunStatus,
+        input_tokens: u32,
+        output_tokens: u32,
+        summary: String,
+        permission_denials: Vec<String>,
+        file_changes: Vec<FileChange>,
+    },
+    /// 一次完整运行失败
+    RunFailed {
+        run_id: String,
+        timestamp: String,
+        message: String,
+    },
+    /// 一次完整运行被取消
+    RunCancelled {
+        run_id: String,
+        timestamp: String,
+        /// FR-SESSION-5: 取消前已完成的文件变更
+        #[serde(default)]
+        file_changes: Vec<FileChange>,
+        /// FR-SESSION-5: 取消前已记录的权限拒绝
+        #[serde(default)]
+        permission_denials: Vec<String>,
+    },
+    /// 一轮 LLM 交互开始
+    TurnStarted {
+        run_id: String,
+        turn_id: String,
+        timestamp: String,
+        phase: String,
+        message_count: usize,
+    },
+    /// 一轮 LLM 交互完成
+    TurnCompleted {
+        run_id: String,
+        turn_id: String,
+        timestamp: String,
+    },
+
+    // ─── 结构化文件变更事件 (FR-EVT-4, FR-TOOL-6) ───
+    /// 编辑类工具产生的结构化文件变更
+    FileChanged {
+        run_id: String,
+        turn_id: String,
+        changes: Vec<FileChange>,
+    },
+
+    // ─── 权限事件 (FR-PERM-5/6, FR-EVT-9) ───
+    /// 工具执行需要审批
+    PermissionRequested {
+        run_id: String,
+        turn_id: String,
+        tool: String,
+        tool_use_id: String,
+        risk: String,
+        reason: String,
+    },
+    /// 工具执行被拒绝
+    PermissionDenied {
+        run_id: String,
+        turn_id: String,
+        tool: String,
+        tool_use_id: String,
+        reason: String,
+    },
+
+    // ─── 上下文组装事件 (FR-CTX-9, FR-EVT-9) ───
+    /// 上下文按分层组装完成（debug 摘要，不含完整 system prompt）
+    ContextAssembled {
+        run_id: String,
+        turn_id: String,
+        segments: Vec<String>,
+        total_chars: usize,
+    },
+
+    // ─── 计划事件 (FR-EVT-9) ───
+    /// 用户可见的简短计划/状态更新
+    PlanUpdated {
+        run_id: String,
+        text: String,
+    },
+
+    // ─── 验证事件 (FR-VERIFY-2, FR-EVT-9) ───
+    /// 验证阶段开始
+    VerificationStarted {
+        run_id: String,
+        command: Option<String>,
+    },
+    /// 验证阶段完成
+    VerificationCompleted {
+        run_id: String,
+        verdict: Verdict,
+        issues: Vec<String>,
+    },
 }

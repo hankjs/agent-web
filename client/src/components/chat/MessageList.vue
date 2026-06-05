@@ -9,6 +9,10 @@ import ToolGroupBlock from "./ToolGroupBlock.vue";
 import AskUserCard from "./AskUserCard.vue";
 import UserBlock from "./UserBlock.vue";
 import StructuredResultCard from "./StructuredResultCard.vue";
+import FileChangedBlock from "./FileChangedBlock.vue";
+import VerificationBlock from "./VerificationBlock.vue";
+import PermissionRequestBlock from "./PermissionRequestBlock.vue";
+import RunStatusBlock from "./RunStatusBlock.vue";
 
 const props = defineProps<{
   renderItems: RenderItem[];
@@ -116,6 +120,12 @@ defineExpose({ messagesEl, scrollToBottom, scrollToMessageId, scrollToLastUserMe
           @start-custom="(qIdx: number) => emit('startAskCustom', item, qIdx)"
           @submit="emit('submitAsk', item)"
           @update:active-tab="item.activeTab = $event" />
+        <FileChangedBlock v-else-if="item.kind === 'file_changed'" :changes="item.changes" />
+        <VerificationBlock v-else-if="item.kind === 'verification'"
+          :status="item.status" :verdict="item.verdict" :issues="item.issues" />
+        <PermissionRequestBlock v-else-if="item.kind === 'permission_request'"
+          :tool="item.tool" :risk="item.risk" :reason="item.reason" :answered="item.answered" />
+        <RunStatusBlock v-else-if="item.kind === 'run_status'" :status="item.status" :message="item.message" />
       </template>
       <div v-if="isStreaming && blocksLength === 0" class="streaming-dot"></div>
       <div class="scroll-spacer"></div>

@@ -50,6 +50,7 @@ export function useChatSSE(options: UseChatSSEOptions) {
             b.tool.result = event.content;
             b.tool.isError = event.is_error;
             b.tool.isRunning = false;
+            b.tool.streamingOutput = undefined;
             break;
           }
         }
@@ -81,6 +82,66 @@ export function useChatSSE(options: UseChatSSEOptions) {
       case "generate_complete":
       case "task_updated":
         onChangeEvent?.();
+        break;
+      case "tool_output_delta": {
+        for (let i = blocks.value.length - 1; i >= 0; i--) {
+          const b = blocks.value[i];
+          if (b.kind === ChatBlockKind.Tool && b.tool.id === event.id) {
+            b.tool.streamingOutput = (b.tool.streamingOutput || "") + event.chunk;
+            break;
+          }
+        }
+        break;
+      }
+      case "file_changed":
+        if (event.changes?.length) {
+          blocks.value.push({ kind: ChatBlockKind.FileChanged, changes: event.changes });
+        }
+        break;
+      case "permission_requested":
+        blocks.value.push({
+          kind: ChatBlockKind.PermissionRequest,
+          runId: event.run_id, turnId: event.turn_id,
+          tool: event.tool, toolUseId: event.tool_use_id,
+          risk: event.risk, reason: event.reason, answered: false,
+        });
+        break;
+      case "permission_denied":
+        // Mark last matching permission_requested as answered
+        for (let i = blocks.value.length - 1; i >= 0; i--) {
+          const b = blocks.value[i];
+          if (b.kind === ChatBlockKind.PermissionRequest && b.toolUseId === event.tool_use_id) {
+            b.answered = true;
+            break;
+          }
+        }
+        break;
+      case "verification_started":
+        blocks.value.push({ kind: ChatBlockKind.Verification, status: "started" });
+        break;
+      case "verification_completed":
+        // Update the last verification_started block or push a completed one
+        for (let i = blocks.value.length - 1; i >= 0; i--) {
+          const b = blocks.value[i];
+          if (b.kind === ChatBlockKind.Verification && b.status === "started") {
+            b.status = "completed";
+            b.verdict = event.verdict;
+            b.issues = event.issues;
+            break;
+          }
+        }
+        break;
+      case "run_started":
+        blocks.value.push({ kind: ChatBlockKind.RunStatus, status: "started" });
+        break;
+      case "run_completed":
+        blocks.value.push({ kind: ChatBlockKind.RunStatus, status: "completed" });
+        break;
+      case "run_failed":
+        blocks.value.push({ kind: ChatBlockKind.RunStatus, status: "failed", message: event.message });
+        break;
+      case "run_cancelled":
+        blocks.value.push({ kind: ChatBlockKind.RunStatus, status: "cancelled" });
         break;
     }
 

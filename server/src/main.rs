@@ -122,6 +122,7 @@ async fn main() -> Result<()> {
         .route("/api/sessions/{id}/active-leaf", put(routes::update_active_leaf))
         .route("/api/sessions/{id}/local-events", post(routes::post_local_events))
         .route("/api/sessions/{id}/events", get(routes::get_session_events))
+        .route("/api/sessions/{id}/transcript", get(routes::get_session_transcript))
         .route("/api/settings", put(routes::update_settings))
         .route("/api/providers", get(routes::list_providers))
         // Image providers (public list for client)

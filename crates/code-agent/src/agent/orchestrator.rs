@@ -514,26 +514,136 @@ impl OrchestratorAgent {
             }
         }
 
-        // Execute delegate tasks (always sequential)
-        for (id, input) in &delegate_tasks {
-            if cancel.is_cancelled() {
-                break;
-            }
-            let result = self
-                .handle_delegate_task(id, input, &event_tx, cancel)
-                .await?;
+        // Execute delegate tasks — parallel if no affected_paths conflicts, sequential otherwise
+        if !delegate_tasks.is_empty() {
             had_worker = true;
-            if result.status != TaskStatus::Success {
-                worker_success = false;
-            }
-            tool_results.push(ContentBlock::ToolResult {
-                tool_use_id: id.to_string(),
-                content: format!(
-                    "Task {} completed with status {:?}.\nSummary: {}",
-                    result.task_id, result.status, result.summary
-                ),
-                is_error: result.status == TaskStatus::Failed,
+
+            // Detect write conflicts: tasks sharing any affected_path must run sequentially
+            let tasks_parsed: Vec<(String, DelegatedTask)> = delegate_tasks
+                .iter()
+                .map(|(id, input)| {
+                    let task = DelegatedTask {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        description: input.get("description").and_then(|v| v.as_str()).unwrap_or("unnamed task").to_string(),
+                        context: input.get("context").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        tools_allowed: input.get("tools_allowed").and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .unwrap_or_default(),
+                        affected_paths: input.get("affected_paths").and_then(|v| v.as_array())
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .unwrap_or_default(),
+                    };
+                    (id.to_string(), task)
+                })
+                .collect();
+
+            let has_path_conflict = {
+                let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut conflict = false;
+                for (_, task) in &tasks_parsed {
+                    for path in &task.affected_paths {
+                        if !seen_paths.insert(path.clone()) {
+                            conflict = true;
+                            break;
+                        }
+                    }
+                    if conflict { break; }
+                }
+                conflict
+            };
+
+            let has_write_workers = tasks_parsed.iter().any(|(_, task)| {
+                task.tools_allowed.iter().any(|t_name| {
+                    self.tools.iter().any(|t| t.name() == t_name && t.is_write())
+                })
             });
+
+            if !has_path_conflict && !has_write_workers && tasks_parsed.len() > 1 {
+                // Parallel: no write tools, no path conflicts
+                let futures: Vec<_> = tasks_parsed
+                    .into_iter()
+                    .map(|(id, task)| {
+                        let worker_tools: Vec<Arc<dyn Tool>> = self.tools.iter()
+                            .filter(|t| task.tools_allowed.contains(&t.name().to_string()))
+                            .cloned()
+                            .collect();
+                        let worker = WorkerAgent::new(self.provider.clone(), worker_tools, self.model.clone());
+                        let event_tx2 = event_tx.clone();
+                        let cancel2 = cancel.clone();
+                        async move {
+                            let _ = event_tx2.send(AgentEvent::WorkerSpawned {
+                                task_id: task.id.clone(),
+                                description: task.description.clone(),
+                            }).await;
+                            let result = worker.execute_task(&task, event_tx2.clone(), cancel2).await;
+                            (id, result)
+                        }
+                    })
+                    .collect();
+                let results = futures::future::join_all(futures).await;
+                for (id, res) in results {
+                    match res {
+                        Ok(result) => {
+                            let _ = event_tx.send(AgentEvent::WorkerCompleted {
+                                task_id: result.task_id.clone(),
+                                status: result.status.clone(),
+                                summary: result.summary.clone(),
+                            }).await;
+                            if result.status != TaskStatus::Success { worker_success = false; }
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: format!("Task {} completed with status {:?}.\nSummary: {}", result.task_id, result.status, result.summary),
+                                is_error: result.status == TaskStatus::Failed,
+                            });
+                        }
+                        Err(e) => {
+                            worker_success = false;
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: format!("Worker error: {e}"),
+                                is_error: true,
+                            });
+                        }
+                    }
+                }
+            } else {
+                // Sequential: write tools present or path conflicts detected
+                for (id, task) in tasks_parsed {
+                    if cancel.is_cancelled() { break; }
+                    let worker_tools: Vec<Arc<dyn Tool>> = self.tools.iter()
+                        .filter(|t| task.tools_allowed.contains(&t.name().to_string()))
+                        .cloned()
+                        .collect();
+                    let worker = WorkerAgent::new(self.provider.clone(), worker_tools, self.model.clone());
+                    let _ = event_tx.send(AgentEvent::WorkerSpawned {
+                        task_id: task.id.clone(),
+                        description: task.description.clone(),
+                    }).await;
+                    match worker.execute_task(&task, event_tx.clone(), cancel.clone()).await {
+                        Ok(result) => {
+                            let _ = event_tx.send(AgentEvent::WorkerCompleted {
+                                task_id: result.task_id.clone(),
+                                status: result.status.clone(),
+                                summary: result.summary.clone(),
+                            }).await;
+                            if result.status != TaskStatus::Success { worker_success = false; }
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: format!("Task {} completed with status {:?}.\nSummary: {}", result.task_id, result.status, result.summary),
+                                is_error: result.status == TaskStatus::Failed,
+                            });
+                        }
+                        Err(e) => {
+                            worker_success = false;
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: format!("Worker error: {e}"),
+                                is_error: true,
+                            });
+                        }
+                    }
+                }
+            }
         }
 
         self.messages.push(Message {

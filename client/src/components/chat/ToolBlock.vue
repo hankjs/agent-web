@@ -28,7 +28,10 @@ function toolSummary(tc: ToolCall): string {
       <span v-if="tool.source" class="source-badge" :class="tool.source">{{ tool.source === 'local' ? 'Local' : 'Server' }}</span>
       <span class="tool-summary">{{ toolSummary(tool) }}</span>
     </button>
-    <div v-if="!tool.expanded && tool.result" class="tool-preview" @click="$emit('toggle', tool)">
+    <div v-if="tool.isRunning && tool.streamingOutput" class="tool-preview">
+      <pre class="tool-content streaming">{{ tool.streamingOutput }}</pre>
+    </div>
+    <div v-else-if="!tool.expanded && tool.result" class="tool-preview" @click="$emit('toggle', tool)">
       <pre class="tool-content" :class="{ 'tool-content-error': tool.isError }">{{ previewLines(tool.result) }}</pre>
     </div>
     <div v-if="tool.expanded && (tool.input || tool.result)" class="tool-body">
@@ -65,5 +68,6 @@ function toolSummary(tc: ToolCall): string {
 .source-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 .source-badge.local { color: var(--color-env-local); background: var(--color-env-local-bg); }
 .source-badge.remote { color: var(--color-env-remote); background: var(--color-env-remote-bg); }
+.streaming { opacity: 0.8; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 </style>

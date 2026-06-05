@@ -125,6 +125,7 @@ pub async fn chat_handler(
     let session_record = state.db.get_session(&session_id).await.ok().flatten();
     let work_dir = session_record.as_ref().and_then(|s| s.work_dir.clone());
     let work_dir_for_checkpoint = work_dir.clone();
+    let work_dir_for_agent = work_dir.clone();
     let session_change_id = session_record.as_ref().and_then(|s| s.change_id.clone());
     let session_type = session_record.as_ref().map(|s| s.session_type.clone()).unwrap_or_else(|| "chat".to_string());
 
@@ -359,6 +360,48 @@ pub async fn chat_handler(
                 current_model,
                 system_prompt.clone(),
             );
+            // 接入权限模型：workspace-write 模式 + work_dir 作为可写根（FR-PERM-1/4）
+            if let Some(ref wd) = work_dir_for_agent {
+                session = session.with_permission(
+                    code_tools::PermissionMode::WorkspaceWrite,
+                    wd.clone(),
+                );
+            }
+            // 分层注入运行时 + 环境上下文（FR-CTX-1/2）。
+            // base 沿用客户端组装的 system_prompt（业务提示词由客户端负责）。
+            {
+                let runtime = code_agent::RuntimeContext {
+                    permission_mode: "workspace-write".to_string(),
+                    approval_policy: "auto".to_string(),
+                    writable_roots: work_dir_for_agent.clone().into_iter().collect(),
+                    network_policy: "restricted".to_string(),
+                    tools: tools
+                        .iter()
+                        .map(|t| code_agent::ToolInfo {
+                            name: t.name().to_string(),
+                            description: t.description().to_string(),
+                            risk: format!("{:?}", t.risk_level()),
+                        })
+                        .collect(),
+                    skills: vec![],
+                };
+                let env = code_agent::EnvironmentContext {
+                    cwd: work_dir_for_agent.clone(),
+                    shell: "/bin/sh".to_string(),
+                    current_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                    timezone: "UTC".to_string(),
+                    repo_root: work_dir_for_agent.clone(),
+                    sandbox_mode: "workspace-write".to_string(),
+                    network_policy: "restricted".to_string(),
+                };
+                let (_assembled, named) = code_agent::build_layered_prompt(
+                    Some(&system_prompt),
+                    Some(&runtime),
+                    Some(&env),
+                    &[],
+                );
+                session = session.with_layered_prompt(named);
+            }
             session.set_messages(history.clone());
 
             match session.run(user_content.clone(), event_tx.clone(), cancel_token.clone()).await {
@@ -628,5 +671,18 @@ fn extract_event_type(event: &AgentEvent) -> &'static str {
         AgentEvent::GenerateComplete { .. } => "generate_complete",
         AgentEvent::LlmRequest { .. } => "llm_request",
         AgentEvent::ToolOutputDelta { .. } => "tool_output_delta",
+        AgentEvent::RunStarted { .. } => "run_started",
+        AgentEvent::RunCompleted { .. } => "run_completed",
+        AgentEvent::RunFailed { .. } => "run_failed",
+        AgentEvent::RunCancelled { .. } => "run_cancelled",
+        AgentEvent::TurnStarted { .. } => "turn_started",
+        AgentEvent::TurnCompleted { .. } => "turn_completed",
+        AgentEvent::FileChanged { .. } => "file_changed",
+        AgentEvent::PermissionRequested { .. } => "permission_requested",
+        AgentEvent::PermissionDenied { .. } => "permission_denied",
+        AgentEvent::ContextAssembled { .. } => "context_assembled",
+        AgentEvent::PlanUpdated { .. } => "plan_updated",
+        AgentEvent::VerificationStarted { .. } => "verification_started",
+        AgentEvent::VerificationCompleted { .. } => "verification_completed",
     }
 }

@@ -26,6 +26,7 @@ pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const LONG_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub use permission::ToolRisk;
+pub use permission::{PermissionConfig, PermissionDecision, PermissionGuard, PermissionMode};
 
 #[async_trait]
 pub trait Tool: Send + Sync {
