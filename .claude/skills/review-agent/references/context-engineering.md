@@ -4,11 +4,13 @@
 
 | 维度 | 含义 | 手段 |
 |------|------|------|
-| **O**ffload | 卸载 | 把信息从上下文移到外部存储 |
-| **R**educe | 缩减 | 压缩已有上下文 |
-| **R**etrieve | 检索 | 按需拉取相关信息 |
-| **I**solate | 隔离 | 子任务用独立上下文 |
+| **O**ffload | 卸载 | 把用过的信息写到文件系统，只留路径（无损，可恢复）|
+| **R**educe | 缩减 | 压缩已有上下文（有损，慎用）|
+| **R**etrieve | 检索 | 按需拉取相关信息（JIT）|
+| **I**solate | 隔离 | 子任务用独立上下文（Multi-Agent）|
 | **C**ache | 缓存 | 复用已计算的 KV Cache |
+
+**优先级**：原始内容 > Offload（无损）> Compress（有损）> Summary（摘要）
 
 ## 审查 Checklist
 
@@ -74,21 +76,31 @@ function microcompact(messages: Message[]): Message[] {
 
 ### 3. Just-In-Time Context ✅
 
-上下文不是越早塞越好，按需加载：
+**三条 JIT 路线对比**
 
-```
-❌ 启动时加载所有项目文件到 system prompt
-✅ 模型需要时通过工具（read_file/grep）按需获取
-```
+| 路线 | 核心机制 | 适合场景 |
+|------|----------|----------|
+| Agentic Search | Agent 用 Glob/Grep/Read 主动探索 | 代码导航、内容频繁变化（Claude Code/Cursor/Devin 的选择）|
+| RAG | 预建索引，语义检索 top-k | 知识库问答、非结构化文档、延迟敏感 |
+| Context Offloading (Manus) | 用过的信息写到文件，上下文只留路径 | 长链路任务（50+ 轮工具调用）|
 
-三条 JIT 路径：
-- **Agentic Search**：模型主动调用 glob/grep/read 工具
-- **RAG**：语义检索相关文档片段
-- **Context Offloading**：子 Agent 处理后返回摘要
+**为什么 Coding Agent 选 Agentic Search 而非 RAG**：
+- Grep 是精确匹配，向量检索是模糊匹配
+- 代码随时在变，RAG 索引容易过期
+- Agentic Search 过程可观测（每步可看）
+- 零额外基础设施（文件系统即数据库）
+
+**Hybrid Retrieval Strategy（Anthropic 推荐）**：
+```
+确定性最高 → 预加载到 system prompt（CLAUDE.md、用户偏好）
+确定性中等 → 按规则触发（*.test.ts 打开时加载测试规范）
+确定性最低 → 交给 Agent Agentic Search/RAG 自主发现
+```
 
 - [ ] 是否避免了预加载大量静态内容？
-- [ ] 是否提供了足够的搜索/检索工具？
+- [ ] 是否提供了足够的搜索/检索工具（Glob/Grep/Read）？
 - [ ] CLAUDE.md / 项目说明是否精简（< 200 行）？
+- [ ] 大结果是否先 Offload 到文件再在上下文里放路径？
 
 ### 4. Cache 利用 ✅
 

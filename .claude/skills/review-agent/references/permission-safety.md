@@ -78,6 +78,26 @@ function validatePath(path: string, projectRoot: string): boolean {
 - [ ] 确认信息是否清晰展示操作内容和影响？
 - [ ] 是否有超时自动拒绝？
 
+## LLM 分类器（第五层：语义层权限判断）
+
+规则无法覆盖所有边界情况（如 `git status` 安全 vs `git push --force` 高危），Claude Code 使用轻量 LLM 调用做语义判断：
+
+```
+规则匹配（静态）→ LLM 分类器（动态语义）→ 交互确认（兜底）
+```
+
+- 结合当前对话上下文理解命令意图
+- 比 glob 规则（`Bash(git:*)` 全放行）更精细
+- 代价：轻微额外延迟（Coding Agent 安全性值得付出）
+
+## Mask Don't Remove 原则
+
+不删除工具定义，而是标记不可用（通过 response prefill/logit masking 屏蔽输出概率）：
+
+- 删除工具定义 → 改变 prompt 结构 → KV Cache 全部失效
+- Mask 方案 → tools 列表不变 → Cache 命中率 ~95%（vs 动态增删的 ~20%）
+- 工具名用统一前缀（`browser_*`、`shell_*`）方便按组 mask
+
 ## 权限模式参考（Claude Code）
 
 | 模式 | 行为 |

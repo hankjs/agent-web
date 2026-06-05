@@ -15,11 +15,11 @@ user-invocable: true
 | 支柱 | 关注点 | Reference |
 |------|--------|-----------|
 | Agent Loop | 循环结构、终止条件、死循环检测、Token 预算 | [agent-loop](references/agent-loop.md) |
-| Tool System | 工具注册、执行管线、结果截断、并发控制、动态加载 | [tool-system](references/tool-system.md) |
-| Context Engineering | 上下文组装、压缩策略、JIT 加载、Cache 利用 | [context-engineering](references/context-engineering.md) |
-| Permission & Safety | 权限分层、输入校验、破坏性操作防护 | [permission-safety](references/permission-safety.md) |
-| Session & Persistence | 会话存储、Prompt Pipe 模式、崩溃恢复 | [session-persistence](references/session-persistence.md) |
-| Resilience | API 容错、重试策略、错误分类、降级处理 | [resilience](references/resilience.md) |
+| Tool System | 7 步执行管线、结果截断、并发控制、动态加载、错误信息设计 | [tool-system](references/tool-system.md) |
+| Context Engineering | ORRIC 五维、JIT 三路线（Agentic Search/RAG/Offloading）、压缩策略、Cache | [context-engineering](references/context-engineering.md) |
+| Permission & Safety | 四层防线、LLM 分类器、Mask Don't Remove、Prompt Injection | [permission-safety](references/permission-safety.md) |
+| Session & Persistence | JSONL 存储、Prompt Pipe、Skills 渐进加载、Memory Flush、崩溃恢复 | [session-persistence](references/session-persistence.md) |
+| Resilience | API 容错、重试策略、流式容错、"边说边执行"、降级处理 | [resilience](references/resilience.md) |
 
 ## 审查流程
 
@@ -60,22 +60,32 @@ user-invocable: true
 - 是否有 maxTurns / maxTokens 硬性上限？
 - 是否有死循环指纹检测（连续相同 tool_use 检测）？
 - 终止条件是否明确（end_turn / stop_reason）？
-- Token 预算耗尽时是否有 nudge 机制？
+- Token 预算耗尽时是否有 nudge 机制（80% 提醒 → 95% 强制摘要）？
 
 ### Tool System 核心检查项
-- 工具描述是否清晰、无歧义？
-- 大结果是否有截断保护（head-tail 策略）？
-- 并发工具是否有读写锁控制？
-- 工具数量 >15 时是否有 deferred loading？
+- 执行管线是否完整（参数校验→业务校验→标准化→Pre-Hook→权限→执行→Post-Hook）？
+- 大结果是否有截断保护（head-tail 策略，50K chars 上限）？
+- 错误信息是否面向模型（含纠错上下文）而非面向开发者（只有错误码）？
+- 并发工具是否有读写锁控制（只读并发，写操作串行）？
+- 工具数量 >15-30 时是否有 deferred loading？
+- 工具列表是否在整个对话中保持稳定（Mask Don't Remove）？
 
 ### Context Engineering 核心检查项
-- System Prompt 是否模块化（Prompt Pipe）？
-- 是否有多层压缩策略（Microcompact → Summarize）？
-- 是否利用了 Prompt Cache（静态前缀）？
-- JIT Context 是否按需加载而非预加载？
+- System Prompt 是否模块化（Prompt Pipe，静态前缀 + 动态后缀）？
+- 是否有多层压缩策略（Microcompact → Summarize → Overflow Retry）？
+- 是否利用了 Prompt Cache（静态前缀不变，动态内容追加到末尾）？
+- JIT 路线是否匹配场景（代码→Agentic Search，知识库→RAG，长链路→Offloading）？
+- 是否有 Context Rot 风险（上下文塞了大量无关内容稀释注意力）？
 
 ### Permission 核心检查项
 - 破坏性操作是否需要确认？
-- 是否有 allowlist/denylist 机制？
-- 路径操作是否有沙箱限制？
+- 是否有 allowlist/denylist + LLM 分类器两层判断？
+- 路径操作是否有沙箱限制（防路径穿越）？
+- 是否用 Mask 而非删除来禁用工具（保护 KV Cache）？
 - 是否防止了 prompt injection 导致的越权？
+
+### Session & Resilience 核心检查项
+- 压缩前是否有 Memory Flush（避免信息永久丢失）？
+- Skills 是否三层渐进加载（frontmatter → 完整内容 → 引用文件）？
+- 是否有指数退避重试（区分 transient/permanent 错误）？
+- 是否实现了"边说边执行"（工具块完成即执行，不等整条消息）？

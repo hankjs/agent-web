@@ -67,6 +67,24 @@ interface TimeoutConfig {
 - [ ] 部分响应是否有缓存，支持断点续传？
 - [ ] 流错误是否回退到非流式请求？
 
+**"边说边执行"（Streaming Parallel Execution）**
+
+生产级 Agent 不等整条消息说完再执行工具，工具块完成就立即开始：
+
+- [ ] 只读工具（Read/Grep/Glob）是否在流式阶段并发执行？
+- [ ] 写操作（Edit）是否等所有并发工具完成后才串行执行？
+- [ ] Bash 工具失败是否级联取消同批次其他 Bash（不取消 Read）？
+- [ ] 工具结果是否按调用顺序返回（而非完成顺序）？
+- [ ] tool_use_id 是否正确匹配（协议层），结果顺序是否可调试？
+
+**SSE vs WebSocket 选择**
+
+| 场景 | 推荐 |
+|------|------|
+| LLM token 流式输出 | SSE（单向推送，标准 HTTP，自动重连）|
+| 工具审批交互 | SSE + HTTP POST（两次流之间的空隙）|
+| 高频双向实时 | WebSocket |
+
 ### 5. 降级策略 ✅
 
 - [ ] 主模型不可用时是否有 fallback 模型？

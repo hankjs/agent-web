@@ -3,8 +3,18 @@
 ## 工具生命周期
 
 ```
-定义 → 注册 → 发现 → 选择 → 参数校验 → 执行 → 结果处理 → 回传
+定义 → 注册 → 发现 → 选择 → 参数校验 → 业务校验 → 输入标准化 → Pre-Hook → 权限检查 → 执行 → 结果处理 → Post-Hook → 回传
 ```
+
+### 完整 7 步执行管线（Claude Code 模式）
+
+1. **参数格式校验**：JSON Schema 验证，失败返回精确路径（"file_path: Expected string, received number"）
+2. **业务逻辑校验**：语义层检查（文件是否存在、old_string 是否唯一）
+3. **输入标准化**：生成补全副本（相对路径→绝对路径），保留原始输入不变以维持 Prompt Cache
+4. **Pre-Hook**：用户自定义脚本，exit 0 放行，exit 2 拦截，输出 updatedInput 修改后放行
+5. **权限检查**：规则匹配 → LLM 分类器（语义层判断 git status vs git push --force）→ 交互确认
+6. **执行 + 结果处理**：工具执行，大结果存磁盘，错误信息面向模型设计（含纠错上下文）
+7. **Post-Hook**：过滤敏感信息、触发 lint、审计日志
 
 ## 审查 Checklist
 
@@ -92,24 +102,50 @@ if (toolCalls.every(t => registry.get(t.name)?.isReadOnly)) {
 
 ### 6. 动态工具集（Deferred Loading）✅
 
-当工具数量 > 15 时，全部塞入 prompt 会：
-- 消耗大量 token
-- 降低模型选择准确率
-- 破坏 KV Cache
+工具数量阈值：超过延迟工具总 Schema 的 10% 上下文窗口（约 25-30 个工具）时触发。
 
-解决方案：
+**三种策略对比**
 
-```typescript
-// 分层策略
-const alwaysLoaded = ['read_file', 'write_file', 'bash', 'grep']  // 高频核心工具
-const deferredTools = [...]  // 低频工具，通过 tool_search 发现
+| 策略 | 核心思路 | Cache 影响 | 需要 API 支持 |
+|------|----------|-----------|--------------|
+| Claude Code Deferred Loading | ToolSearch 按需发现，API 层 defer_loading | 极低（defer 工具不参与 Cache key）| 是 |
+| OpenClaw Tool Profile | 按场景预选工具子集 | 切换 Profile 会失效 | 否 |
+| Manus 小工具集 + Bash | <20 原子工具，复杂操作 bash/脚本 | 极低（列表永远不变）| 是（logit masking）|
 
-// tool_search 元工具
-{
-  name: 'tool_search',
-  description: 'Search for available tools by keyword when you need a capability not in your current toolset',
-  execute: (query) => fuzzyMatch(deferredTools, query)
-}
+**无 Anthropic API 时的两种备选方案**
+
+方案 A：ToolSearch 返回文本 Schema + 动态添加 tools 列表（加工具那轮 Cache 失效，之后稳定）
+
+方案 B：双工具代理（Cache 完全不受影响）
+```json
+// tools 列表永远只有这两个，不变
+[
+  { "name": "tool_search", "description": "搜索可用工具，返回完整 Schema" },
+  { "name": "call_tool", "description": "调用工具，参数参考 tool_search 结果" }
+]
+```
+
+**关键原则：工具列表稳定性 > 工具数量少**
+宁可保留用不上的工具，也不要在每轮动态增删（Cache 杀手）。
+
+- [ ] 工具数量是否超阈值（>15-30）？是否有延迟加载或分组策略？
+- [ ] 每个延迟工具是否有 `searchHint`（3-10 词，供 ToolSearch 匹配）？
+- [ ] 工具列表在整个对话中是否保持稳定（"Mask Don't Remove"）？
+- [ ] 禁用工具是否用 mask 而非删除？
+
+### 7. 错误信息设计（面向模型）✅
+
+错误信息接收者是模型，不是开发者：
+
+- [ ] 错误是否包含纠错所需的上下文（而非只有错误码）？
+- [ ] 文件不存在时是否列出当前目录的可选文件？
+- [ ] old_string 不唯一时是否说明出现次数并建议提供更多上下文？
+
+```
+❌ ENOENT: no such file or directory, open '/src/helpers/utils.ts'
+✅ 文件 /src/helpers/utils.ts 不存在。当前 /src/ 目录下有：
+   - /src/utils.ts
+   - /src/lib/helpers.ts
 ```
 
 ## 反模式
@@ -122,6 +158,9 @@ const deferredTools = [...]  // 低频工具，通过 tool_search 发现
 | 错误直接 throw | Agent 循环崩溃 | 格式化为 tool_result |
 | 无超时 | 工具卡死阻塞循环 | 加 timeout + AbortController |
 | 并发写操作 | 竞态条件 | 读写锁 |
+| 动态增删工具列表 | Cache 全部失效 | Mask Don't Remove |
+| 错误信息面向开发者 | 模型无法自我纠正 | 包含纠错上下文 |
+| 保留原始输入做补全 | Cache miss | 生成副本，保留原始 |
 
 ## 评分标准
 
