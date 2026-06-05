@@ -1,13 +1,22 @@
 # Permission & Safety 审查标准
 
-## 四层防线模型
+## 权限防线模型
+
+不同系统层数不同，核心三层（Claude Code）：
 
 ```
-Layer 1: 工具分类（静态标注）
-Layer 2: 规则过滤（allowlist / denylist）
-Layer 3: 人工确认（交互式审批）
-Layer 4: 沙箱隔离（运行时限制）
+Layer 1: 规则匹配（allowlist / denylist，静态快速路径）
+Layer 2: LLM 分类器（动态语义判断，规则覆盖不到的边界）
+Layer 3: 人工确认（兜底，未匹配规则时询问用户，default 模式下未匹配 Bash = ask，不是 deny）
 ```
+
+扩展五层（OpenClaw 等更严格系统）在三层基础上加入：
+```
+Layer 4: 沙箱隔离（运行时限制，文件系统/网络/进程）
+Layer 5: 审计日志（事后追溯）
+```
+
+> **注意**：default 模式下未匹配规则的 Bash 命令是「询问用户」而非「自动拒绝」。只有明确在 denylist 中的才直接拒绝。
 
 ## 审查 Checklist
 
@@ -44,7 +53,7 @@ const rules: PermissionRule[] = [
 ]
 ```
 
-- [ ] 是否有默认 deny 策略（未匹配规则时拒绝）？
+- [ ] 未匹配规则时的默认行为是否合理（default 模式 = ask 用户，不是自动 deny；只有明确 denylist 才拒绝）？
 - [ ] 规则是否支持 glob/regex 匹配？
 - [ ] 是否有「记住本次选择」机制避免重复确认？
 

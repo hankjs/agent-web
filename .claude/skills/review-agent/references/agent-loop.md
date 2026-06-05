@@ -25,19 +25,25 @@ while (true) {
 
 ### 2. 死循环检测 ✅
 
-**指纹检测法**：对连续 N 次 tool_use 生成指纹，检测重复模式
+**双指纹检测法**：同时记录调用指纹和结果指纹，只有「同样调用 + 同样结果」才算无进展
 
 ```typescript
 // 推荐实现
 interface LoopDetector {
-  fingerprint(toolCall: ToolCall): string  // tool_name + hash(args)
-  detect(history: string[]): boolean       // 滑动窗口检测重复
+  // 调用指纹：tool_name + hash(args)
+  callFingerprint(toolCall: ToolCall): string
+  // 结果指纹：hash(tool_result_content)
+  resultFingerprint(result: ToolResult): string
+  // 组合指纹：两者都相同才记为重复
+  combinedFingerprint(call: ToolCall, result: ToolResult): string
+  detect(history: string[]): boolean  // 滑动窗口检测重复
 }
 ```
 
 检测策略：
-- 连续 3+ 次完全相同的 tool_use → 死循环
-- 滑动窗口内重复率 > 70% → 疑似循环
+- 连续 3+ 次「调用指纹 + 结果指纹」完全相同 → 死循环（同样调用 + 同样结果 = 真正无进展）
+- 仅调用指纹相同但结果不同（如轮询场景）→ **不算**死循环
+- 滑动窗口内组合重复率 > 70% → 疑似循环
 - 检测到后：注入 nudge 消息提醒模型换策略，而非直接终止
 
 ### 3. Token 预算管理 ✅
@@ -52,9 +58,9 @@ interface TokenBudget {
 ```
 
 预算耗尽策略：
-- 80% 时注入 nudge：「Token 预算即将耗尽，请尽快总结并完成任务」
-- 95% 时强制总结：要求模型输出当前进度摘要
-- 100% 时优雅终止：保存状态，告知用户
+- 90% 时注入 nudge：「Token 预算即将耗尽，请继续完成任务，**不要总结**」（继续工作，不中断）
+- 溢出时强制终止：保存状态，告知用户
+- 关键：nudge 指令是「继续工作」而非「输出总结」——总结会让模型提前放弃任务
 
 ### 4. 错误恢复 ✅
 

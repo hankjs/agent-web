@@ -1,6 +1,7 @@
 ---
 name: review-agent
 description: "Review Agent implementation code against production-grade patterns. Use when reviewing, auditing, or improving Agent systems: agent loops, tool systems, context engineering, compression, permission models, session persistence, error handling, and multi-agent coordination. Covers loop safety, tool registration/execution, context window management, token budgets, streaming, MCP integration, and harness engineering."
+when_to_use: "Use when the user asks to review, audit, or improve an Agent implementation. Triggers on: /review-agent, 'review this agent', 'audit the loop', 'check my tool system', 'is this production-grade'."
 user-invocable: true
 ---
 
@@ -60,7 +61,7 @@ user-invocable: true
 - 是否有 maxTurns / maxTokens 硬性上限？
 - 是否有死循环指纹检测（连续相同 tool_use 检测）？
 - 终止条件是否明确（end_turn / stop_reason）？
-- Token 预算耗尽时是否有 nudge 机制（80% 提醒 → 95% 强制摘要）？
+- Token 预算耗尽时是否有 nudge 机制（90% 注入「继续工作，不要总结」指令）？
 
 ### Tool System 核心检查项
 - 执行管线是否完整（参数校验→业务校验→标准化→Pre-Hook→权限→执行→Post-Hook）？
