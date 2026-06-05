@@ -278,6 +278,8 @@ Anthropic - Effective Context Engineering
 Anthropic - Prompt Caching
 上一篇
 Session 持久化 + Prompt Pipe——对话存档与模块化 Prompt 组装
+下一篇 · 第三章：Context Engineering
+三层即时防线——Token 估算、工具截断与 TTL 修剪
 编辑器
 
 

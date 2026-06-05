@@ -26,7 +26,7 @@ write_file 的问题是它会覆盖整个文件。模型要改一行代码，得
 
 edit_file 的思路完全不同：你告诉我要替换哪段文本（old_string），替换成什么（new_string），我只改你指定的部分。值得一提的是，这就是 Claude Code 的 Edit 工具采用的方式。
 
-src/tools/file-tools.ts
+src/tools.ts
 应用
 复制
 export const editFileTool: ToolDefinition = {
@@ -94,7 +94,7 @@ glob：按模式找文件
 
 Agent 要修改代码，第一步往往是"先看看项目里有哪些文件"。list_directory 只能看一层目录，glob 可以递归搜索。
 
-src/tools/search-tools.ts
+src/tools.ts
 应用
 复制
 export const globTool: ToolDefinition = {
@@ -146,7 +146,7 @@ grep：搜内容比找文件更重要
 
 模型要改一个函数，第一步不是读整个文件，而是 grep 找到函数在哪里、被谁调用了。
 
-src/tools/search-tools.ts
+src/tools.ts
 应用
 复制
 export const grepTool: ToolDefinition = {
@@ -196,7 +196,7 @@ bash：最强也最危险的工具
 
 bash 是万能工具——能跑测试、能装依赖、能查环境、能做任何 shell 能做的事。但也正因为如此，它是最危险的。一个 rm -rf / 就能把系统搞挂。
 
-src/tools/shell-tools.ts
+src/tools.ts
 应用
 复制
 export const bashTool: ToolDefinition = {
