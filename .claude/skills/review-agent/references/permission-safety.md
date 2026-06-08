@@ -2,21 +2,29 @@
 
 ## 权限防线模型
 
-不同系统层数不同，核心三层（Claude Code）：
+不同系统的权限层数不同，没有唯一正确答案，按需选用：
 
+**Claude Code（规则驱动 + 可选 LLM 分类器）**
 ```
-Layer 1: 规则匹配（allowlist / denylist，静态快速路径）
-Layer 2: LLM 分类器（动态语义判断，规则覆盖不到的边界）
-Layer 3: 人工确认（兜底，未匹配规则时询问用户，default 模式下未匹配 Bash = ask，不是 deny）
-```
-
-扩展五层（OpenClaw 等更严格系统）在三层基础上加入：
-```
-Layer 4: 沙箱隔离（运行时限制，文件系统/网络/进程）
-Layer 5: 审计日志（事后追溯）
+Layer 1: 权限模式（plan/default/acceptEdits/bypassPermissions）
+Layer 2: Allow / Deny / Ask 规则（工具名 + 参数前缀匹配）
+Layer 3: 人工确认（兜底，未匹配规则时询问用户）
+可选增强: LLM 分类器（语义层判断，处理规则覆盖不到的边界，如 git status vs git push --force）
 ```
 
-> **注意**：default 模式下未匹配规则的 Bash 命令是「询问用户」而非「自动拒绝」。只有明确在 denylist 中的才直接拒绝。
+**OpenClaw（纯确定性五层，不依赖 LLM 判断）**
+```
+Layer 1: Tool Profile（按场景预选工具子集）
+Layer 2: Allow / Deny 白名单（Provider 级粒度）
+Layer 3: Owner-only 工具（高权限操作限管理员）
+Layer 4: Exec Approval（执行类工具两阶段审批，60s 超时）
+Layer 5: Workspace 路径边界（应用层路径校验，非 OS 沙箱）
+```
+
+> **注意**：
+> - default 模式下未匹配规则的 Bash 命令是「询问用户」而非「自动拒绝」。只有明确在 denylist 中的才直接拒绝。
+> - 「没有 LLM 分类器」不等于设计缺陷——OpenClaw 的五层全是确定性过滤，同样是生产级实现。
+> - 评审时关注的是「是否有合理的分层」，而非「是否使用了某个特定技术」。
 
 ## 审查 Checklist
 
@@ -64,11 +72,24 @@ const rules: PermissionRule[] = [
 - [ ] 是否阻止了对敏感文件的访问（`.env`, `credentials`）？
 
 ```typescript
+import { resolve, relative } from 'node:path'
+import { realpathSync } from 'node:fs'
+
 function validatePath(path: string, projectRoot: string): boolean {
-  const resolved = resolve(projectRoot, path)
-  return resolved.startsWith(projectRoot)  // 防止路径穿越
+  // realpathSync 解析 symlink，防止通过软链接绕过
+  const realRoot = realpathSync(projectRoot)
+  let realPath: string
+  try { realPath = realpathSync(resolve(projectRoot, path)) }
+  catch { return false }  // 路径不存在也拒绝
+  // relative 返回 '../' 开头说明路径在 root 之外
+  const rel = relative(realRoot, realPath)
+  return !rel.startsWith('..') && !rel.startsWith('/')
 }
 ```
+
+- [ ] 是否用 `realpathSync` 解析 symlink（防止软链接绕过）？
+- [ ] 是否阻止访问不存在的路径？
+- [ ] 是否阻止对敏感文件的访问（`.env`, `credentials`, `*.key`）？
 
 ### 4. Prompt Injection 防护 ✅
 
@@ -128,8 +149,8 @@ function validatePath(path: string, projectRoot: string): boolean {
 
 ## 评分标准
 
-- ⭐⭐⭐⭐⭐：四层防线完整 + 审批疲劳优化 + 审计日志
-- ⭐⭐⭐⭐：有分类和确认机制，缺沙箱
-- ⭐⭐⭐：有基本确认，无 allowlist
-- ⭐⭐：只有简单的 yes/no 确认
+- ⭐⭐⭐⭐⭐：明确分层（≥3 层）+ 路径边界（realpath）+ 审批疲劳优化 + 审计日志
+- ⭐⭐⭐⭐：有操作分级和确认机制，路径校验安全，缺审计日志
+- ⭐⭐⭐：有基本确认，无 allow/deny 规则，路径用 startsWith 校验
+- ⭐⭐：只有简单的 yes/no 确认，无分级
 - ⭐：无权限控制，生产环境危险

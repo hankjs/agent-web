@@ -42,12 +42,16 @@ function buildSystemPrompt(ctx: RuntimeContext): string {
 
 ### 2. 上下文压缩策略 ✅
 
-推荐三层压缩（参考 Claude Code）：
+推荐分层压缩，从轻到重，能用简单手段解决的绝不上复杂方案：
 
-**Layer 1: Microcompact（无损清理）**
-- 清除旧 tool_result 的具体内容，保留结构
-- 不改变消息数量和角色顺序
-- 零成本，无 LLM 调用
+**即时防线（零 LLM 成本，每轮自动执行）**
+- 工具结果截断：单条超过窗口 50% 时做 Head/Tail 60/40 分割；总量超 75% 时从最旧开始清理
+- TTL 修剪：软修剪（5 分钟）保留头尾替换中间；硬清除（10 分钟）清空内容只留标记
+- 注意：错误结果永不修剪（模型需要记住「这条路走不通」）
+
+**Layer 1: Microcompact（无损清理，无 LLM 调用）**
+- 清除旧 tool_result 的具体内容，保留消息结构和角色顺序
+- 只清理「查询类」工具结果（read_file、bash、grep 等），保留最近 N 条不动
 
 ```typescript
 function microcompact(messages: Message[]): Message[] {
@@ -60,19 +64,19 @@ function microcompact(messages: Message[]): Message[] {
 }
 ```
 
-**Layer 2: Summarization（LLM 摘要）**
-- 用小模型对历史消息生成结构化摘要
-- 保留关键标识符（文件名、函数名、变量名）
-- 摘要替换原始消息
+**Layer 2: Summarization（LLM 摘要，有 LLM 成本）**
+- 用小模型对历史消息生成结构化摘要（模板化，不要让模型自由发挥）
+- 保留关键标识符（文件路径、函数名、UUID），切分点对齐到 user 消息边界
+- 已有摘要时合并进去一起压缩（累积摘要，不丢失最早期信息）
+- 失败时返回原始消息列表，不能影响 Agent 正常工作
 
-**Layer 3: Overflow Retry（溢出重试）**
-- 上下文超限时截断最旧消息，保留 system + 最近 N 轮
-- 重试请求
+**执行顺序**：即时防线（截断 + TTL）→ Microcompact → Summarization（按需）
 
-- [ ] 是否有压缩触发阈值（如 80% 上下文窗口）？
+- [ ] 是否有压缩触发阈值（如 75-87% 上下文窗口）？
 - [ ] 压缩是否保留了关键信息（文件路径、决策点）？
-- [ ] 是否有多层递进策略？
+- [ ] 是否有多层递进策略（先无损后有损）？
 - [ ] 压缩失败是否有 fallback？
+- [ ] 是否用小模型而非主力模型做摘要（降成本）？
 
 ### 3. Just-In-Time Context ✅
 

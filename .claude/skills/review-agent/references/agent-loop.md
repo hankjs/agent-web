@@ -25,26 +25,36 @@ while (true) {
 
 ### 2. 死循环检测 ✅
 
+三种需要覆盖的模式：
+- **通用重复**：同一工具、同样参数、同样结果，反复调用
+- **乒乓循环**：A → B → A → B，来回交替但整体无进展
+- **轮询无进展**：不断 poll 检查状态，结果一直不变
+
 **双指纹检测法**：同时记录调用指纹和结果指纹，只有「同样调用 + 同样结果」才算无进展
 
 ```typescript
-// 推荐实现
 interface LoopDetector {
-  // 调用指纹：tool_name + hash(args)
+  // 调用指纹：tool_name + stable_hash(args)
   callFingerprint(toolCall: ToolCall): string
   // 结果指纹：hash(tool_result_content)
   resultFingerprint(result: ToolResult): string
   // 组合指纹：两者都相同才记为重复
   combinedFingerprint(call: ToolCall, result: ToolResult): string
-  detect(history: string[]): boolean  // 滑动窗口检测重复
+  detect(history: string[]): boolean  // 滑动窗口（最近 30 条）
 }
 ```
 
 检测策略：
-- 连续 3+ 次「调用指纹 + 结果指纹」完全相同 → 死循环（同样调用 + 同样结果 = 真正无进展）
-- 仅调用指纹相同但结果不同（如轮询场景）→ **不算**死循环
-- 滑动窗口内组合重复率 > 70% → 疑似循环
-- 检测到后：注入 nudge 消息提醒模型换策略，而非直接终止
+- 仅调用指纹相同但结果不同（如正常轮询）→ **不算**死循环
+- 调用指纹 + 结果指纹均相同，连续 N 次 → 无进展
+
+**三级响应**（先软后硬，避免误杀正常工作的 Agent）：
+
+| 级别 | 阈值 | 行为 |
+|------|------|------|
+| Warning | ~5 次 | 注入 nudge 提醒模型换策略 |
+| Critical | ~8 次 | 阻断工具调用，强制停止循环 |
+| 全局熔断 | ~10 次 | 无条件强制停止 |
 
 ### 3. Token 预算管理 ✅
 
