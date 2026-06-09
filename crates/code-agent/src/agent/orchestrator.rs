@@ -1,4 +1,4 @@
-use crate::agent::traits::{DelegatedTask, TaskResult, TaskStatus, ThinkStrategy};
+use crate::agent::traits::{DelegatedTask, TaskStatus, ThinkStrategy};
 use crate::agent::worker::WorkerAgent;
 use crate::agent::LoopDetector;
 use crate::context::summary::{estimate_tokens, truncate_tool_result_default};
@@ -678,81 +678,6 @@ impl OrchestratorAgent {
         } else {
             Ok(ActResult::Continue)
         }
-    }
-
-    async fn handle_delegate_task(
-        &self,
-        _tool_use_id: &str,
-        input: &serde_json::Value,
-        event_tx: &mpsc::Sender<AgentEvent>,
-        cancel: &CancellationToken,
-    ) -> Result<TaskResult> {
-        let task = DelegatedTask {
-            id: uuid::Uuid::new_v4().to_string(),
-            description: input
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unnamed task")
-                .to_string(),
-            context: input
-                .get("context")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            tools_allowed: input
-                .get("tools_allowed")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            affected_paths: input
-                .get("affected_paths")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        };
-
-        let _ = event_tx
-            .send(AgentEvent::WorkerSpawned {
-                task_id: task.id.clone(),
-                description: task.description.clone(),
-            })
-            .await;
-
-        // Filter tools for the worker
-        let worker_tools: Vec<Arc<dyn Tool>> = self
-            .tools
-            .iter()
-            .filter(|t| task.tools_allowed.contains(&t.name().to_string()))
-            .cloned()
-            .collect();
-
-        let worker = WorkerAgent::new(
-            self.provider.clone(),
-            worker_tools,
-            self.model.clone(),
-        );
-
-        let result = worker
-            .execute_task(&task, event_tx.clone(), cancel.clone())
-            .await?;
-
-        let _ = event_tx
-            .send(AgentEvent::WorkerCompleted {
-                task_id: result.task_id.clone(),
-                status: result.status.clone(),
-                summary: result.summary.clone(),
-            })
-            .await;
-
-        Ok(result)
     }
 
     async fn execute_tool(&self, name: &str, input: serde_json::Value, event_tx: &mpsc::Sender<AgentEvent>, tool_use_id: &str) -> ToolOutput {

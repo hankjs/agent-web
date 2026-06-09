@@ -61,6 +61,7 @@ pub async fn generate_image(
         Ok(v) => v,
         Err(e) => return R::bad_request(e),
     };
+    let model = body.model.unwrap_or(model);
 
     let n = body.n.unwrap_or(1).min(4);
     let size = body.size.as_deref().unwrap_or("1024x1024");
