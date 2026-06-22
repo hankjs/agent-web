@@ -597,6 +597,8 @@ Claude Code AutoDream Feature
 Dive into Claude Code — Memory System Analysis
 上一篇
 让对话越来越便宜——Prompt Cache 与成本追踪
+下一篇 · 第四章：Memory + RAG
+RAG 实战——sqlite-vec + BM25 混合检索
 编辑器
 
 
