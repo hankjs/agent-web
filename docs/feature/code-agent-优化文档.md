@@ -74,27 +74,27 @@
 
 | 模块 | 文件 | 已有能力 | 主要差距 |
 | --- | --- | --- | --- |
-| 会话循环 | `src/session.rs` | `AgentMode::Simple` 扁平循环、streaming、工具执行、取消、metrics（服务端仅用 Simple） | 缺 run/turn id、标准 terminal status、权限统一接线、持久化 |
-| 编排器 | `src/agent/orchestrator.rs` | Think/Act 两阶段、`delegate_task` 伪工具派发 Worker、读工具并发、写工具串行 | 需要 plan 事件、worker 冲突检测、验证回流 |
-| Worker | `src/agent/worker.rs` | 子任务 loop、工具过滤、独立上下文预算（100k/60k）、artifact summary | 需要 affected_paths 约束和更严格权限隔离 |
-| Verifier | `src/agent/verifier.rs` | read-only verifier 雏形、JSON verdict | **未被任何调用方接线**；revision loop 未闭合 |
-| 上下文 | `src/context/manager.rs`、`summary.rs` | 预算分级、microcompact、LLM summary、truncate 三层压缩 | 需要压缩后 usage reset、summary 质量验收、稳定前缀策略 |
+| 会话循环 | `src/session.rs` | `AgentMode::Simple` 扁平循环、streaming、工具执行、取消、metrics、run/turn 生命周期、权限门控、文件变更事件 | 缺完整持久化、artifact 索引和所有事件统一关联 ID |
+| 编排器 | `src/agent/orchestrator.rs` | Think/Act 两阶段、run/turn 生命周期、直接工具权限门控、文件变更事件、读工具并发；非只读 Worker 委派暂时拒绝避免绕过权限 | 需要 plan 事件、Worker scoped permission 与写入跟踪、验证修订回流 |
+| Worker | `src/agent/worker.rs` | 子任务 loop、工具过滤、独立上下文预算（100k/60k）、artifact summary；由 Orchestrator 主流程限制写 Worker | 需要 affected_paths 强约束、Worker 内部权限门控和文件变更回传 |
+| Verifier | `src/agent/verifier.rs` | read-only verifier、JSON verdict；Simple 写操作后可调用并进入有限修订 loop；Orchestrator 写操作后可调用 verifier 并记录非通过风险 | Orchestrator 仍未接 verifier 修订回流 |
+| 上下文 | `src/context/manager.rs`、`summary.rs` | 预算分级、microcompact、LLM summary、truncate 三层压缩；Simple 压缩后重置 usage | 需要 summary 质量验收、稳定前缀策略和 Orchestrator usage 校准 |
 | 循环检测 | `src/agent/loop_detector.rs` | 滑动窗口指纹 + 重复率双策略 | 需要失败分类与终止事件更结构化 |
 | 重试 | `src/retry.rs` | 指数退避、抖动、按错误文本判定可重试 | 需要与 provider fallback、事件和最终风险汇报闭合 |
 | Prompt Pipe | `src/prompt_pipe.rs` | `PromptSegment`、`discover_project_context`（CLAUDE.md/AGENTS.md/.cursorrules） | 需要 runtime context、tool inventory、deferred skills 接入运行时 |
-| 事件 | `src/types.rs` | `AgentEvent` 枚举：文本、工具、metrics、压缩、verification、ask_user | 缺 run/turn lifecycle、file change、permission、plan events |
-| 工具 | `crates/code-tools` | 统一 `Tool` trait、timeout、risk、streaming、常用工具集 | 需要统一权限落点、diff artifact、shell/test 结构化输出 |
-| 权限 | `code-tools/src/permission.rs` | `PermissionGuard`/`PermissionConfig`、危险命令识别 | **Guard 未接入 Agent loop**，sandbox path 校验与审批闭环不足 |
+| 事件 | `src/types.rs` | `AgentEvent` 已包含并发出 run/turn lifecycle、file change、permission、verification、metrics、压缩、ask_user | 需要 plan events 覆盖、所有旧事件补 run_id/turn_id/timestamp、JSONL 持久日志 |
+| 工具 | `crates/code-tools` | 统一 `Tool` trait、timeout、risk、streaming、常用工具集、直接编辑工具可触发文件变更事件 | 需要 diff artifact、shell/test 更结构化输出、完整输出 artifact |
+| 权限 | `code-tools/src/permission.rs` | `PermissionGuard` 已接入 Simple 与 Orchestrator 直接工具路径；支持 sandbox path 校验、denial 事件和 run 汇总 | Worker 内部权限、交互式审批持久规则和恢复闭环不足 |
 
 ### 3.1 关键差距摘要（待补齐）
 
-- **G1 分层提示词缺失**：`act_phase` 直接拼 `system_prompt`，无 developer/environment 分层，`prompt_pipe` 分段能力未用于运行时上下文注入。
-- **G2 权限模型未接线**：`PermissionGuard` 存在但工具执行前无权限检查；`ask_user` 审批闭环仅在 Simple 模式部分存在。
-- **G3 验证阶段未启用**：`VerifierAgent` 无调用方，「验证」未成为循环显式阶段。
-- **G4 事件 schema 不完整**：缺 `run.started/run.completed`、缺结构化 `file.changed`、无统一 `run_id`/`turn_id` 关联。
-- **G5 失败恢复策略隐式**：缺工具缺失/沙箱失败时的显式降级与升级路径。
-- **G6 Skills 渐进式披露未落地**：无 SKILL.md 目录扫描与按需加载机制。
-- **G7 持久化与恢复不完整**：缺 run/turn id、会话恢复、artifact 索引、标准 terminal status。
+- **G1 分层提示词部分落地**：服务端 chat 路径已使用 layered prompt 和 context 摘要，Orchestrator phase 仍有局部硬编码提示。
+- **G2 权限模型部分接线**：Simple 与 Orchestrator 直接工具已走 `PermissionGuard`；Worker 内部工具执行仍需 scoped permission。
+- **G3 验证阶段部分启用**：Simple 写操作后可调用 `VerifierAgent` 并有限修订；Orchestrator 可调用 verifier，但仍缺修订回流。
+- **G4 事件 schema 部分补齐**：已有 `run.started/run.completed`、`turn.started/turn.completed`、`file.changed`、permission 事件；旧事件还未统一携带 run/turn/timestamp。
+- **G5 失败恢复策略仍偏观察型**：已有工具错误分类提示，缺主动替代路径、提权申请和恢复次数上限。
+- **G6 Skills 渐进式披露部分落地**：工具 schema 支持 deferred stub，SKILL.md 扫描与引用文件按需加载仍未完成。
+- **G7 持久化与恢复不完整**：仍缺会话恢复、artifact 索引、JSONL 事件重放和完整 terminal status 归档。
 
 ## 4. 范围
 
@@ -169,14 +169,14 @@
 | 编号 | 优先级 | 状态 | 需求 |
 | --- | --- | --- | --- |
 | FR-CTX-1 | P0 | 部分 | 系统提示词必须由 `PromptSegment` 分层组装：`base`（人格+工程规范）→ `developer/runtime`（权限+工具目录+技能目录）→ `environment`（cwd/shell/date/timezone/sandbox/可写根）→ `project context` → `user task`，不在业务代码里拼接大块硬编码文本。 |
-| FR-CTX-2 | P0 | 新增 | 必须注入结构化环境上下文（参考 Codex `<environment_context>`）：cwd、shell、当前日期、时区、repo root、workspace roots、sandbox mode、permission mode、network policy。运行时从 session/config 生成，不硬编码。 |
-| FR-CTX-3 | P1 | 部分 | 必须扫描并注入项目记忆文件 `CLAUDE.md`、`AGENTS.md`、`.cursorrules`，默认单文件截断 4000 字符并标注，缺失时不报错；`discover_project_context` 已满足，需接入运行时上下文。 |
+| FR-CTX-2 | P0 | 部分 | 必须注入结构化环境上下文（参考 Codex `<environment_context>`）：cwd、shell、当前日期、时区、repo root、workspace roots、sandbox mode、permission mode、network policy。运行时从 session/config 生成，不硬编码。 |
+| FR-CTX-3 | P1 | 已实现 | 必须扫描并注入项目记忆文件 `CLAUDE.md`、`AGENTS.md`、`.cursorrules`，默认单文件截断 4000 字符并标注，缺失时不报错；`discover_project_context` 已满足，需接入运行时上下文。 |
 | FR-CTX-4 | P0 | 已实现 | 必须按字符类型估算 token：CJK 约 1.5 chars/token，ASCII 约 4 bytes/token，图片占位 1000；优先使用 provider 报告的真实 usage。 |
 | FR-CTX-5 | P0 | 已实现 | 必须支持预算分级：Normal(<80%)、Warning80、Critical95、Overflow100，并触发对应事件与动作。 |
 | FR-CTX-6 | P0 | 已实现 | 上下文超阈值时必须执行三层压缩：microcompact → LLM summary → truncate（fallback 永不失败）。摘要保留原始目标、关键决策、改动文件、验证结果、当前进度、待办。 |
 | FR-CTX-7 | P1 | 新增 | base/developer/environment 应保持稳定前缀以利于 prompt cache 复用；压缩只作用于对话历史中段，不压缩 base、project rules 摘要和最新用户消息。 |
-| FR-CTX-8 | P2 | 新增 | 支持 deferred loading：Skills、MCP 工具说明、长文档只在触发时加载；默认上下文只放 name、description、path。 |
-| FR-CTX-9 | P1 | 新增 | Prompt 组装结果可在 debug 模式记录摘要和 segment 指纹，默认不持久化完整 system prompt 或敏感内容。 |
+| FR-CTX-8 | P2 | 部分 | 支持 deferred loading：Skills、MCP 工具说明、长文档只在触发时加载；默认上下文只放 name、description、path。 |
+| FR-CTX-9 | P1 | 部分 | Prompt 组装结果可在 debug 模式记录摘要和 segment 指纹，默认不持久化完整 system prompt 或敏感内容。 |
 
 验收：
 
@@ -197,9 +197,9 @@
 | FR-LOOP-4 | P0 | 已实现 | 必须处理 `StopReason::MaxTokens`：注入 continuation prompt；连续 3 次无工具调用或无进展则停止。 |
 | FR-LOOP-5 | P0 | 已实现 | 必须支持取消：通过 `CancellationToken` 在流式与工具执行边界响应中断，并发 terminal event，取消后不再启动新工具。 |
 | FR-LOOP-6 | P0 | 已实现 | 只读工具可并发执行；任意写工具、shell/git/test、`delegate_task` 默认串行，避免冲突。 |
-| FR-LOOP-7 | P0 | 新增 | 必须以 `run_id` 框定一次完整运行，以 `turn_id` 框定一轮 LLM 交互；所有事件必须携带关联 ID。 |
-| FR-LOOP-8 | P1 | 新增 | 验证必须成为显式阶段：写操作后触发项目验证或 `VerifierAgent` 复核，不能仅靠模型自述完成。 |
-| FR-LOOP-9 | P1 | 新增 | 每次 LLM 请求必须记录 phase：`simple`、`think`、`act`、`worker`、`verify`。 |
+| FR-LOOP-7 | P0 | 部分 | 必须以 `run_id` 框定一次完整运行，以 `turn_id` 框定一轮 LLM 交互；所有事件必须携带关联 ID。 |
+| FR-LOOP-8 | P1 | 部分 | 验证必须成为显式阶段：写操作后触发项目验证或 `VerifierAgent` 复核，不能仅靠模型自述完成。 |
+| FR-LOOP-9 | P1 | 已实现 | 每次 LLM 请求必须记录 phase：`simple`、`think`、`act`、`worker`、`verify`。 |
 | FR-LOOP-10 | P1 | 新增 | Agent 默认先观察工作区再写操作；探索动作包括目录、关键配置、git 状态和相关文件，具体工具由模型根据上下文选择。 |
 
 验收：
@@ -220,11 +220,11 @@
 | FR-TOOL-3 | P0 | 已实现 | 工具结果进入上下文前必须截断，默认 40000 字符，保留 head 60% + tail 40% + 原始长度和截断提示；完整输出可作为 artifact 持久化。 |
 | FR-TOOL-4 | P0 | 已实现 | 每个工具必须有超时，默认 30s，shell/test 等长任务默认 300s；超时返回 is_error tool result，不挂起，并继续 loop。 |
 | FR-TOOL-5 | P1 | 已实现 | 支持流式工具输出：shell/test 以行或 chunk 为单位通过 `ToolOutputDelta` 实时回传 stdout/stderr。 |
-| FR-TOOL-6 | P0 | 新增 | 编辑类工具必须记录结构化文件变更：path、kind(add/update/delete)、patch/diff 或 before/after 摘要，用于 `file.changed` 事件与 artifact（对齐 Codex apply_patch / Claude Write 可审计性）。 |
-| FR-TOOL-7 | P2 | 新增 | 支持工具和 Skills 渐进式披露：上下文只放 name、description、path，命中时再加载 `SKILL.md` 及引用文件。 |
+| FR-TOOL-6 | P0 | 部分 | 编辑类工具必须记录结构化文件变更：path、kind(add/update/delete)、patch/diff 或 before/after 摘要，用于 `file.changed` 事件与 artifact（对齐 Codex apply_patch / Claude Write 可审计性）。 |
+| FR-TOOL-7 | P2 | 部分 | 支持工具和 Skills 渐进式披露：上下文只放 name、description、path，命中时再加载 `SKILL.md` 及引用文件。 |
 | FR-TOOL-8 | P1 | 已实现 | `ask_user` 工具必须中断循环并发 `AskUser` 事件，等待前端回传后续输入后作为新 turn 继续。 |
-| FR-TOOL-9 | P0 | 新增 | 未知工具必须返回结构化错误 tool result，不能 panic 或终止进程。 |
-| FR-TOOL-10 | P1 | 新增 | shell/test 工具必须记录 command、cwd、exit_code、stdout/stderr 摘要、duration、is_error、是否使用 escalation。 |
+| FR-TOOL-9 | P0 | 已实现 | 未知工具必须返回结构化错误 tool result，不能 panic 或终止进程。 |
+| FR-TOOL-10 | P1 | 部分 | shell/test 工具必须记录 command、cwd、exit_code、stdout/stderr 摘要、duration、is_error、是否使用 escalation。 |
 
 验收：
 
@@ -240,14 +240,14 @@
 | 编号 | 优先级 | 状态 | 需求 |
 | --- | --- | --- | --- |
 | FR-PERM-1 | P0 | 部分 | 必须支持权限模式：`read-only`（仅探查）、`workspace-write`（可写根内编辑）、`escalated`（单次命令/工具经批准后执行）、`unrestricted`（仅受信自动化环境显式启用）。对齐 Codex sandbox 三档与 Claude permission-mode。 |
-| FR-PERM-2 | P0 | 新增 | 所有 write/shell/network/destructive 工具执行前必须经过 `PermissionGuard::check`，返回 Allow、Deny(reason)、NeedApproval(reason)。接线点包括 `execute_single_tool`、Simple、Worker、Verifier 的工具执行入口。 |
+| FR-PERM-2 | P0 | 部分 | 所有 write/shell/network/destructive 工具执行前必须经过 `PermissionGuard::check`，返回 Allow、Deny(reason)、NeedApproval(reason)。接线点包括 `execute_single_tool`、Simple、Worker、Verifier 的工具执行入口。 |
 | FR-PERM-3 | P0 | 已实现 | 必须维护危险命令黑名单，例如 `rm -rf /`、`mkfs`、fork bomb、`chmod -R 777 /`；shell 命中黑名单直接 Deny。 |
-| FR-PERM-4 | P0 | 新增 | 写路径必须做 sandbox 校验：解析为绝对路径后必须落在 `sandbox_paths` / writable roots 前缀内，否则 Deny。需将 work_dir/sandbox 配置从会话传入 Guard。 |
-| FR-PERM-5 | P1 | 新增 | `NeedApproval` 在交互场景转为权限请求或 `AskUser`；非交互场景必须优雅降级，完成可做部分并在最终总结说明被拒动作和建议命令（对齐 Claude acceptEdits 下 Bash 被拒后让用户手动跑测试）。 |
-| FR-PERM-6 | P1 | 新增 | 被拒动作必须记录到 `permission_denials` 列表，并随 `PermissionDenied` 与 `run.completed` 上报。 |
+| FR-PERM-4 | P0 | 已实现 | 写路径必须做 sandbox 校验：解析为绝对路径后必须落在 `sandbox_paths` / writable roots 前缀内，否则 Deny。需将 work_dir/sandbox 配置从会话传入 Guard。 |
+| FR-PERM-5 | P1 | 部分 | `NeedApproval` 在交互场景转为权限请求或 `AskUser`；非交互场景必须优雅降级，完成可做部分并在最终总结说明被拒动作和建议命令（对齐 Claude acceptEdits 下 Bash 被拒后让用户手动跑测试）。 |
+| FR-PERM-6 | P1 | 已实现 | 被拒动作必须记录到 `permission_denials` 列表，并随 `PermissionDenied` 与 `run.completed` 上报。 |
 | FR-PERM-7 | P0 | 已实现 | 工具必须声明风险等级：safe/read（只读，自动放行）、write（写，默认允许）、network/shell/destructive（需审批），或映射到 Safe/Moderate/Dangerous。 |
-| FR-PERM-8 | P1 | 新增 | 命令审批支持 prefix rule，例如允许 `npm test`、`cargo test`、`pnpm install`；规则必须可审计、可持久化、可撤销。 |
-| FR-PERM-9 | P1 | 新增 | 沙箱、DNS、registry、写路径失败应识别为可升级失败，并生成 scoped approval request（见 FR-ROBUST-4），而不是普通命令失败。 |
+| FR-PERM-8 | P1 | 部分 | 命令审批支持 prefix rule，例如允许 `npm test`、`cargo test`、`pnpm install`；规则必须可审计、可持久化、可撤销。 |
+| FR-PERM-9 | P1 | 部分 | 沙箱、DNS、registry、写路径失败应识别为可升级失败，并生成 scoped approval request（见 FR-ROBUST-4），而不是普通命令失败。 |
 
 验收：
 
@@ -262,15 +262,15 @@
 
 | 编号 | 优先级 | 状态 | 需求 |
 | --- | --- | --- | --- |
-| FR-EVT-1 | P0 | 部分 | 每个工具动作必须发出 `ToolStart`/`tool.started`（含 id/name/input）和 `ToolResult`/`tool.completed`（含 id/output 摘要/is_error）。 |
-| FR-EVT-2 | P0 | 新增 | 必须发出运行边界事件：`run.started`（run_id/cwd/model/tools/permission_mode）、`run.completed`（status/usage/summary/permission_denials）、`run.failed`、`run.cancelled`。对齐 Codex `turn.completed` / Claude `result`。 |
-| FR-EVT-3 | P0 | 新增 | 必须发出 turn 边界事件：`turn.started`、`turn.completed`，便于回放一轮 LLM/tool 交互。 |
-| FR-EVT-4 | P1 | 新增 | 必须发出结构化文件变更事件 `file.changed`：`changes:[{path, kind:add|update|delete}]`，由编辑类工具驱动。 |
+| FR-EVT-1 | P0 | 已实现 | 每个工具动作必须发出 `ToolStart`/`tool.started`（含 id/name/input）和 `ToolResult`/`tool.completed`（含 id/output 摘要/is_error）。 |
+| FR-EVT-2 | P0 | 已实现 | 必须发出运行边界事件：`run.started`（run_id/cwd/model/tools/permission_mode）、`run.completed`（status/usage/summary/permission_denials）、`run.failed`、`run.cancelled`。对齐 Codex `turn.completed` / Claude `result`。 |
+| FR-EVT-3 | P0 | 已实现 | 必须发出 turn 边界事件：`turn.started`、`turn.completed`，便于回放一轮 LLM/tool 交互。 |
+| FR-EVT-4 | P1 | 部分 | 必须发出结构化文件变更事件 `file.changed`：`changes:[{path, kind:add|update|delete}]`，由编辑类工具驱动。 |
 | FR-EVT-5 | P0 | 已实现 | 必须上报 `Metrics`（provider/model/phase/input_tokens/output_tokens/latency_ms）与 `ToolMetrics`（tool_name/duration_ms/is_error）。 |
 | FR-EVT-6 | P0 | 已实现 | 必须发出预算与压缩事件：`TokenWarning`、`CompressionTriggered`（含 before/after tokens 与策略）；循环检测发 `LoopDetected`；provider 降级发 `ProviderFallback`（from/to/reason）。 |
 | FR-EVT-7 | P0 | 新增 | 每个事件至少包含 run_id、turn_id、timestamp；工具事件包含 tool_use_id；必要时包含 parent_tool_use_id。 |
 | FR-EVT-8 | P1 | 新增 | 内部 reasoning/thinking 不得进入持久日志。持久层仅保留用户可见摘要、工具调用、工具结果、事件和 artifact。`Thinking` 仅用于实时流，不落库；`LlmRequest` 仅 debug 模式输出 system 摘要。 |
-| FR-EVT-9 | P1 | 新增 | 补齐 `PlanUpdated`、`PermissionRequested`、`PermissionDenied`、`VerificationStarted`、`VerificationCompleted`、`ContextAssembled` 事件。 |
+| FR-EVT-9 | P1 | 部分 | 补齐 `PlanUpdated`、`PermissionRequested`、`PermissionDenied`、`VerificationStarted`、`VerificationCompleted`、`ContextAssembled` 事件。 |
 | FR-EVT-10 | P1 | 新增 | 持久日志采用 JSONL，一行一个事件，可重放出关键 UI 状态；debug 模式可记录 prompt segment 摘要，但默认不保存完整 system prompt。 |
 
 推荐紧凑 JSONL schema：
@@ -303,8 +303,8 @@
 | FR-BUDGET-2 | P0 | 已实现 | 80% 触发 warning，可尝试压缩；95% 触发 critical，强制压缩；100% 触发 overflow，停止 loop 或要求用户缩小任务。 |
 | FR-BUDGET-3 | P0 | 已实现 | 压缩管线分三层：microcompact 压缩旧 tool result；LLM summary 总结中间消息；truncate 兜底移除最老内容。 |
 | FR-BUDGET-4 | P0 | 已实现 | 压缩失败不能导致 run 崩溃，必须有兜底策略。 |
-| FR-BUDGET-5 | P1 | 新增 | 压缩后必须发送 `CompressionTriggered` 事件，记录 before_tokens、after_tokens、策略、压缩摘要 id。 |
-| FR-BUDGET-6 | P1 | 新增 | 压缩后应重置或校准 usage，避免旧 usage 导致连续误判。 |
+| FR-BUDGET-5 | P1 | 部分 | 压缩后必须发送 `CompressionTriggered` 事件，记录 before_tokens、after_tokens、策略、压缩摘要 id。 |
+| FR-BUDGET-6 | P1 | 部分 | 压缩后应重置或校准 usage，避免旧 usage 导致连续误判。 |
 | FR-BUDGET-7 | P1 | 新增 | 完整工具输出、测试报告和 diff 应作为 artifact 保存，压缩只影响模型上下文，不影响审计记录。 |
 
 验收：
@@ -319,8 +319,8 @@
 
 | 编号 | 优先级 | 状态 | 需求 |
 | --- | --- | --- | --- |
-| FR-VERIFY-1 | P1 | 部分 | `VerifierAgent` 必须可被 Simple/Orchestrator 在写操作后调用，仅持有 read-only 工具，输出 `{verdict, issues}`：approved、needs_revision、rejected。当前已实现但无调用方。 |
-| FR-VERIFY-2 | P1 | 新增 | 验证应产出 `VerificationStarted` / `VerificationCompleted` 事件；needs_revision/rejected 时将 issues 回注到模型修订，并限制修订轮数防循环。 |
+| FR-VERIFY-1 | P1 | 部分 | `VerifierAgent` 必须可被 Simple/Orchestrator 在写操作后调用，仅持有 read-only 工具，输出 `{verdict, issues}`：approved、needs_revision、rejected。当前 Simple 和 Orchestrator 已有调用方，但 Orchestrator 还缺修订回流。 |
+| FR-VERIFY-2 | P1 | 部分 | 验证应产出 `VerificationStarted` / `VerificationCompleted` 事件；needs_revision/rejected 时将 issues 回注到模型修订，并限制修订轮数防循环。 |
 | FR-VERIFY-3 | P1 | 新增 | 优先使用项目自身验证手段：`cargo test`、`npm test`、`pnpm test`、`python -m pytest`、`go test ./...`；框架缺失时降级为编译检查、lint、CLI demo 或 smoke test。测试输出作为 artifact 保存。 |
 | FR-VERIFY-4 | P1 | 新增 | 验证失败必须读取失败输出并做针对性修复，而不是盲目重跑同一命令。 |
 | FR-VERIFY-5 | P1 | 新增 | 测试输出和验证报告应作为 artifact 保存，最终 summary 引用验证命令和结果。 |
@@ -343,10 +343,10 @@
 | FR-ROBUST-1 | P0 | 已实现 | Provider 瞬态错误自动重试：429、5xx、网络、overloaded；指数退避 + 50% 抖动，上限 3 次，单次最长 30s；不可重试 4xx/认证错误立即失败。 |
 | FR-ROBUST-2 | P0 | 已实现 | 必须检测执行死循环：滑动窗口（size=6）指纹 + 单指纹重复≥2 或唯一率<30% 双策略；连续命中阈值（3）则终止，否则注入 nudge 提示变更策略。 |
 | FR-ROBUST-3 | P0 | 已实现 | LLM stream 必须有超时，默认 120s；超时按当前已累积内容收尾并结束当前 phase，不无限等待。 |
-| FR-ROBUST-4 | P1 | 新增 | 必须实现「尝试→观察失败→适配→验证」恢复：工具/命令因缺失、沙箱、DNS、不可写路径失败时，记录失败并尝试有界替代路径或申请提权（策略允许时），而非反复重试同一命令。 |
-| FR-ROBUST-5 | P1 | 新增 | 对 `command not found`、测试依赖缺失、权限拒绝、网络失败分别给出不同恢复策略，不能反复重试同一命令。 |
+| FR-ROBUST-4 | P1 | 部分 | 必须实现「尝试→观察失败→适配→验证」恢复：工具/命令因缺失、沙箱、DNS、不可写路径失败时，记录失败并尝试有界替代路径或申请提权（策略允许时），而非反复重试同一命令。 |
+| FR-ROBUST-5 | P1 | 部分 | 对 `command not found`、测试依赖缺失、权限拒绝、网络失败分别给出不同恢复策略，不能反复重试同一命令。 |
 | FR-ROBUST-6 | P0 | 已实现 | 任何阶段预算 Overflow100 必须强制安全终止，发 terminal event，不得继续调用 LLM。 |
-| FR-ROBUST-7 | P1 | 新增 | 工具失败进入 observe 阶段，由模型根据结构化错误选择修复、降级、申请权限或询问用户。 |
+| FR-ROBUST-7 | P1 | 部分 | 工具失败进入 observe 阶段，由模型根据结构化错误选择修复、降级、申请权限或询问用户。 |
 | FR-ROBUST-8 | P1 | 新增 | 每类失败都要进入事件日志，最终 summary 必须保留未解决风险。 |
 
 验收：
@@ -366,7 +366,7 @@
 | FR-SESSION-2 | P1 | 新增 | 支持从历史 messages 和压缩摘要恢复继续执行；进程重启后可加载 session 并继续未完成任务。 |
 | FR-SESSION-3 | P1 | 新增 | 支持导出用户可见 transcript，不包含隐藏 prompt、内部 reasoning、secret。 |
 | FR-SESSION-4 | P1 | 新增 | 支持 artifact 索引：文件 diff、完整工具输出、测试报告、最终 summary。 |
-| FR-SESSION-5 | P1 | 新增 | 支持取消后保留 partial state，可查看已完成工具调用、文件变更和失败原因。 |
+| FR-SESSION-5 | P1 | 部分 | 支持取消后保留 partial state，可查看已完成工具调用、文件变更和失败原因。 |
 | FR-SESSION-6 | P1 | 新增 | session 恢复时必须重新校验 cwd、权限模式、writable roots 和可用工具，不能盲目信任旧环境。 |
 
 验收：
@@ -485,7 +485,7 @@ Operate pragmatically:
 
 目标：提升复杂任务、可恢复性和前端体验。
 
-1. 启用 VerifierAgent 显式阶段 + needs_revision/rejected 回流 + 客观测试验证。
+1. 补齐 Orchestrator 的 needs_revision/rejected 回流 + 客观测试验证。
 2. 失败自适应与提权降级路径；被拒降级总结与 `permission_denials`；失败分类（command not found、依赖缺失、沙箱、DNS、registry、路径越界）。
 3. Orchestrated Mode 接入真实复杂任务入口；Worker affected_paths 冲突检测和权限隔离。
 4. Provider fallback 策略配置化并补齐事件；Capability handshake / context.assembled / plan.updated 等可观测事件。

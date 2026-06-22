@@ -121,8 +121,10 @@ describe("buildTaskGeneratorPrompt", () => {
       requirementContent: "test",
       workDir: "/tmp",
     });
-    expect(result).toContain("Phase");
-    expect(result).toContain("Task");
+    expect(result).toContain("groups");
+    expect(result).toContain("tasks");
+    expect(result).toContain("阶段名称");
+    expect(result).toContain("任务标题");
     expect(result).toContain("验收");
   });
 });

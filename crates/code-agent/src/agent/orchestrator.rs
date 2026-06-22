@@ -1,18 +1,20 @@
 use crate::agent::traits::{DelegatedTask, TaskStatus, ThinkStrategy};
+use crate::agent::verifier::VerifierAgent;
 use crate::agent::worker::WorkerAgent;
 use crate::agent::LoopDetector;
 use crate::context::summary::{estimate_tokens, truncate_tool_result_default};
 use crate::context::{BudgetStatus, ContextManager};
 use crate::retry::stream_with_retry;
+use crate::session::{classify_tool_error, now_ts, RunState, ToolGate};
 use crate::AgentEvent;
 use anyhow::Result;
+use code_tools::{PermissionGuard, Tool, ToolOutput, ToolRisk};
 use hank_provider::{
     CompletionRequest, ContentBlock, LlmProvider, Message, Role, StopReason, StreamEvent,
     ToolDefinition,
 };
-use code_tools::{Tool, ToolOutput};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -22,6 +24,15 @@ const ORCHESTRATOR_MAX_ITERATIONS: usize = 50;
 const DELEGATE_TASK_TOOL: &str = "delegate_task";
 const LLM_STREAM_TIMEOUT_SECS: u64 = 120;
 const LOOP_TERMINATE_COUNT: usize = 3;
+
+#[derive(Clone)]
+pub(crate) struct OrchestratorRuntime {
+    pub(crate) run_id: String,
+    pub(crate) work_dir: String,
+    pub(crate) permission: Arc<PermissionGuard>,
+    pub(crate) verify_after_write: bool,
+    pub(crate) original_request: String,
+}
 
 pub struct OrchestratorAgent {
     provider: Arc<dyn LlmProvider>,
@@ -85,7 +96,8 @@ impl OrchestratorAgent {
             }),
         });
 
-        let context_manager = ContextManager::with_provider(80_000, provider.clone(), model.clone());
+        let context_manager =
+            ContextManager::with_provider(80_000, provider.clone(), model.clone());
 
         Self {
             provider,
@@ -115,6 +127,39 @@ impl OrchestratorAgent {
         user_content: Vec<ContentBlock>,
         event_tx: mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
+    ) -> Result<()> {
+        let mut run_state = RunState {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            ..Default::default()
+        };
+        let runtime = OrchestratorRuntime {
+            run_id: run_state.run_id.clone(),
+            work_dir: String::new(),
+            permission: Arc::new(PermissionGuard::with_defaults()),
+            verify_after_write: false,
+            original_request: user_content
+                .iter()
+                .filter_map(|b| {
+                    if let ContentBlock::Text { text } = b {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        };
+        self.run_with_state(user_content, event_tx, cancel, &mut run_state, runtime)
+            .await
+    }
+
+    pub(crate) async fn run_with_state(
+        &mut self,
+        user_content: Vec<ContentBlock>,
+        event_tx: mpsc::Sender<AgentEvent>,
+        cancel: CancellationToken,
+        run_state: &mut RunState,
+        runtime: OrchestratorRuntime,
     ) -> Result<()> {
         self.messages.push(Message {
             role: Role::User,
@@ -148,7 +193,11 @@ impl OrchestratorAgent {
                             action: "forcing_compression".to_string(),
                         })
                         .await;
-                    if let Some(strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                    if let Some(strategy) = self
+                        .context_manager
+                        .compress_async(&mut self.messages)
+                        .await
+                    {
                         let after = estimate_tokens(&self.messages);
                         let _ = event_tx
                             .send(AgentEvent::CompressionTriggered {
@@ -171,7 +220,11 @@ impl OrchestratorAgent {
                         })
                         .await;
                     if self.context_manager.needs_compression(&self.messages) {
-                        if let Some(strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                        if let Some(strategy) = self
+                            .context_manager
+                            .compress_async(&mut self.messages)
+                            .await
+                        {
                             let after = estimate_tokens(&self.messages);
                             let _ = event_tx
                                 .send(AgentEvent::CompressionTriggered {
@@ -190,7 +243,8 @@ impl OrchestratorAgent {
 
             // THINK phase (conditional)
             if self.should_think(iteration, last_worker_failed) {
-                self.think_phase(&event_tx, &cancel).await?;
+                self.think_phase(&event_tx, &cancel, run_state, &runtime)
+                    .await?;
                 if cancel.is_cancelled() {
                     let _ = event_tx.send(AgentEvent::TurnComplete).await;
                     break;
@@ -198,7 +252,9 @@ impl OrchestratorAgent {
             }
 
             // ACT phase
-            let act_result = self.act_phase(&event_tx, &cancel).await?;
+            let act_result = self
+                .act_phase(&event_tx, &cancel, run_state, &runtime)
+                .await?;
             if cancel.is_cancelled() {
                 let _ = event_tx.send(AgentEvent::TurnComplete).await;
                 break;
@@ -232,9 +288,7 @@ impl OrchestratorAgent {
         match &self.think_strategy {
             ThinkStrategy::Always => true,
             ThinkStrategy::Never => false,
-            ThinkStrategy::Conditional => {
-                iteration == 0 || last_worker_failed
-            }
+            ThinkStrategy::Conditional => iteration == 0 || last_worker_failed,
         }
     }
 
@@ -243,7 +297,20 @@ impl OrchestratorAgent {
         &mut self,
         event_tx: &mpsc::Sender<AgentEvent>,
         cancel: &CancellationToken,
+        run_state: &mut RunState,
+        runtime: &OrchestratorRuntime,
     ) -> Result<()> {
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let _ = event_tx
+            .send(AgentEvent::TurnStarted {
+                run_id: runtime.run_id.clone(),
+                turn_id: turn_id.clone(),
+                timestamp: now_ts(),
+                phase: "think".to_string(),
+                message_count: self.messages.len(),
+            })
+            .await;
+
         let req = CompletionRequest {
             model: self.model.clone(),
             system: Some(format!(
@@ -256,18 +323,23 @@ impl OrchestratorAgent {
             max_tokens: 2048,
         };
 
-        let _ = event_tx.send(AgentEvent::LlmRequest {
-            model: req.model.clone(),
-            system: req.system.clone(),
-            tools: req.tools.iter().map(|t| t.name.clone()).collect(),
-            max_tokens: req.max_tokens,
-            message_count: req.messages.len(),
-            phase: "think".to_string(),
-        }).await;
+        let _ = event_tx
+            .send(AgentEvent::LlmRequest {
+                model: req.model.clone(),
+                system: req.system.clone(),
+                tools: req.tools.iter().map(|t| t.name.clone()).collect(),
+                max_tokens: req.max_tokens,
+                message_count: req.messages.len(),
+                phase: "think".to_string(),
+            })
+            .await;
 
         debug!("Orchestrator THINK phase");
+        let llm_start = Instant::now();
         let mut stream = stream_with_retry(&self.provider, req).await?;
         let mut think_text = String::new();
+        let mut total_input_tokens = 0u32;
+        let mut total_output_tokens = 0u32;
 
         loop {
             let event = tokio::select! {
@@ -282,11 +354,16 @@ impl OrchestratorAgent {
             match event {
                 Ok(StreamEvent::TextDelta(text)) => {
                     think_text.push_str(&text);
-                    let _ = event_tx
-                        .send(AgentEvent::Thinking { text })
-                        .await;
+                    let _ = event_tx.send(AgentEvent::Thinking { text }).await;
                 }
                 Ok(StreamEvent::MessageEnd { .. }) => break,
+                Ok(StreamEvent::Usage {
+                    input_tokens,
+                    output_tokens,
+                }) => {
+                    total_input_tokens += input_tokens;
+                    total_output_tokens += output_tokens;
+                }
                 Ok(StreamEvent::Error(msg)) => {
                     let _ = event_tx.send(AgentEvent::Error { message: msg }).await;
                     break;
@@ -307,6 +384,31 @@ impl OrchestratorAgent {
             });
         }
 
+        let latency_ms = llm_start.elapsed().as_millis() as u64;
+        let _ = event_tx
+            .send(AgentEvent::Metrics {
+                input_tokens: total_input_tokens,
+                output_tokens: total_output_tokens,
+                latency_ms,
+                model: self.model.clone(),
+                provider: self.provider.name().to_string(),
+                phase: Some("think".to_string()),
+            })
+            .await;
+        run_state.input_tokens = run_state.input_tokens.max(total_input_tokens);
+        run_state.output_tokens += total_output_tokens;
+        if total_input_tokens > 0 {
+            self.context_manager
+                .update_actual_tokens(total_input_tokens as usize);
+        }
+        let _ = event_tx
+            .send(AgentEvent::TurnCompleted {
+                run_id: runtime.run_id.clone(),
+                turn_id,
+                timestamp: now_ts(),
+            })
+            .await;
+
         Ok(())
     }
 
@@ -315,7 +417,20 @@ impl OrchestratorAgent {
         &mut self,
         event_tx: &mpsc::Sender<AgentEvent>,
         cancel: &CancellationToken,
+        run_state: &mut RunState,
+        runtime: &OrchestratorRuntime,
     ) -> Result<ActResult> {
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let _ = event_tx
+            .send(AgentEvent::TurnStarted {
+                run_id: runtime.run_id.clone(),
+                turn_id: turn_id.clone(),
+                timestamp: now_ts(),
+                phase: "act".to_string(),
+                message_count: self.messages.len(),
+            })
+            .await;
+
         let req = CompletionRequest {
             model: self.model.clone(),
             system: Some(self.system_prompt.clone()),
@@ -324,16 +439,19 @@ impl OrchestratorAgent {
             max_tokens: 16384,
         };
 
-        let _ = event_tx.send(AgentEvent::LlmRequest {
-            model: req.model.clone(),
-            system: req.system.clone(),
-            tools: req.tools.iter().map(|t| t.name.clone()).collect(),
-            max_tokens: req.max_tokens,
-            message_count: req.messages.len(),
-            phase: "act".to_string(),
-        }).await;
+        let _ = event_tx
+            .send(AgentEvent::LlmRequest {
+                model: req.model.clone(),
+                system: req.system.clone(),
+                tools: req.tools.iter().map(|t| t.name.clone()).collect(),
+                max_tokens: req.max_tokens,
+                message_count: req.messages.len(),
+                phase: "act".to_string(),
+            })
+            .await;
 
         debug!("Orchestrator ACT phase");
+        let llm_start = Instant::now();
         let mut stream = stream_with_retry(&self.provider, req).await?;
 
         let mut assistant_content: Vec<ContentBlock> = Vec::new();
@@ -343,6 +461,8 @@ impl OrchestratorAgent {
         let mut current_tool_input = String::new();
         let mut stop_reason = StopReason::EndTurn;
         let mut in_tool_block = false;
+        let mut total_input_tokens = 0u32;
+        let mut total_output_tokens = 0u32;
 
         loop {
             let event = tokio::select! {
@@ -374,7 +494,9 @@ impl OrchestratorAgent {
                     current_tool_input.push_str(&json);
                 }
                 Ok(StreamEvent::ToolUseEnd) => {
-                    if !in_tool_block { continue; }
+                    if !in_tool_block {
+                        continue;
+                    }
                     in_tool_block = false;
                     let input: serde_json::Value =
                         serde_json::from_str(&current_tool_input).unwrap_or_default();
@@ -388,10 +510,16 @@ impl OrchestratorAgent {
                 Ok(StreamEvent::MessageEnd { stop_reason: sr }) => {
                     stop_reason = sr;
                 }
+                Ok(StreamEvent::Usage {
+                    input_tokens,
+                    output_tokens,
+                }) => {
+                    total_input_tokens += input_tokens;
+                    total_output_tokens += output_tokens;
+                }
                 Ok(StreamEvent::Error(msg)) => {
                     let _ = event_tx.send(AgentEvent::Error { message: msg }).await;
                 }
-                Ok(_) => {}
                 Err(e) => {
                     error!("Act phase stream error: {e}");
                     return Err(e);
@@ -410,6 +538,24 @@ impl OrchestratorAgent {
             content: assistant_content.clone(),
         });
 
+        let latency_ms = llm_start.elapsed().as_millis() as u64;
+        let _ = event_tx
+            .send(AgentEvent::Metrics {
+                input_tokens: total_input_tokens,
+                output_tokens: total_output_tokens,
+                latency_ms,
+                model: self.model.clone(),
+                provider: self.provider.name().to_string(),
+                phase: Some("act".to_string()),
+            })
+            .await;
+        run_state.input_tokens = run_state.input_tokens.max(total_input_tokens);
+        run_state.output_tokens += total_output_tokens;
+        if total_input_tokens > 0 {
+            self.context_manager
+                .update_actual_tokens(total_input_tokens as usize);
+        }
+
         // Handle MaxTokens: continue generation instead of stopping
         if stop_reason == StopReason::MaxTokens {
             warn!("Orchestrator MaxTokens hit, continuing generation");
@@ -422,9 +568,17 @@ impl OrchestratorAgent {
             self.messages.push(Message {
                 role: Role::User,
                 content: vec![ContentBlock::Text {
-                    text: "[Your previous response was cut off. Continue from where you left off.]".to_string(),
+                    text: "[Your previous response was cut off. Continue from where you left off.]"
+                        .to_string(),
                 }],
             });
+            let _ = event_tx
+                .send(AgentEvent::TurnCompleted {
+                    run_id: runtime.run_id.clone(),
+                    turn_id,
+                    timestamp: now_ts(),
+                })
+                .await;
             return Ok(ActResult::Continue);
         }
 
@@ -432,6 +586,59 @@ impl OrchestratorAgent {
         self.consecutive_max_tokens = 0;
 
         if stop_reason != StopReason::ToolUse {
+            if runtime.verify_after_write && !run_state.file_changes.is_empty() {
+                let _ = event_tx
+                    .send(AgentEvent::VerificationStarted {
+                        run_id: runtime.run_id.clone(),
+                        command: None,
+                    })
+                    .await;
+                let readonly_tools: Vec<Arc<dyn Tool>> = self
+                    .tools
+                    .iter()
+                    .filter(|t| t.risk_level() == ToolRisk::Safe)
+                    .cloned()
+                    .collect();
+                let verifier =
+                    VerifierAgent::new(self.provider.clone(), readonly_tools, self.model.clone());
+                let summary = crate::session::AgentSession::build_run_summary_from(run_state);
+                let result = verifier
+                    .verify(
+                        &runtime.original_request,
+                        &summary,
+                        event_tx.clone(),
+                        cancel.clone(),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!("Orchestrator verifier error: {e}");
+                        crate::agent::VerificationResult {
+                            verdict: crate::agent::Verdict::Approved,
+                            issues: vec![format!("Verification failed: {e}")],
+                        }
+                    });
+                if result.verdict != crate::agent::Verdict::Approved {
+                    for issue in &result.issues {
+                        run_state
+                            .verification_issues
+                            .push(format!("verification {:?}: {issue}", result.verdict));
+                    }
+                }
+                let _ = event_tx
+                    .send(AgentEvent::VerificationCompleted {
+                        run_id: runtime.run_id.clone(),
+                        verdict: result.verdict,
+                        issues: result.issues,
+                    })
+                    .await;
+            }
+            let _ = event_tx
+                .send(AgentEvent::TurnCompleted {
+                    run_id: runtime.run_id.clone(),
+                    turn_id,
+                    timestamp: now_ts(),
+                })
+                .await;
             return Ok(ActResult::Done);
         }
 
@@ -494,13 +701,22 @@ impl OrchestratorAgent {
 
         // Execute regular tools — parallel if all are read-only, sequential otherwise
         if !regular_tools.is_empty() && tool_results.is_empty() {
-            let has_writes = regular_tools.iter().any(|(_, name, _)| {
-                self.tools.iter().any(|t| t.name() == *name && t.is_write())
-            });
+            let has_writes = regular_tools
+                .iter()
+                .any(|(_, name, _)| self.tools.iter().any(|t| t.name() == *name && t.is_write()));
 
             if !has_writes && regular_tools.len() > 1 {
                 // Parallel execution for read-only tools
-                let results = self.execute_tools_parallel(&regular_tools, &event_tx, cancel).await;
+                let results = self
+                    .execute_tools_parallel(
+                        &regular_tools,
+                        &event_tx,
+                        cancel,
+                        run_state,
+                        runtime,
+                        &turn_id,
+                    )
+                    .await;
                 tool_results.extend(results);
             } else {
                 // Sequential execution for write tools
@@ -508,7 +724,11 @@ impl OrchestratorAgent {
                     if cancel.is_cancelled() {
                         break;
                     }
-                    let result = self.execute_single_tool(id, name, input, &event_tx).await;
+                    let result = self
+                        .execute_single_tool(
+                            id, name, input, &event_tx, run_state, runtime, &turn_id,
+                        )
+                        .await;
                     tool_results.push(result);
                 }
             }
@@ -524,13 +744,33 @@ impl OrchestratorAgent {
                 .map(|(id, input)| {
                     let task = DelegatedTask {
                         id: uuid::Uuid::new_v4().to_string(),
-                        description: input.get("description").and_then(|v| v.as_str()).unwrap_or("unnamed task").to_string(),
-                        context: input.get("context").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        tools_allowed: input.get("tools_allowed").and_then(|v| v.as_array())
-                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        description: input
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unnamed task")
+                            .to_string(),
+                        context: input
+                            .get("context")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        tools_allowed: input
+                            .get("tools_allowed")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
                             .unwrap_or_default(),
-                        affected_paths: input.get("affected_paths").and_then(|v| v.as_array())
-                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        affected_paths: input
+                            .get("affected_paths")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
                             .unwrap_or_default(),
                     };
                     (id.to_string(), task)
@@ -538,7 +778,8 @@ impl OrchestratorAgent {
                 .collect();
 
             let has_path_conflict = {
-                let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut seen_paths: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 let mut conflict = false;
                 for (_, task) in &tasks_parsed {
                     for path in &task.affected_paths {
@@ -547,35 +788,73 @@ impl OrchestratorAgent {
                             break;
                         }
                     }
-                    if conflict { break; }
+                    if conflict {
+                        break;
+                    }
                 }
                 conflict
             };
 
             let has_write_workers = tasks_parsed.iter().any(|(_, task)| {
                 task.tools_allowed.iter().any(|t_name| {
-                    self.tools.iter().any(|t| t.name() == t_name && t.is_write())
+                    self.tools
+                        .iter()
+                        .any(|t| t.name() == t_name && t.is_write())
                 })
             });
 
-            if !has_path_conflict && !has_write_workers && tasks_parsed.len() > 1 {
-                // Parallel: no write tools, no path conflicts
+            if has_write_workers {
+                for (id, task) in tasks_parsed {
+                    let reason = format!(
+                        "delegate_task with write tools is disabled until worker permissions and file-change tracking are wired; affected_paths={:?}",
+                        task.affected_paths
+                    );
+                    run_state
+                        .permission_denials
+                        .push(format!("delegate_task: {reason}"));
+                    let _ = event_tx
+                        .send(AgentEvent::PermissionDenied {
+                            run_id: runtime.run_id.clone(),
+                            turn_id: turn_id.clone(),
+                            tool: DELEGATE_TASK_TOOL.to_string(),
+                            tool_use_id: id.clone(),
+                            reason: reason.clone(),
+                        })
+                        .await;
+                    worker_success = false;
+                    tool_results.push(ContentBlock::ToolResult {
+                        tool_use_id: id,
+                        content: format!("Permission denied: {reason}"),
+                        is_error: true,
+                    });
+                }
+            } else if !has_path_conflict && tasks_parsed.len() > 1 {
+                // Parallel: read-only tasks with no path conflicts
                 let futures: Vec<_> = tasks_parsed
                     .into_iter()
                     .map(|(id, task)| {
-                        let worker_tools: Vec<Arc<dyn Tool>> = self.tools.iter()
+                        let worker_tools: Vec<Arc<dyn Tool>> = self
+                            .tools
+                            .iter()
                             .filter(|t| task.tools_allowed.contains(&t.name().to_string()))
                             .cloned()
                             .collect();
-                        let worker = WorkerAgent::new(self.provider.clone(), worker_tools, self.model.clone());
+                        let worker = WorkerAgent::new(
+                            self.provider.clone(),
+                            worker_tools,
+                            self.model.clone(),
+                        );
                         let event_tx2 = event_tx.clone();
                         let cancel2 = cancel.clone();
                         async move {
-                            let _ = event_tx2.send(AgentEvent::WorkerSpawned {
-                                task_id: task.id.clone(),
-                                description: task.description.clone(),
-                            }).await;
-                            let result = worker.execute_task(&task, event_tx2.clone(), cancel2).await;
+                            let _ = event_tx2
+                                .send(AgentEvent::WorkerSpawned {
+                                    task_id: task.id.clone(),
+                                    description: task.description.clone(),
+                                })
+                                .await;
+                            let result =
+                                worker.execute_task(&task, event_tx2.clone(), cancel2).await;
                             (id, result)
                         }
                     })
@@ -584,15 +863,22 @@ impl OrchestratorAgent {
                 for (id, res) in results {
                     match res {
                         Ok(result) => {
-                            let _ = event_tx.send(AgentEvent::WorkerCompleted {
-                                task_id: result.task_id.clone(),
-                                status: result.status.clone(),
-                                summary: result.summary.clone(),
-                            }).await;
-                            if result.status != TaskStatus::Success { worker_success = false; }
+                            let _ = event_tx
+                                .send(AgentEvent::WorkerCompleted {
+                                    task_id: result.task_id.clone(),
+                                    status: result.status.clone(),
+                                    summary: result.summary.clone(),
+                                })
+                                .await;
+                            if result.status != TaskStatus::Success {
+                                worker_success = false;
+                            }
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id,
-                                content: format!("Task {} completed with status {:?}.\nSummary: {}", result.task_id, result.status, result.summary),
+                                content: format!(
+                                    "Task {} completed with status {:?}.\nSummary: {}",
+                                    result.task_id, result.status, result.summary
+                                ),
                                 is_error: result.status == TaskStatus::Failed,
                             });
                         }
@@ -607,29 +893,46 @@ impl OrchestratorAgent {
                     }
                 }
             } else {
-                // Sequential: write tools present or path conflicts detected
+                // Sequential: read-only path conflicts or single worker
                 for (id, task) in tasks_parsed {
-                    if cancel.is_cancelled() { break; }
-                    let worker_tools: Vec<Arc<dyn Tool>> = self.tools.iter()
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    let worker_tools: Vec<Arc<dyn Tool>> = self
+                        .tools
+                        .iter()
                         .filter(|t| task.tools_allowed.contains(&t.name().to_string()))
                         .cloned()
                         .collect();
-                    let worker = WorkerAgent::new(self.provider.clone(), worker_tools, self.model.clone());
-                    let _ = event_tx.send(AgentEvent::WorkerSpawned {
-                        task_id: task.id.clone(),
-                        description: task.description.clone(),
-                    }).await;
-                    match worker.execute_task(&task, event_tx.clone(), cancel.clone()).await {
+                    let worker =
+                        WorkerAgent::new(self.provider.clone(), worker_tools, self.model.clone());
+                    let _ = event_tx
+                        .send(AgentEvent::WorkerSpawned {
+                            task_id: task.id.clone(),
+                            description: task.description.clone(),
+                        })
+                        .await;
+                    match worker
+                        .execute_task(&task, event_tx.clone(), cancel.clone())
+                        .await
+                    {
                         Ok(result) => {
-                            let _ = event_tx.send(AgentEvent::WorkerCompleted {
-                                task_id: result.task_id.clone(),
-                                status: result.status.clone(),
-                                summary: result.summary.clone(),
-                            }).await;
-                            if result.status != TaskStatus::Success { worker_success = false; }
+                            let _ = event_tx
+                                .send(AgentEvent::WorkerCompleted {
+                                    task_id: result.task_id.clone(),
+                                    status: result.status.clone(),
+                                    summary: result.summary.clone(),
+                                })
+                                .await;
+                            if result.status != TaskStatus::Success {
+                                worker_success = false;
+                            }
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id,
-                                content: format!("Task {} completed with status {:?}.\nSummary: {}", result.task_id, result.status, result.summary),
+                                content: format!(
+                                    "Task {} completed with status {:?}.\nSummary: {}",
+                                    result.task_id, result.status, result.summary
+                                ),
                                 is_error: result.status == TaskStatus::Failed,
                             });
                         }
@@ -655,11 +958,22 @@ impl OrchestratorAgent {
         match self.context_manager.check_budget(&self.messages) {
             BudgetStatus::Overflow100 => {
                 warn!("Budget overflow after tool results, terminating");
+                let _ = event_tx
+                    .send(AgentEvent::TurnCompleted {
+                        run_id: runtime.run_id.clone(),
+                        turn_id: turn_id.clone(),
+                        timestamp: now_ts(),
+                    })
+                    .await;
                 return Ok(ActResult::Done);
             }
             BudgetStatus::Critical95 => {
                 let used = estimate_tokens(&self.messages);
-                if let Some(_strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                if let Some(_strategy) = self
+                    .context_manager
+                    .compress_async(&mut self.messages)
+                    .await
+                {
                     let after = estimate_tokens(&self.messages);
                     let _ = event_tx
                         .send(AgentEvent::CompressionTriggered {
@@ -673,14 +987,30 @@ impl OrchestratorAgent {
             _ => {}
         }
 
+        let _ = event_tx
+            .send(AgentEvent::TurnCompleted {
+                run_id: runtime.run_id.clone(),
+                turn_id,
+                timestamp: now_ts(),
+            })
+            .await;
+
         if had_worker {
-            Ok(ActResult::WorkerCompleted { success: worker_success })
+            Ok(ActResult::WorkerCompleted {
+                success: worker_success,
+            })
         } else {
             Ok(ActResult::Continue)
         }
     }
 
-    async fn execute_tool(&self, name: &str, input: serde_json::Value, event_tx: &mpsc::Sender<AgentEvent>, tool_use_id: &str) -> ToolOutput {
+    async fn execute_tool(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+        event_tx: &mpsc::Sender<AgentEvent>,
+        tool_use_id: &str,
+    ) -> ToolOutput {
         for tool in &self.tools {
             if tool.name() == name {
                 if tool.supports_streaming() {
@@ -690,10 +1020,12 @@ impl OrchestratorAgent {
 
                     let forward_handle = tokio::spawn(async move {
                         while let Some(chunk) = stream_rx.recv().await {
-                            let _ = event_tx_clone.send(AgentEvent::ToolOutputDelta {
-                                id: id_clone.clone(),
-                                chunk,
-                            }).await;
+                            let _ = event_tx_clone
+                                .send(AgentEvent::ToolOutputDelta {
+                                    id: id_clone.clone(),
+                                    chunk,
+                                })
+                                .await;
                         }
                     });
 
@@ -731,7 +1063,48 @@ impl OrchestratorAgent {
         name: &str,
         input: &serde_json::Value,
         event_tx: &mpsc::Sender<AgentEvent>,
+        run_state: &mut RunState,
+        runtime: &OrchestratorRuntime,
+        turn_id: &str,
     ) -> ContentBlock {
+        match crate::session::AgentSession::gate_tool_with(
+            &runtime.permission,
+            &self.tools,
+            &runtime.work_dir,
+            name,
+            input,
+            id,
+            &runtime.run_id,
+            turn_id,
+            event_tx,
+            run_state,
+        )
+        .await
+        {
+            ToolGate::Proceed => {}
+            ToolGate::Denied(reason) => {
+                return ContentBlock::ToolResult {
+                    tool_use_id: id.to_string(),
+                    content: format!(
+                        "Permission denied: {reason}. This action was not executed. If needed, the user can perform it manually."
+                    ),
+                    is_error: true,
+                };
+            }
+        }
+
+        let pre_exists = if name == "write_file" || name == "str_replace" {
+            input["path"].as_str().map(|p| {
+                std::path::Path::new(&crate::session::AgentSession::resolve_path_for(
+                    p,
+                    &runtime.work_dir,
+                ))
+                .exists()
+            })
+        } else {
+            None
+        };
+
         let input_str = serde_json::to_string(input).unwrap_or_default();
         let _ = event_tx
             .send(AgentEvent::ToolStart {
@@ -742,6 +1115,7 @@ impl OrchestratorAgent {
             .await;
 
         let timeout = self.get_tool_timeout(name);
+        let tool_start = Instant::now();
         let output = match tokio::time::timeout(
             timeout,
             self.execute_tool(name, input.clone(), event_tx, id),
@@ -766,9 +1140,39 @@ impl OrchestratorAgent {
             })
             .await;
 
+        let _ = event_tx
+            .send(AgentEvent::ToolMetrics {
+                tool_name: name.to_string(),
+                duration_ms: tool_start.elapsed().as_millis() as u64,
+                is_error: output.is_error,
+            })
+            .await;
+
+        if !output.is_error {
+            if let Some(change) =
+                crate::session::AgentSession::detect_file_change_for(name, input, pre_exists)
+            {
+                run_state.file_changes.push(change.clone());
+                let _ = event_tx
+                    .send(AgentEvent::FileChanged {
+                        run_id: runtime.run_id.clone(),
+                        turn_id: turn_id.to_string(),
+                        changes: vec![change],
+                    })
+                    .await;
+            }
+        }
+
+        let content = truncate_tool_result_default(&output.content);
+        let content = if output.is_error {
+            classify_tool_error(&content, name)
+        } else {
+            content
+        };
+
         ContentBlock::ToolResult {
             tool_use_id: id.to_string(),
-            content: truncate_tool_result_default(&output.content),
+            content,
             is_error: output.is_error,
         }
     }
@@ -779,11 +1183,44 @@ impl OrchestratorAgent {
         tools: &[(&str, &str, &serde_json::Value)],
         event_tx: &mpsc::Sender<AgentEvent>,
         _cancel: &CancellationToken,
+        run_state: &mut RunState,
+        runtime: &OrchestratorRuntime,
+        turn_id: &str,
     ) -> Vec<ContentBlock> {
         use futures::future::join_all;
 
-        // Emit ToolStart events
+        let mut allowed = Vec::new();
+        let mut content_blocks = Vec::new();
         for (id, name, input) in tools {
+            match crate::session::AgentSession::gate_tool_with(
+                &runtime.permission,
+                &self.tools,
+                &runtime.work_dir,
+                name,
+                input,
+                id,
+                &runtime.run_id,
+                turn_id,
+                event_tx,
+                run_state,
+            )
+            .await
+            {
+                ToolGate::Proceed => allowed.push((*id, *name, *input)),
+                ToolGate::Denied(reason) => {
+                    content_blocks.push(ContentBlock::ToolResult {
+                        tool_use_id: (*id).to_string(),
+                        content: format!(
+                            "Permission denied: {reason}. This action was not executed. If needed, the user can perform it manually."
+                        ),
+                        is_error: true,
+                    });
+                }
+            }
+        }
+
+        // Emit ToolStart events
+        for (id, name, input) in &allowed {
             let input_str = serde_json::to_string(input).unwrap_or_default();
             let _ = event_tx
                 .send(AgentEvent::ToolStart {
@@ -795,7 +1232,7 @@ impl OrchestratorAgent {
         }
 
         // Execute all in parallel
-        let futures: Vec<_> = tools
+        let futures: Vec<_> = allowed
             .iter()
             .map(|(id, name, input)| {
                 let id = id.to_string();
@@ -804,6 +1241,7 @@ impl OrchestratorAgent {
                 let timeout = self.get_tool_timeout(&name);
                 let event_tx = event_tx.clone();
                 async move {
+                    let start = Instant::now();
                     let output = match tokio::time::timeout(
                         timeout,
                         self.execute_tool(&name, input, &event_tx, &id),
@@ -812,19 +1250,21 @@ impl OrchestratorAgent {
                     {
                         Ok(tool_output) => tool_output,
                         Err(_) => ToolOutput {
-                            content: format!("Tool execution timed out after {}s", timeout.as_secs()),
+                            content: format!(
+                                "Tool execution timed out after {}s",
+                                timeout.as_secs()
+                            ),
                             is_error: true,
                         },
                     };
-                    (id, name, output)
+                    (id, name, output, start.elapsed().as_millis() as u64)
                 }
             })
             .collect();
 
         let results = join_all(futures).await;
 
-        let mut content_blocks = Vec::new();
-        for (id, _name, output) in results {
+        for (id, name, output, duration_ms) in results {
             let _ = event_tx
                 .send(AgentEvent::ToolResult {
                     id: id.clone(),
@@ -832,9 +1272,22 @@ impl OrchestratorAgent {
                     is_error: output.is_error,
                 })
                 .await;
+            let _ = event_tx
+                .send(AgentEvent::ToolMetrics {
+                    tool_name: name.clone(),
+                    duration_ms,
+                    is_error: output.is_error,
+                })
+                .await;
+            let content = truncate_tool_result_default(&output.content);
+            let content = if output.is_error {
+                classify_tool_error(&content, &name)
+            } else {
+                content
+            };
             content_blocks.push(ContentBlock::ToolResult {
                 tool_use_id: id,
-                content: truncate_tool_result_default(&output.content),
+                content,
                 is_error: output.is_error,
             });
         }

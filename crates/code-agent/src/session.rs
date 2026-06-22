@@ -1,4 +1,4 @@
-use crate::agent::orchestrator::OrchestratorAgent;
+use crate::agent::orchestrator::{OrchestratorAgent, OrchestratorRuntime};
 use crate::agent::verifier::VerifierAgent;
 use crate::agent::{LoopDetector, ThinkStrategy, Verdict};
 use crate::context::summary::{estimate_tokens, truncate_tool_result_default};
@@ -7,13 +7,13 @@ use crate::retry::stream_with_retry;
 use crate::types::{FileChange, FileChangeKind, RunStatus};
 use crate::AgentEvent;
 use anyhow::Result;
-use hank_provider::{
-    CompletionRequest, ContentBlock, LlmProvider, Message, Role, StopReason, StreamEvent,
-    ToolDefinition,
-};
 use code_tools::{
     PermissionConfig, PermissionDecision, PermissionGuard, PermissionMode, Tool, ToolOutput,
     ToolRisk,
+};
+use hank_provider::{
+    CompletionRequest, ContentBlock, LlmProvider, Message, Role, StopReason, StreamEvent,
+    ToolDefinition,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,12 +29,12 @@ const TOOL_TIMEOUT_SECS: u64 = 30;
 const MAX_REVISIONS: usize = 2;
 
 /// 当前 UTC 时间戳（RFC3339）
-fn now_ts() -> String {
+pub(crate) fn now_ts() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
 /// 权限门控结果
-enum ToolGate {
+pub(crate) enum ToolGate {
     /// 允许执行
     Proceed,
     /// 被拒绝，附带原因（写入 tool_result，loop 继续）
@@ -43,12 +43,13 @@ enum ToolGate {
 
 /// 一次 run 内累积的执行状态（FR-LOOP-7, FR-PERM-6, FR-EVT-2）
 #[derive(Default)]
-struct RunState {
-    run_id: String,
-    permission_denials: Vec<String>,
-    file_changes: Vec<FileChange>,
-    input_tokens: u32,
-    output_tokens: u32,
+pub(crate) struct RunState {
+    pub(crate) run_id: String,
+    pub(crate) permission_denials: Vec<String>,
+    pub(crate) verification_issues: Vec<String>,
+    pub(crate) file_changes: Vec<FileChange>,
+    pub(crate) input_tokens: u32,
+    pub(crate) output_tokens: u32,
 }
 
 /// Agent execution mode
@@ -104,7 +105,8 @@ impl AgentSession {
                 input_schema: t.input_schema(),
             })
             .collect();
-        let context_manager = ContextManager::with_provider(80_000, provider.clone(), model.clone());
+        let context_manager =
+            ContextManager::with_provider(80_000, provider.clone(), model.clone());
         Self {
             provider,
             tools,
@@ -139,7 +141,8 @@ impl AgentSession {
                 input_schema: t.input_schema(),
             })
             .collect();
-        let context_manager = ContextManager::with_provider(80_000, provider.clone(), model.clone());
+        let context_manager =
+            ContextManager::with_provider(80_000, provider.clone(), model.clone());
         Self {
             provider,
             tools,
@@ -173,7 +176,11 @@ impl AgentSession {
     }
 
     /// 使用自定义权限配置
-    pub fn with_permission_config(mut self, config: PermissionConfig, work_dir: impl Into<String>) -> Self {
+    pub fn with_permission_config(
+        mut self,
+        config: PermissionConfig,
+        work_dir: impl Into<String>,
+    ) -> Self {
         self.permission = Arc::new(PermissionGuard::new(config));
         self.work_dir = work_dir.into();
         self
@@ -188,12 +195,17 @@ impl AgentSession {
     /// FR-TOOL-7: 将指定工具标记为延迟加载。
     /// 初始 tool_definitions 中只有 stub（name+description，无详细 schema），
     /// 首次被 LLM 调用时动态注入完整 schema。
-    pub fn with_deferred_tools(mut self, names: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        let deferred: std::collections::HashSet<String> = names.into_iter().map(|n| n.into()).collect();
+    pub fn with_deferred_tools(
+        mut self,
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        let deferred: std::collections::HashSet<String> =
+            names.into_iter().map(|n| n.into()).collect();
         // 替换 deferred 工具的 tool_definition 为 stub（空 schema）
         for def in &mut self.tool_definitions {
             if deferred.contains(&def.name) {
-                def.input_schema = serde_json::json!({ "type": "object", "properties": {}, "required": [] });
+                def.input_schema =
+                    serde_json::json!({ "type": "object", "properties": {}, "required": [] });
             }
         }
         self.deferred_tool_names = deferred;
@@ -203,7 +215,10 @@ impl AgentSession {
     /// 按分层组装系统提示词并记录 debug 摘要（FR-CTX-1/9）。
     /// 传入已组装好的分层（base/developer/environment/project），
     /// 由 prompt_pipe::build_layered_prompt 产出。
-    pub fn with_layered_prompt(mut self, named_segments: Vec<crate::prompt_pipe::NamedSegment>) -> Self {
+    pub fn with_layered_prompt(
+        mut self,
+        named_segments: Vec<crate::prompt_pipe::NamedSegment>,
+    ) -> Self {
         let assembled = named_segments
             .iter()
             .map(|s| s.content.as_str())
@@ -238,10 +253,18 @@ impl AgentSession {
             .send(AgentEvent::RunStarted {
                 run_id: run_id.clone(),
                 timestamp: now_ts(),
-                cwd: if self.work_dir.is_empty() { None } else { Some(self.work_dir.clone()) },
+                cwd: if self.work_dir.is_empty() {
+                    None
+                } else {
+                    Some(self.work_dir.clone())
+                },
                 model: self.model.clone(),
                 permission_mode: self.permission.mode().as_str().to_string(),
-                tools: self.tool_definitions.iter().map(|t| t.name.clone()).collect(),
+                tools: self
+                    .tool_definitions
+                    .iter()
+                    .map(|t| t.name.clone())
+                    .collect(),
             })
             .await;
 
@@ -261,7 +284,13 @@ impl AgentSession {
         if self.original_request.is_empty() {
             self.original_request = user_content
                 .iter()
-                .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                .filter_map(|b| {
+                    if let ContentBlock::Text { text } = b {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(" ");
         }
@@ -273,23 +302,39 @@ impl AgentSession {
                     ..Default::default()
                 };
                 let result = self
-                    .run_simple(user_content, event_tx.clone(), cancel.clone(), &mut run_state)
+                    .run_simple(
+                        user_content,
+                        event_tx.clone(),
+                        cancel.clone(),
+                        &mut run_state,
+                    )
                     .await;
                 let paused = matches!(result, Ok(true));
                 let plain: Result<()> = result.map(|_| ());
-                self.emit_run_terminal(&run_id, &run_state, &plain, paused, &cancel, &event_tx).await;
+                self.emit_run_terminal(&run_id, &run_state, &plain, paused, &cancel, &event_tx)
+                    .await;
                 // 终态后统一发出 TurnComplete 关闭 SSE 流（在 RunCompleted 之后）
                 let _ = event_tx.send(AgentEvent::TurnComplete).await;
                 plain
             }
             AgentMode::Orchestrated { think_strategy } => {
                 let think_strategy = think_strategy.clone();
+                let mut run_state = RunState {
+                    run_id: run_id.clone(),
+                    ..Default::default()
+                };
                 let result = self
-                    .run_orchestrated(user_content, event_tx.clone(), cancel.clone(), think_strategy)
+                    .run_orchestrated(
+                        user_content,
+                        event_tx.clone(),
+                        cancel.clone(),
+                        think_strategy,
+                        &mut run_state,
+                    )
                     .await;
                 // Orchestrator 维护自身循环与 TurnComplete；这里只补 run 终态
-                let run_state = RunState { run_id: run_id.clone(), ..Default::default() };
-                self.emit_run_terminal(&run_id, &run_state, &result, false, &cancel, &event_tx).await;
+                self.emit_run_terminal(&run_id, &run_state, &result, false, &cancel, &event_tx)
+                    .await;
                 result
             }
         }
@@ -349,7 +394,7 @@ impl AgentSession {
     }
 
     /// 构造标准化最终汇报：改动文件 + 权限拒绝（FR-LOOP-4 验收 / 第8节）
-    fn build_run_summary(&self, run_state: &RunState) -> String {
+    pub(crate) fn build_run_summary_from(run_state: &RunState) -> String {
         let mut parts: Vec<String> = Vec::new();
         if run_state.file_changes.is_empty() {
             parts.push("No file changes.".to_string());
@@ -367,7 +412,18 @@ impl AgentSession {
                 run_state.permission_denials.join("; ")
             ));
         }
+        if !run_state.verification_issues.is_empty() {
+            parts.push(format!(
+                "Verification issues: {}",
+                run_state.verification_issues.join("; ")
+            ));
+        }
         parts.join(" | ")
+    }
+
+    /// 构造标准化最终汇报：改动文件 + 权限拒绝（FR-LOOP-4 验收 / 第8节）
+    fn build_run_summary(&self, run_state: &RunState) -> String {
+        Self::build_run_summary_from(run_state)
     }
 
     /// Orchestrated mode: delegate to OrchestratorAgent
@@ -377,6 +433,7 @@ impl AgentSession {
         event_tx: mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
         think_strategy: ThinkStrategy,
+        run_state: &mut RunState,
     ) -> Result<()> {
         let mut orchestrator = OrchestratorAgent::new(
             self.provider.clone(),
@@ -386,7 +443,16 @@ impl AgentSession {
             think_strategy,
         );
         orchestrator.set_messages(std::mem::take(&mut self.messages));
-        let result = orchestrator.run(user_content, event_tx, cancel).await;
+        let runtime = OrchestratorRuntime {
+            run_id: run_state.run_id.clone(),
+            work_dir: self.work_dir.clone(),
+            permission: self.permission.clone(),
+            verify_after_write: self.verify_after_write,
+            original_request: self.original_request.clone(),
+        };
+        let result = orchestrator
+            .run_with_state(user_content, event_tx, cancel, run_state, runtime)
+            .await;
         self.messages = orchestrator.messages().to_vec();
         result
     }
@@ -409,10 +475,14 @@ impl AgentSession {
             .collect();
 
         let _ = event_tx
-            .send(AgentEvent::VerificationStarted { run_id: run_id.to_string(), command: None })
+            .send(AgentEvent::VerificationStarted {
+                run_id: run_id.to_string(),
+                command: None,
+            })
             .await;
 
-        let verifier = VerifierAgent::new(self.provider.clone(), readonly_tools, self.model.clone());
+        let verifier =
+            VerifierAgent::new(self.provider.clone(), readonly_tools, self.model.clone());
         let result = verifier
             .verify(&self.original_request, summary, event_tx.clone(), cancel)
             .await
@@ -480,7 +550,11 @@ impl AgentSession {
                 max_tokens: 16384,
             };
 
-            debug!("Agent loop iteration {iteration}: model={}, messages={}", req.model, req.messages.len());
+            debug!(
+                "Agent loop iteration {iteration}: model={}, messages={}",
+                req.model,
+                req.messages.len()
+            );
 
             let llm_start = Instant::now();
             let mut stream = stream_with_retry(&self.provider, req).await?;
@@ -547,14 +621,15 @@ impl AgentSession {
                     Ok(StreamEvent::MessageEnd { stop_reason: sr }) => {
                         stop_reason = sr;
                     }
-                    Ok(StreamEvent::Usage { input_tokens, output_tokens }) => {
+                    Ok(StreamEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                    }) => {
                         total_input_tokens += input_tokens;
                         total_output_tokens += output_tokens;
                     }
                     Ok(StreamEvent::Error(msg)) => {
-                        let _ = event_tx
-                            .send(AgentEvent::Error { message: msg })
-                            .await;
+                        let _ = event_tx.send(AgentEvent::Error { message: msg }).await;
                     }
                     Err(e) => {
                         error!("Stream error: {e}");
@@ -577,14 +652,16 @@ impl AgentSession {
 
             // Emit LLM metrics
             let latency_ms = llm_start.elapsed().as_millis() as u64;
-            let _ = event_tx.send(AgentEvent::Metrics {
-                input_tokens: total_input_tokens,
-                output_tokens: total_output_tokens,
-                latency_ms,
-                model: self.model.clone(),
-                provider: self.provider.name().to_string(),
-                phase: Some("simple".to_string()),
-            }).await;
+            let _ = event_tx
+                .send(AgentEvent::Metrics {
+                    input_tokens: total_input_tokens,
+                    output_tokens: total_output_tokens,
+                    latency_ms,
+                    model: self.model.clone(),
+                    provider: self.provider.name().to_string(),
+                    phase: Some("simple".to_string()),
+                })
+                .await;
 
             // 累积到 run 级别 usage（FR-EVT-2: run.completed.usage）
             run_state.input_tokens = run_state.input_tokens.max(total_input_tokens);
@@ -597,7 +674,8 @@ impl AgentSession {
 
             // 更新实际 token 用量（provider 报告的 input_tokens 是整个上下文的大小）
             if total_input_tokens > 0 {
-                self.context_manager.update_actual_tokens(total_input_tokens as usize);
+                self.context_manager
+                    .update_actual_tokens(total_input_tokens as usize);
             }
 
             // Check budget after receiving assistant message
@@ -616,7 +694,11 @@ impl AgentSession {
                             action: "forcing_compression".to_string(),
                         })
                         .await;
-                    if let Some(strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                    if let Some(strategy) = self
+                        .context_manager
+                        .compress_async(&mut self.messages)
+                        .await
+                    {
                         let after = estimate_tokens(&self.messages);
                         // FR-BUDGET-6: 压缩后重置 actual tokens 避免旧值误判
                         self.context_manager.reset_actual_tokens();
@@ -673,7 +755,9 @@ impl AgentSession {
                         // FR-TOOL-7: 首次调用 deferred 工具时注入完整 schema
                         if self.deferred_tool_names.contains(name) {
                             if let Some(tool) = self.tools.iter().find(|t| t.name() == name) {
-                                if let Some(def) = self.tool_definitions.iter_mut().find(|d| d.name == *name) {
+                                if let Some(def) =
+                                    self.tool_definitions.iter_mut().find(|d| d.name == *name)
+                                {
                                     def.input_schema = tool.input_schema();
                                 }
                             }
@@ -682,15 +766,23 @@ impl AgentSession {
 
                         // Detect ask_user tool — emit event and break
                         if name == "ask_user" {
-                            let question = input["question"].as_str().unwrap_or_default().to_string();
-                            let options = input["options"].as_array()
-                                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                            let question =
+                                input["question"].as_str().unwrap_or_default().to_string();
+                            let options = input["options"]
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                })
                                 .unwrap_or_default();
-                            let _ = event_tx.send(AgentEvent::AskUser {
-                                question,
-                                options,
-                                tool_use_id: id.clone(),
-                            }).await;
+                            let _ = event_tx
+                                .send(AgentEvent::AskUser {
+                                    question,
+                                    options,
+                                    tool_use_id: id.clone(),
+                                })
+                                .await;
                             ask_user_triggered = true;
                             break;
                         }
@@ -722,7 +814,10 @@ impl AgentSession {
                         }
 
                         // ─── 权限检查 (FR-PERM-2/4/5/6) ───
-                        match self.gate_tool(name, input, id, &run_id, &turn_id, &event_tx, run_state).await {
+                        match self
+                            .gate_tool(name, input, id, &run_id, &turn_id, &event_tx, run_state)
+                            .await
+                        {
                             ToolGate::Proceed => {}
                             ToolGate::Denied(reason) => {
                                 tool_results.push(ContentBlock::ToolResult {
@@ -739,9 +834,9 @@ impl AgentSession {
 
                         // 写工具：记录执行前文件是否存在，用于区分 add/update
                         let pre_exists = if name == "write_file" || name == "str_replace" {
-                            input["path"].as_str().map(|p| {
-                                std::path::Path::new(&self.resolve_path(p)).exists()
-                            })
+                            input["path"]
+                                .as_str()
+                                .map(|p| std::path::Path::new(&self.resolve_path(p)).exists())
                         } else {
                             None
                         };
@@ -766,7 +861,10 @@ impl AgentSession {
                             Err(_) => {
                                 warn!("Tool {} timed out after {}s", name, TOOL_TIMEOUT_SECS);
                                 ToolOutput {
-                                    content: format!("Tool execution timed out after {}s", TOOL_TIMEOUT_SECS),
+                                    content: format!(
+                                        "Tool execution timed out after {}s",
+                                        TOOL_TIMEOUT_SECS
+                                    ),
                                     is_error: true,
                                 }
                             }
@@ -843,7 +941,11 @@ impl AgentSession {
                     }
                     crate::context::BudgetStatus::Critical95 => {
                         let used = estimate_tokens(&self.messages);
-                        if let Some(strategy) = self.context_manager.compress_async(&mut self.messages).await {
+                        if let Some(strategy) = self
+                            .context_manager
+                            .compress_async(&mut self.messages)
+                            .await
+                        {
                             let after = estimate_tokens(&self.messages);
                             // FR-BUDGET-6: 压缩后重置 actual tokens
                             self.context_manager.reset_actual_tokens();
@@ -911,7 +1013,9 @@ impl AgentSession {
                             // 终止循环，issues 将在 build_run_summary 中通过 file_changes 记录
                             // 在 run_state 中记录拒绝原因以便 summary 引用
                             for issue in &issues {
-                                run_state.permission_denials.push(format!("verification rejected: {issue}"));
+                                run_state
+                                    .verification_issues
+                                    .push(format!("rejected: {issue}"));
                             }
                             break;
                         }
@@ -930,17 +1034,21 @@ impl AgentSession {
     }
 
     /// 解析相对路径为绝对路径（与工具内逻辑保持一致）
-    fn resolve_path(&self, path: &str) -> String {
-        if path.starts_with('/') || self.work_dir.is_empty() {
+    pub(crate) fn resolve_path_for(path: &str, work_dir: &str) -> String {
+        if path.starts_with('/') || work_dir.is_empty() {
             path.to_string()
         } else {
-            format!("{}/{}", self.work_dir.trim_end_matches('/'), path)
+            format!("{}/{}", work_dir.trim_end_matches('/'), path)
         }
     }
 
+    fn resolve_path(&self, path: &str) -> String {
+        Self::resolve_path_for(path, &self.work_dir)
+    }
+
     /// 查询工具声明的风险等级
-    fn tool_risk(&self, name: &str) -> ToolRisk {
-        self.tools
+    pub(crate) fn tool_risk_for(tools: &[Arc<dyn Tool>], name: &str) -> ToolRisk {
+        tools
             .iter()
             .find(|t| t.name() == name)
             .map(|t| t.risk_level())
@@ -948,8 +1056,7 @@ impl AgentSession {
     }
 
     /// 根据工具类型与执行前状态推断文件变更（FR-TOOL-6）
-    fn detect_file_change(
-        &self,
+    pub(crate) fn detect_file_change_for(
         name: &str,
         input: &serde_json::Value,
         pre_exists: Option<bool>,
@@ -964,17 +1071,32 @@ impl AgentSession {
                 };
                 Some(FileChange { path, kind })
             }
-            "str_replace" => Some(FileChange { path, kind: FileChangeKind::Update }),
+            "str_replace" => Some(FileChange {
+                path,
+                kind: FileChangeKind::Update,
+            }),
             _ => None,
         }
+    }
+
+    /// 根据工具类型与执行前状态推断文件变更（FR-TOOL-6）
+    fn detect_file_change(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+        pre_exists: Option<bool>,
+    ) -> Option<FileChange> {
+        Self::detect_file_change_for(name, input, pre_exists)
     }
 
     /// 工具执行前的权限门控（FR-PERM-2/5/6）。
     /// - Allow → Proceed
     /// - Deny → 发 permission.denied，记录 denial，返回 Denied
     /// - NeedApproval → 非交互场景优雅降级为 Denied，发 permission.requested + permission.denied
-    async fn gate_tool(
-        &self,
+    pub(crate) async fn gate_tool_with(
+        permission: &PermissionGuard,
+        tools: &[Arc<dyn Tool>],
+        work_dir: &str,
         name: &str,
         input: &serde_json::Value,
         tool_use_id: &str,
@@ -983,12 +1105,14 @@ impl AgentSession {
         event_tx: &mpsc::Sender<AgentEvent>,
         run_state: &mut RunState,
     ) -> ToolGate {
-        let risk = self.tool_risk(name);
-        let decision = self.permission.check(name, input, risk, &self.work_dir);
+        let risk = Self::tool_risk_for(tools, name);
+        let decision = permission.check(name, input, risk, work_dir);
         match decision {
             PermissionDecision::Allow => ToolGate::Proceed,
             PermissionDecision::Deny(reason) => {
-                run_state.permission_denials.push(format!("{name}: {reason}"));
+                run_state
+                    .permission_denials
+                    .push(format!("{name}: {reason}"));
                 let _ = event_tx
                     .send(AgentEvent::PermissionDenied {
                         run_id: run_id.to_string(),
@@ -1014,7 +1138,9 @@ impl AgentSession {
                     .await;
                 // 非交互场景优雅降级：拒绝执行但不阻塞（FR-PERM-5）
                 let denial = format!("requires approval: {reason}");
-                run_state.permission_denials.push(format!("{name}: {denial}"));
+                run_state
+                    .permission_denials
+                    .push(format!("{name}: {denial}"));
                 let _ = event_tx
                     .send(AgentEvent::PermissionDenied {
                         run_id: run_id.to_string(),
@@ -1029,7 +1155,43 @@ impl AgentSession {
         }
     }
 
-    async fn execute_tool(&self, name: &str, input: serde_json::Value, event_tx: &mpsc::Sender<AgentEvent>, tool_use_id: &str) -> ToolOutput {        for tool in &self.tools {
+    /// 工具执行前的权限门控（FR-PERM-2/5/6）。
+    /// - Allow → Proceed
+    /// - Deny → 发 permission.denied，记录 denial，返回 Denied
+    /// - NeedApproval → 非交互场景优雅降级为 Denied，发 permission.requested + permission.denied
+    async fn gate_tool(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+        tool_use_id: &str,
+        run_id: &str,
+        turn_id: &str,
+        event_tx: &mpsc::Sender<AgentEvent>,
+        run_state: &mut RunState,
+    ) -> ToolGate {
+        Self::gate_tool_with(
+            &self.permission,
+            &self.tools,
+            &self.work_dir,
+            name,
+            input,
+            tool_use_id,
+            run_id,
+            turn_id,
+            event_tx,
+            run_state,
+        )
+        .await
+    }
+
+    async fn execute_tool(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+        event_tx: &mpsc::Sender<AgentEvent>,
+        tool_use_id: &str,
+    ) -> ToolOutput {
+        for tool in &self.tools {
             if tool.name() == name {
                 if tool.supports_streaming() {
                     // Streaming execution: forward chunks as ToolOutputDelta events
@@ -1039,10 +1201,12 @@ impl AgentSession {
 
                     let forward_handle = tokio::spawn(async move {
                         while let Some(chunk) = stream_rx.recv().await {
-                            let _ = event_tx_clone.send(AgentEvent::ToolOutputDelta {
-                                id: id_clone.clone(),
-                                chunk,
-                            }).await;
+                            let _ = event_tx_clone
+                                .send(AgentEvent::ToolOutputDelta {
+                                    id: id_clone.clone(),
+                                    chunk,
+                                })
+                                .await;
                         }
                     });
 
@@ -1076,19 +1240,33 @@ impl AgentSession {
 }
 
 /// FR-ROBUST-4/5: 工具失败后错误分类，附加语义提示帮助模型选择恢复策略。
-fn classify_tool_error(content: &str, tool_name: &str) -> String {
+pub(crate) fn classify_tool_error(content: &str, tool_name: &str) -> String {
     let lower = content.to_lowercase();
-    let category = if lower.contains("command not found") || lower.contains("no such file or directory") && tool_name == "shell" {
+    let category = if lower.contains("command not found")
+        || lower.contains("no such file or directory") && tool_name == "shell"
+    {
         "[error_type: command_not_found] The command is not installed. Try an alternative command or check if it needs to be installed first."
-    } else if lower.contains("permission denied") || lower.contains("access denied") || lower.contains("operation not permitted") {
+    } else if lower.contains("permission denied")
+        || lower.contains("access denied")
+        || lower.contains("operation not permitted")
+    {
         "[error_type: permission_denied] Insufficient permissions. This action requires elevated privileges or is outside the allowed workspace."
-    } else if lower.contains("network") || lower.contains("dns") || lower.contains("connection refused") || lower.contains("could not resolve") {
+    } else if lower.contains("network")
+        || lower.contains("dns")
+        || lower.contains("connection refused")
+        || lower.contains("could not resolve")
+    {
         "[error_type: network_failure] Network or DNS failure. The resource may be unreachable; try a local fallback if available."
-    } else if lower.contains("not found") || lower.contains("does not exist") || lower.contains("no such file") {
+    } else if lower.contains("not found")
+        || lower.contains("does not exist")
+        || lower.contains("no such file")
+    {
         "[error_type: not_found] File or resource not found. Verify the path or create the missing resource first."
     } else if lower.contains("timed out") || lower.contains("timeout") {
         "[error_type: timeout] Operation timed out. Consider splitting the task or using a faster alternative."
-    } else if lower.contains("test") && (lower.contains("failed") || lower.contains("error") || lower.contains("assert")) {
+    } else if lower.contains("test")
+        && (lower.contains("failed") || lower.contains("error") || lower.contains("assert"))
+    {
         "[error_type: test_failure] Tests failed. Read the failure output carefully and make targeted fixes."
     } else {
         "[error_type: tool_error]"
