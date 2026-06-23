@@ -176,11 +176,6 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="10-分钟让你的-ai-开口说话"><a class="header" href="#10-分钟让你的-ai-开口说话">10 分钟，让你的 AI 开口说话</a></h1>
-<p>课程
-Super Agent 实战课
-10 分钟，让你的 AI 开口说话
-10 分钟，让你的 AI 开口说话</p>
-<p>约 28 分钟</p>
 <p>你打开 Claude Code，输入一句"帮我重构一下这个函数"，几秒钟后它开始读文件、改代码、跑测试。整个过程你什么都没做，就看着它一步步把事情办了。</p>
 <p>这背后到底是什么在驱动？</p>
 <p>拆到最底层，Claude Code 就是一个 Node.js 进程。调一次大模型 API，拿到回复，解析出"要调哪个工具"，执行完之后把结果再喂回给模型，模型再想下一步做什么——如此循环。</p>
@@ -202,62 +197,54 @@ Super Agent 实战课
 <p>搭脚手架</p>
 <p>创建项目目录，初始化：</p>
 <p>以下脚手架命令用于本地终端开发。如果你在右侧的 WebContainer 编辑器中操作，项目已经初始化好了，直接跳到「实现模拟模型」即可。</p>
-<p>bash
-复制
-mkdir super-agent &amp;&amp; cd super-agent
-pnpm init</p>
+<pre><code class="language-bash">mkdir super-agent &amp;&amp; cd super-agent
+pnpm init
+</code></pre>
 <p>安装依赖：</p>
-<p>bash
-复制
-pnpm add ai @ai-sdk/openai dotenv
-pnpm add -D typescript tsx @types/node</p>
+<pre><code class="language-bash">pnpm add ai @ai-sdk/openai dotenv
+pnpm add -D typescript tsx @types/node
+</code></pre>
 <p>说一下这几个包的作用。</p>
 <p>ai 是 Vercel 的 AI SDK。你可能会想，直接用 fetch 调模型的 HTTP API 不行吗？当然可以，但你需要自己处理 SSE 流式解析、错误重试、请求格式构造这些底层工作。而且以后换模型，整套请求代码都得重写。AI SDK 把不同模型的差异屏蔽了——不管背后是 Qwen、Claude 还是 GPT，调用代码完全一致。换模型改一行配置。</p>
 <p>@ai-sdk/openai 是 OpenAI 兼容协议的适配器。Qwen 的 DashScope API 支持 OpenAI 兼容格式，所以用这个包就能直接调。AI SDK 采用的是 Provider 模式——核心包 ai 定义统一接口，每个模型厂商出一个 Provider 来适配自己的 API。</p>
 <p>dotenv 负责从 .env 文件加载环境变量，API Key 等敏感信息不会写死在代码里。</p>
 <p>tsx 是 TypeScript 的即时运行器，不需要先编译再运行，直接执行 .ts 文件。</p>
 <p>修改 package.json，加上 type: "module" 和启动脚本：</p>
-<p>json
-复制
-{
-"name": "super-agent",
-"type": "module",
-"scripts": {
-"dev": "tsx watch src/index.ts",
-"start": "tsx src/index.ts"
+<pre><code class="language-json">{
+  "name": "super-agent",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  }
 }
-}</p>
+</code></pre>
 <p>type: "module" 告诉 Node.js 使用 ESM 模块系统。AI SDK 和大部分现代库都是 ESM 的，混用 CJS 和 ESM 会遇到各种 import 兼容问题，统一用 ESM 可以避免。</p>
 <p>tsx watch 会监听文件变动，修改代码后自动重启。</p>
 <p>再加一个 tsconfig.json：</p>
-<p>json
-复制
-{
-"compilerOptions": {
-"target": "ES2022",
-"module": "ES2022",
-"moduleResolution": "bundler",
-"strict": true,
-"esModuleInterop": true,
-"outDir": "dist",
-"rootDir": "src"
-},
-"include": ["src"]
-}</p>
+<pre><code class="language-json">{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+</code></pre>
 <p>ES2022 是当前主流的编译目标，AI SDK 和大部分现代库都基于这个版本。</p>
 <p>脚手架完成，三个文件。</p>
 <p>实现模拟模型</p>
 <p>先安装依赖：</p>
-<p>bash
-运行
-复制
-pnpm install</p>
+<pre><code class="language-bash">pnpm install
+</code></pre>
 <p>在接入真实 API 之前，我们先实现一个模拟模型。</p>
 <p>两个原因：第一，你可能暂时没有 API Key，但不影响先跑通整个流程。第二，AI SDK 提供了 MockLanguageModelV3 测试工具，它实现了和真实模型完全一样的接口。用它写的代码，切换到真实模型时不需要改任何业务逻辑。</p>
 <p>创建 src/mock-model.ts：</p>
 <p>src/mock-model.ts
-应用
-复制
 const RESPONSES: Record&lt;string, string&gt; = {
 default: '你好！我是模拟模型。填了 DASHSCOPE_API_KEY 后会自动切换到真实的 Qwen。',
 greeting: '你好！虽然是模拟的，但流式输出的效果和真实 API 一致 :)',
@@ -328,8 +315,6 @@ async doStream({ prompt }: any) {
 <p>第一次调用模型</p>
 <p>创建 src/index.ts：</p>
 <p>src/index.ts
-应用
-复制
 import 'dotenv/config';
 import { generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -350,10 +335,8 @@ prompt: '用一句话介绍你自己',
 }</p>
 <p>main();</p>
 <p>运行：</p>
-<p>bash
-运行
-复制
-pnpm start</p>
+<pre><code class="language-bash">pnpm start
+</code></pre>
 <p>终端输出类似：</p>
 <p>我是通义千问（模拟版），在本地模拟回复，机制和真实 API 完全一致。</p>
 <p>没有 API Key 也能正常运行——模拟模型自动接管。需要切换到真实模型时，创建 .env 文件：</p>
@@ -366,8 +349,6 @@ pnpm start</p>
 <p>从"等半天"到"边想边说"</p>
 <p>把 generateText 换成 streamText：</p>
 <p>src/index.ts
-应用
-复制
 import 'dotenv/config';
 import { streamText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -401,8 +382,6 @@ process.stdout.write(chunk);
 <p>这两件事看起来简单，但背后有一个关键认知：大模型本身没有记忆。每次 API 调用，对模型来说都是一次全新的对话。它之所以能"记住"之前说了什么，是因为你每次都把完整的对话历史传给了它。</p>
 <p>不是模型在"记忆"，而是你在"提醒"。</p>
 <p>src/index.ts
-应用
-复制
 import 'dotenv/config';
 import { streamText, type ModelMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -456,10 +435,8 @@ ask();</p>
 <p>ask() 在末尾递归调用自己，形成循环：等待输入 → 发给模型 → 流式输出 → 等待输入……这实际上就是最原始的"Agent Loop"雏形，只是还没有工具调用能力。</p>
 <p>填入了真实的 DASHSCOPE_API_KEY 后，这里的对话体验会好很多——模型会根据上下文给出真正有意义的回复。</p>
 <p>应用代码后运行：</p>
-<p>bash
-运行
-复制
-pnpm start</p>
+<pre><code class="language-bash">pnpm start
+</code></pre>
 <p>运行效果：</p>
 <p>Super Agent v0.1 (type "exit" to quit)</p>
 <p>You: 你好，我叫小明
@@ -471,13 +448,14 @@ Assistant: 你好小明！很高兴认识你，有什么我能帮你的吗？</p
 <p>这个问题后续课程会系统解决——四层渐进式上下文管理。当前阶段先不处理。</p>
 <p>定义角色</p>
 <p>目前 AI 的回复比较通用。通过 system prompt 可以定义它的行为风格：</p>
-<p>typescript
-复制
-const result = streamText({
-model,
-system: <code>你是 Super Agent，一个专注于软件开发的 AI 助手。 你说话简洁直接，喜欢用代码示例来解释问题。 如果用户的问题不够清晰，你会反问而不是瞎猜。</code>,
-messages,
-});</p>
+<pre><code class="language-typescript">const result = streamText({
+  model,
+  system: `你是 Super Agent，一个专注于软件开发的 AI 助手。
+你说话简洁直接，喜欢用代码示例来解释问题。
+如果用户的问题不够清晰，你会反问而不是瞎猜。`,
+  messages,
+});
+</code></pre>
 <p>增加了 system 参数后，回复风格会有明显变化——从泛泛而谈变成直接给代码示例加简要解释。</p>
 <p>System prompt 在 Agent 开发中的地位很特殊。它不只是"一段提示词"，更像是 Agent 的行为控制系统——决定了在什么场景下做什么、如何组织回复、如何使用工具。Claude Code 的 system prompt 有上千行，按模块动态组装。</p>
 <p>当前阶段写死在代码里就够用了。后续课程会将其改造为 Prompt Pipe 系统。</p>
@@ -498,250 +476,7 @@ messages,
 改造后的 Agent：直接调用 read_file 读取文件，把内容返回给你</p>
 <p>从「能聊天」到「能执行」，就差一个循环。</p>
 <p>下一篇 · 第一章：起步 + Agent Loop
-从"能聊天"到"能干活"——给 Agent 装上 while 循环
-编辑器</p>
-<hr />
-<h2 id="代码块"><a class="header" href="#代码块">代码块</a></h2>
-<pre><code>super-agent/
-├── package.json
-├── tsconfig.json
-└── src/
-    ├── index.ts        ← 终端对话程序，~50 行
-    └── mock-model.ts   ← 模拟模型，不需要 API Key 就能跑
-</code></pre>
-<pre><code class="language-bash">mkdir super-agent &amp;&amp; cd super-agent
-pnpm init
-</code></pre>
-<pre><code class="language-bash">pnpm add ai @ai-sdk/openai dotenv
-pnpm add -D typescript tsx @types/node
-</code></pre>
-<pre><code class="language-json">{
-  "name": "super-agent",
-  "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts"
-  }
-}
-</code></pre>
-<pre><code class="language-json">{
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "bundler",
-    "strict": true,
-    "esModuleInterop": true,
-    "outDir": "dist",
-    "rootDir": "src"
-  },
-  "include": ["src"]
-}
-</code></pre>
-<pre><code class="language-bash">pnpm install
-</code></pre>
-<pre><code class="language-typescript">const RESPONSES: Record&lt;string, string&gt; = {
-  default: '你好！我是模拟模型。填了 DASHSCOPE_API_KEY 后会自动切换到真实的 Qwen。',
-  greeting: '你好！虽然是模拟的，但流式输出的效果和真实 API 一致 :)',
-  name: '你刚才告诉我了呀！我能"记住"是因为代码把对话历史传给了我。',
-  intro: '我是通义千问（模拟版），在本地模拟回复，机制和真实 API 完全一致。',
-};
-
-function pickResponse(prompt: any[]): string {
-  const userMsgs = (prompt || []).filter((m: any) =&gt; m.role === 'user');
-  const last = userMsgs[userMsgs.length - 1];
-  const text = (last?.content || []).map((c: any) =&gt; c.text || '').join('').toLowerCase();
-  if (text.includes('介绍你自己') || text.includes('你是谁')) return RESPONSES.intro;
-  if (text.includes('你好') || text.includes('hello')) return RESPONSES.greeting;
-  if (text.includes('叫什么') || text.includes('记住')) return RESPONSES.name;
-  return RESPONSES.default;
-}
-
-const USAGE = {
-  inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
-  outputTokens: { total: 20, text: 20, reasoning: undefined },
-};
-
-function createDelayedStream(chunks: any[], delayMs = 30): ReadableStream {
-  return new ReadableStream({
-    start(controller) {
-      let i = 0;
-      function next() {
-        if (i &lt; chunks.length) {
-          controller.enqueue(chunks[i++]);
-          setTimeout(next, delayMs);
-        } else {
-          controller.close();
-        }
-      }
-      next();
-    },
-  });
-}
-
-export function createMockModel() {
-  return {
-    specificationVersion: 'v2' as const,
-    provider: 'mock',
-    modelId: 'mock-model',
-    get supportedUrls() { return Promise.resolve({}); },
-
-    async doGenerate({ prompt }: any) {
-      return {
-        content: [{ type: 'text', text: pickResponse(prompt) }],
-        finishReason: { unified: 'stop', raw: undefined },
-        usage: USAGE,
-        warnings: [],
-      };
-    },
-
-    async doStream({ prompt }: any) {
-      const text = pickResponse(prompt);
-      const id = 'text-1';
-      const chunks = [
-        { type: 'text-start', id },
-        ...text.split('').map((char: string) =&gt; ({ type: 'text-delta', id, delta: char })),
-        { type: 'text-end', id },
-        { type: 'finish', finishReason: { unified: 'stop', raw: undefined }, usage: USAGE },
-      ];
-      return { stream: createDelayedStream(chunks, 30) };
-    },
-  };
-}
-</code></pre>
-<pre><code class="language-typescript">import 'dotenv/config';
-import { generateText } from 'ai';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createMockModel } from './mock-model';
-
-const qwen = createOpenAI({
-  baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-  apiKey: process.env.DASHSCOPE_API_KEY,
-});
-
-const model = process.env.DASHSCOPE_API_KEY
-  ? qwen.chat('qwen-plus-latest')
-  : createMockModel();
-
-async function main() {
-  const { text } = await generateText({
-    model,
-    prompt: '用一句话介绍你自己',
-  });
-
-  console.log(text);
-}
-
-main();
-</code></pre>
-<pre><code class="language-bash">pnpm start
-</code></pre>
-<pre><code>我是通义千问（模拟版），在本地模拟回复，机制和真实 API 完全一致。
-</code></pre>
-<pre><code>DASHSCOPE_API_KEY=你的key
-</code></pre>
-<pre><code class="language-typescript">import 'dotenv/config';
-import { streamText } from 'ai';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createMockModel } from './mock-model';
-
-const qwen = createOpenAI({
-  baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-  apiKey: process.env.DASHSCOPE_API_KEY,
-});
-
-const model = process.env.DASHSCOPE_API_KEY
-  ? qwen.chat('qwen-plus-latest')
-  : createMockModel();
-
-async function main() {
-  const result = streamText({
-    model,
-    prompt: '用一句话介绍你自己',
-  });
-
-  for await (const chunk of result.textStream) {
-    process.stdout.write(chunk);
-  }
-
-  console.log(); // 换行
-}
-
-main();
-</code></pre>
-<pre><code class="language-typescript">import 'dotenv/config';
-import { streamText, type ModelMessage } from 'ai';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createMockModel } from './mock-model';
-import { createInterface } from 'node:readline';
-
-const qwen = createOpenAI({
-  baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-  apiKey: process.env.DASHSCOPE_API_KEY,
-});
-
-const model = process.env.DASHSCOPE_API_KEY
-  ? qwen.chat('qwen-plus-latest')
-  : createMockModel();
-
-const rl = createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
-
-const messages: ModelMessage[] = [];
-
-function ask() {
-  rl.question('\nYou: ', async (input) =&gt; {
-    const trimmed = input.trim();
-    if (!trimmed || trimmed === 'exit') {
-      console.log('Bye!');
-      rl.close();
-      return;
-    }
-
-    messages.push({ role: 'user', content: trimmed });
-
-    const result = streamText({
-      model,
-      messages,
-    });
-
-    process.stdout.write('Assistant: ');
-    let fullResponse = '';
-    for await (const chunk of result.textStream) {
-      process.stdout.write(chunk);
-      fullResponse += chunk;
-    }
-    console.log(); // 换行
-
-    messages.push({ role: 'assistant', content: fullResponse });
-
-    ask();
-  });
-}
-
-console.log('Super Agent v0.1 (type "exit" to quit)\n');
-ask();
-</code></pre>
-<pre><code class="language-bash">pnpm start
-</code></pre>
-<pre><code>Super Agent v0.1 (type "exit" to quit)
-
-You: 你好，我叫小明
-Assistant: 你好小明！很高兴认识你，有什么我能帮你的吗？
-
-You: 我刚才说我叫什么来着？
-
-Assistant: 你说你叫小明呀 :)
-</code></pre>
-<pre><code class="language-typescript">const result = streamText({
-  model,
-  system: `你是 Super Agent，一个专注于软件开发的 AI 助手。
-你说话简洁直接，喜欢用代码示例来解释问题。
-如果用户的问题不够清晰，你会反问而不是瞎猜。`,
-  messages,
-});
-</code></pre>
+从"能聊天"到"能干活"——给 Agent 装上 while 循环</p>
 
                     </main>
 
@@ -772,22 +507,6 @@ Assistant: 你说你叫小明呀 :)
 
         </div>
 
-        <!-- Livereload script (if served using the cli tool) -->
-        <script>
-            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
-            const socket = new WebSocket(wsAddress);
-            socket.onmessage = function (event) {
-                if (event.data === "reload") {
-                    socket.close();
-                    location.reload();
-                }
-            };
-
-            window.onbeforeunload = function() {
-                socket.close();
-            }
-        </script>
 
 
 

@@ -176,11 +176,6 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="给-agent-一双手tool-注册执行截断与并发"><a class="header" href="#给-agent-一双手tool-注册执行截断与并发">给 Agent 一双手——Tool 注册、执行、截断与并发</a></h1>
-<p>课程
-Super Agent 实战课
-给 Agent 一双手——Tool 注册、执行、截断与并发
-给 Agent 一双手——Tool 注册、执行、截断与并发</p>
-<p>约 41 分钟</p>
 <p>本节示例推荐使用真实的大模型 API Key，填入到 .env 文件。API Key 从阿里云百炼平台获取，免费额度足够完成本课程的所有练习。</p>
 <p>上一篇给 Agent 装了三层防护，它不会再失控了。但你试过让它干点正经事吗？</p>
 <p>You: 帮我看一下当前目录有哪些文件
@@ -193,10 +188,8 @@ Agent: 你可以用 cat package.json 查看……</p>
 <p>更大的问题是，就算你想加 10 个工具，现在的代码结构也不支持。工具定义散落在 tools.ts 里，和 Agent Loop 耦合在一起，没有统一的注册、没有结果管理。一个工具返回 10 万字符的文件内容，直接塞进上下文——一次调用就能把你的 token 预算吃掉一半。</p>
 <p>这篇我们来解决这些问题：搭一个正经的工具系统，从注册到执行到截断，每一层都有明确的职责。</p>
 <p>先装依赖：</p>
-<p>bash
-运行
-复制
-pnpm install</p>
+<pre><code class="language-bash">pnpm install
+</code></pre>
 <p>Tool 到底是什么</p>
 <p>在动手之前，先想清楚一个根本问题：对模型来说，一个 Tool 到底是什么？</p>
 <p>说实话，就三样东西：</p>
@@ -205,26 +198,24 @@ pnpm install</p>
 一个执行函数——真正干活的代码</p>
 <p>但在生产环境里，光有这三样不够。你还需要知道：这个工具能不能和别的工具并行执行？它是只读的还是会修改系统状态？它的返回结果最大有多长？</p>
 <p>所以我们定义的工具接口长这样：</p>
-<p>typescript
-复制
-interface ToolDefinition {
-name: string;
-description: string;        // 给模型看的描述
-parameters: Record&lt;string, unknown&gt;;  // JSON Schema
-execute: (input: any) =&gt; Promise<unknown>;</p>
-<p>// 元数据——给 Agent Loop 做决策用
-isConcurrencySafe?: boolean;  // 能否并行
-isReadOnly?: boolean;         // 是否只读
-maxResultChars?: number;      // 结果最大长度
-}</p>
+<pre><code class="language-typescript">interface ToolDefinition {
+  name: string;
+  description: string;        // 给模型看的描述
+  parameters: Record&lt;string, unknown&gt;;  // JSON Schema
+  execute: (input: any) =&gt; Promise&lt;unknown&gt;;
+
+  // 元数据——给 Agent Loop 做决策用
+  isConcurrencySafe?: boolean;  // 能否并行
+  isReadOnly?: boolean;         // 是否只读
+  maxResultChars?: number;      // 结果最大长度
+}
+</code></pre>
 <p>前三个字段是模型需要的，后三个是 Agent Loop 需要的。这个区分很重要——模型只关心"怎么调"，Agent Loop 关心"怎么管"。 把这两类信息放在同一个接口里，注册一次就能同时服务两个消费者。</p>
 <p>你可能会问，为什么不直接用 AI SDK 的 tool() helper？因为 AI SDK 的工具定义只关心模型交互——描述、参数、执行。它不管并发安全、不管结果截断、不管权限。我们需要一个更厚的抽象层，把运行时的控制逻辑也打包进去。</p>
 <p>搭建 ToolRegistry</p>
 <p>有了统一接口，下一步是给工具找个"家"。ToolRegistry 做三件事：注册工具、查找工具、转换成 AI SDK 需要的格式。</p>
 <p>创建 src/tool-registry.ts：</p>
 <p>src/tools/registry.ts
-应用
-复制
 import { jsonSchema } from 'ai';</p>
 <p>export interface ToolDefinition {
 name: string;
@@ -282,8 +273,6 @@ const dropped = text.length - headSize - tailSize;</p>
 <p>现在来把工具定义迁移到新的 ToolDefinition 格式，顺便加三个真正有用的文件操作工具。</p>
 <p>创建 src/tools.ts：</p>
 <p>src/tools/index.ts
-应用
-复制
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { ToolDefinition } from './tool-registry.js';</p>
@@ -378,8 +367,6 @@ weatherTool, calculatorTool, readFileTool, writeFileTool, listDirectoryTool,
 <p>更新入口和 Agent Loop</p>
 <p>入口文件改动不大，把硬编码的工具对象换成 Registry：</p>
 <p>src/index.ts
-应用
-复制
 import 'dotenv/config';
 import { type ModelMessage } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -408,8 +395,6 @@ console.log(<code>  - ${tool.name}（${flags}）</code>);
 <p>// ... readline + agentLoop 调用，结构同上一篇 ...</p>
 <p>Agent Loop 的改动也很小——把 tools: any 换成 registry: ToolRegistry，用 registry.toAISDKFormat() 传给 streamText。工具执行和结果截断都在 Registry 的 execute 包装里自动完成了，Agent Loop 本身不需要改多少：</p>
 <p>src/agent/loop.ts
-应用
-复制
 import { streamText, type ModelMessage } from 'ai';
 import { ToolRegistry } from './tool-registry.js';
 import { detect, recordCall, recordResult, resetHistory } from './loop-detection.js';
@@ -437,10 +422,8 @@ onError: () =&gt; {},
 // ... 其余处理逻辑同上一篇 ...
 }</p>
 <p>跑起来试试：</p>
-<p>bash
-运行
-复制
-pnpm start</p>
+<pre><code class="language-bash">pnpm start
+</code></pre>
 <p>右侧 WebContainer 终端对退格键支持有限，输入时建议一次打完再回车。</p>
 <p>先确认老功能没坏——输入「北京天气怎么样」，应该和之前一样正常返回。</p>
 <p>然后试试新能力：</p>
@@ -486,8 +469,6 @@ pnpm start</p>
 读写工具（isConcurrencySafe: false）→ 获取独占锁，必须等所有其他工具执行完才能开始</p>
 <p>升级 tool-registry.ts，在锁字段、锁方法、toAISDKFormat() 的 execute 包装层三处加上锁逻辑：</p>
 <p>src/tools/registry.ts
-应用
-复制
 import { jsonSchema } from 'ai';</p>
 <p>export interface ToolDefinition {
 name: string;
@@ -594,10 +575,8 @@ const dropped = text.length - headSize - tailSize;</p>
 <p>finally 释放锁是关键——不管 executeFn 成功还是抛异常，锁都得还回去，不然整个 Registry 就锁死了。</p>
 <p>这样 AI SDK 虽然同时触发了所有 execute 调用，但我们的锁机制保证了正确的执行顺序。Agent Loop 完全不需要感知并发细节。</p>
 <p>输入「测试并发」看看效果：</p>
-<p>bash
-运行
-复制
-pnpm start</p>
+<pre><code class="language-bash">pnpm start
+</code></pre>
 <p>You: 测试并发</p>
 <p>--- Step 1 ---
 [并发] get_weather 获取共享锁
@@ -624,437 +603,6 @@ pnpm start</p>
 <p>读写锁并发控制 让只读工具并行跑、读写工具独占执行，Agent Loop 完全不需要感知并发细节。</p>
 <p>而且上一篇的三层防护（循环检测、API 容错、Token 预算）完全没动——它们在更外层保护 Agent Loop，和工具系统互不干扰。这就是分层设计的好处。</p>
 <p>下一篇接 MCP——让你的 Agent 不仅能用自己的内置工具，还能连接外部的 MCP Server，调用 GitHub、数据库这些你自己没写过的工具。到时候 ToolRegistry 会多一个 registerMCPTools() 方法，MCP 工具和内置工具共享同一套截断和执行策略。</p>
-<p>参考链接
-Vercel AI SDK - Tool Reference
-Anthropic - Advanced Tool Use
-OpenAI - Function Calling Best Practices
-Anthropic - Effective Context Engineering for AI Agents
-上一篇
-Agent 不能这么脆——循环检测、API 容错与 Token 预算
-下一篇 · 第二章：Tool System
-补齐装备——edit_file、grep、glob 与 bash
-编辑器</p>
-<hr />
-<h2 id="代码块"><a class="header" href="#代码块">代码块</a></h2>
-<pre><code>You: 帮我看一下当前目录有哪些文件
-Agent: 当前目录下通常会有 src、package.json、node_modules……
-</code></pre>
-<pre><code>You: 帮我读一下 package.json
-Agent: 你可以用 cat package.json 查看……
-</code></pre>
-<pre><code class="language-bash">pnpm install
-</code></pre>
-<pre><code class="language-typescript">interface ToolDefinition {
-  name: string;
-  description: string;        // 给模型看的描述
-  parameters: Record&lt;string, unknown&gt;;  // JSON Schema
-  execute: (input: any) =&gt; Promise&lt;unknown&gt;;
-
-  // 元数据——给 Agent Loop 做决策用
-  isConcurrencySafe?: boolean;  // 能否并行
-  isReadOnly?: boolean;         // 是否只读
-  maxResultChars?: number;      // 结果最大长度
-}
-</code></pre>
-<pre><code class="language-typescript">import { jsonSchema } from 'ai';
-
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters: Record&lt;string, unknown&gt;;
-  isConcurrencySafe?: boolean;
-  isReadOnly?: boolean;
-  maxResultChars?: number;
-  execute: (input: any) =&gt; Promise&lt;unknown&gt;;
-}
-
-const DEFAULT_MAX_RESULT_CHARS = 3000;
-
-export class ToolRegistry {
-  private tools = new Map&lt;string, ToolDefinition&gt;();
-
-  register(...tools: ToolDefinition[]): void {
-    for (const tool of tools) {
-      this.tools.set(tool.name, tool);
-    }
-  }
-
-  get(name: string): ToolDefinition | undefined {
-    return this.tools.get(name);
-  }
-
-  getAll(): ToolDefinition[] {
-    return Array.from(this.tools.values());
-  }
-
-  toAISDKFormat(): Record&lt;string, any&gt; {
-    const result: Record&lt;string, any&gt; = {};
-    for (const [name, tool] of this.tools) {
-      const maxChars = tool.maxResultChars;
-      const executeFn = tool.execute;
-      result[name] = {
-        description: tool.description,
-        inputSchema: jsonSchema(tool.parameters as any),
-        execute: async (input: any) =&gt; {
-          const raw = await executeFn(input);
-          const text = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
-          return truncateResult(text, maxChars);
-        },
-      };
-    }
-    return result;
-  }
-}
-
-export function truncateResult(text: string, maxChars: number = DEFAULT_MAX_RESULT_CHARS): string {
-  if (text.length &lt;= maxChars) return text;
-
-  const headSize = Math.floor(maxChars * 0.6);
-  const tailSize = maxChars - headSize;
-  const head = text.slice(0, headSize);
-  const tail = text.slice(-tailSize);
-  const dropped = text.length - headSize - tailSize;
-
-  return `${head}\n\n... [省略 ${dropped} 字符] ...\n\n${tail}`;
-}
-</code></pre>
-<pre><code class="language-typescript">import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import type { ToolDefinition } from './tool-registry.js';
-
-export const weatherTool: ToolDefinition = {
-  name: 'get_weather',
-  description: '查询指定城市的天气信息',
-  parameters: {
-    type: 'object',
-    properties: {
-      city: { type: 'string', description: '城市名称，如"北京"、"上海"' },
-    },
-    required: ['city'],
-    additionalProperties: false,
-  },
-  isConcurrencySafe: true,
-  isReadOnly: true,
-  execute: async ({ city }: { city: string }) =&gt; {
-    const data: Record&lt;string, string&gt; = {
-      '北京': '晴，15-25°C，东南风 2 级',
-      '上海': '多云，18-22°C，西南风 3 级',
-      '深圳': '阵雨，22-28°C，南风 2 级',
-    };
-    return data[city] || `${city}：暂无数据`;
-  },
-};
-
-export const calculatorTool: ToolDefinition = {
-  // ... 同前，省略 ...
-};
-
-export const readFileTool: ToolDefinition = {
-  name: 'read_file',
-  description: '读取指定路径的文件内容',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: '文件路径' },
-    },
-    required: ['path'],
-    additionalProperties: false,
-  },
-  isConcurrencySafe: true,
-  isReadOnly: true,
-  maxResultChars: 500,  // 演示用，生产环境通常 50000+
-  execute: async ({ path }: { path: string }) =&gt; {
-    return readFileSync(resolve(path), 'utf-8');
-  },
-};
-
-export const writeFileTool: ToolDefinition = {
-  name: 'write_file',
-  description: '写入内容到指定文件',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: '文件路径' },
-      content: { type: 'string', description: '要写入的内容' },
-    },
-    required: ['path', 'content'],
-    additionalProperties: false,
-  },
-  isConcurrencySafe: false,  // 写操作不能并行
-  isReadOnly: false,
-  execute: async ({ path, content }: { path: string; content: string }) =&gt; {
-    writeFileSync(resolve(path), content, 'utf-8');
-    return `已写入 ${content.length} 字符到 ${path}`;
-  },
-};
-
-export const listDirectoryTool: ToolDefinition = {
-  name: 'list_directory',
-  description: '列出指定目录下的文件和子目录',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: '目录路径，默认为当前目录' },
-    },
-    required: [],
-    additionalProperties: false,
-  },
-  isConcurrencySafe: true,
-  isReadOnly: true,
-  execute: async ({ path = '.' }: { path?: string }) =&gt; {
-    const resolved = resolve(path);
-    return readdirSync(resolved).map(name =&gt; {
-      const stat = statSync(join(resolved, name));
-      return `${stat.isDirectory() ? '[DIR]' : '[FILE]'} ${name}`;
-    }).join('\n');
-  },
-};
-
-export const allTools: ToolDefinition[] = [
-  weatherTool, calculatorTool, readFileTool, writeFileTool, listDirectoryTool,
-];
-</code></pre>
-<pre><code class="language-typescript">import 'dotenv/config';
-import { type ModelMessage } from 'ai';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createMockModel } from './mock-model.js';
-import { createInterface } from 'node:readline';
-import { ToolRegistry } from './tool-registry.js';
-import { allTools } from './tools.js';
-import { agentLoop } from './agent-loop.js';
-
-const qwen = createOpenAI({
-  baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-  apiKey: process.env.DASHSCOPE_API_KEY,
-});
-
-const model = process.env.DASHSCOPE_API_KEY
-  ? qwen.chat('qwen-plus-latest')
-  : createMockModel();
-
-const registry = new ToolRegistry();
-registry.register(...allTools);
-
-console.log(`已注册 ${registry.getAll().length} 个工具：`);
-for (const tool of registry.getAll()) {
-  const flags = [
-    tool.isConcurrencySafe ? '可并发' : '串行',
-    tool.isReadOnly ? '只读' : '读写',
-  ].join(', ');
-  console.log(`  - ${tool.name}（${flags}）`);
-}
-
-// ... readline + agentLoop 调用，结构同上一篇 ...
-</code></pre>
-<pre><code class="language-typescript">import { streamText, type ModelMessage } from 'ai';
-import { ToolRegistry } from './tool-registry.js';
-import { detect, recordCall, recordResult, resetHistory } from './loop-detection.js';
-import { isRetryable, calculateDelay, sleep } from './retry.js';
-
-const MAX_STEPS = 15;
-const MAX_RETRIES = 3;
-const TOKEN_BUDGET = 50000;
-
-export async function agentLoop(
-  model: any,
-  registry: ToolRegistry,
-  messages: ModelMessage[],
-  system: string,
-) {
-  // ... 核心结构同上一篇 ...
-  // 关键变化：tools 参数改为 registry.toAISDKFormat()
-  // tool-result 输出加了预览截断（超 120 字符只显示前 120）
-
-  const result = streamText({
-    model,
-    system,
-    tools: registry.toAISDKFormat(), // ← 这里
-    messages,
-    maxRetries: 0,
-    onError: () =&gt; {},
-  });
-  // ... 其余处理逻辑同上一篇 ...
-}
-</code></pre>
-<pre><code class="language-bash">pnpm start
-</code></pre>
-<pre><code>You: 帮我看看当前目录有什么文件
-
---- Step 1 ---
-  [调用: list_directory({"path":"."})]
-  [结果: list_directory] [FILE] .env
-[DIR] node_modules
-[FILE] package.json
-[FILE] sample-data.txt
-[DIR] src
-[FILE] tsconfig.json
-  → 继续下一步...
-
---- Step 2 ---
-当前目录的文件列表：
-[FILE] .env  [DIR] node_modules  [FILE] package.json ...
-</code></pre>
-<pre><code>You: 读取 package.json
-
---- Step 1 ---
-  [调用: read_file({"path":"package.json"})]
-  [结果: read_file] { "name": "super-agent-04-tool-system", ...
-</code></pre>
-<pre><code>You: 测试截断
-
---- Step 1 ---
-  [调用: read_file({"path":"sample-data.txt"})]
-  [结果: read_file] Super Agent 工具系统设计文档
-=============================
-
-一、工具注册机制
-每个工具通过 ToolRegistry 统一注册...
-
-... [省略 538 字符] ...
-
-...错误信息要对模型友好——模型需要理解为什么失败才能换策略
-4. 结果格式要结构化——JSON 比自然语言更容易被模型准确解析
-</code></pre>
-<pre><code class="language-typescript">import { jsonSchema } from 'ai';
-
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters: Record&lt;string, unknown&gt;;
-  isConcurrencySafe?: boolean;
-  isReadOnly?: boolean;
-  maxResultChars?: number;
-  execute: (input: any) =&gt; Promise&lt;unknown&gt;;
-}
-
-const DEFAULT_MAX_RESULT_CHARS = 3000;
-
-export class ToolRegistry {
-  private tools = new Map&lt;string, ToolDefinition&gt;();
-
-  // 三个状态变量构成一把读写锁
-  private exclusiveLock = false;          // 当前是否有独占锁持有者
-  private concurrentCount = 0;            // 当前共享锁持有数
-  private waitQueue: Array&lt;() =&gt; void&gt; = [];  // 阻塞等待中的 resolve 函数
-
-  register(...tools: ToolDefinition[]): void {
-    for (const tool of tools) {
-      this.tools.set(tool.name, tool);
-    }
-  }
-
-  get(name: string): ToolDefinition | undefined {
-    return this.tools.get(name);
-  }
-
-  getAll(): ToolDefinition[] {
-    return Array.from(this.tools.values());
-  }
-
-  // 获取共享锁：只要没人独占就能拿，多个只读工具可以同时持有
-  private async acquireConcurrent(): Promise&lt;void&gt; {
-    while (this.exclusiveLock) {
-      await new Promise&lt;void&gt;(r =&gt; this.waitQueue.push(r));
-    }
-    this.concurrentCount++;
-  }
-
-  private releaseConcurrent(): void {
-    this.concurrentCount--;
-    if (this.concurrentCount === 0) this.drainQueue();
-  }
-
-  // 获取独占锁：必须等所有共享锁释放、且没人持独占
-  private async acquireExclusive(): Promise&lt;void&gt; {
-    while (this.exclusiveLock || this.concurrentCount &gt; 0) {
-      await new Promise&lt;void&gt;(r =&gt; this.waitQueue.push(r));
-    }
-    this.exclusiveLock = true;
-  }
-
-  private releaseExclusive(): void {
-    this.exclusiveLock = false;
-    this.drainQueue();
-  }
-
-  // 锁释放时把等待队列全唤醒，让它们重新去抢锁
-  private drainQueue(): void {
-    const waiting = this.waitQueue.splice(0);
-    for (const resolve of waiting) resolve();
-  }
-
-  toAISDKFormat(): Record&lt;string, any&gt; {
-    const result: Record&lt;string, any&gt; = {};
-    for (const [name, tool] of this.tools) {
-      const maxChars = tool.maxResultChars;
-      const executeFn = tool.execute;
-      const isSafe = tool.isConcurrencySafe === true;
-      const registry = this;
-
-      result[name] = {
-        description: tool.description,
-        inputSchema: jsonSchema(tool.parameters as any),
-        execute: async (input: any) =&gt; {
-          // 在真正执行前先按 isConcurrencySafe 获取锁
-          if (isSafe) {
-            await registry.acquireConcurrent();
-            console.log(`  [并发] ${name} 获取共享锁`);
-          } else {
-            await registry.acquireExclusive();
-            console.log(`  [串行] ${name} 获取独占锁，等待其他工具完成`);
-          }
-          try {
-            const raw = await executeFn(input);
-            const text = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
-            return truncateResult(text, maxChars);
-          } finally {
-            // 不管成功还是抛异常，锁都要释放
-            if (isSafe) {
-              registry.releaseConcurrent();
-            } else {
-              registry.releaseExclusive();
-            }
-          }
-        },
-      };
-    }
-    return result;
-  }
-}
-
-export function truncateResult(text: string, maxChars: number = DEFAULT_MAX_RESULT_CHARS): string {
-  if (text.length &lt;= maxChars) return text;
-
-  const headSize = Math.floor(maxChars * 0.6);
-  const tailSize = maxChars - headSize;
-  const head = text.slice(0, headSize);
-  const tail = text.slice(-tailSize);
-  const dropped = text.length - headSize - tailSize;
-
-  return `${head}\n\n... [省略 ${dropped} 字符] ...\n\n${tail}`;
-}
-</code></pre>
-<pre><code class="language-bash">pnpm start
-</code></pre>
-<pre><code>You: 测试并发
-
---- Step 1 ---
-  [并发] get_weather 获取共享锁
-  [调用: get_weather({"city":"北京"})]
-  [结果: get_weather] 晴，15-25°C，东南风 2 级
-  [并发] get_weather 获取共享锁
-  [调用: get_weather({"city":"上海"})]
-  [结果: get_weather] 多云，18-22°C，西南风 3 级
-  [并发] list_directory 获取共享锁
-  [调用: list_directory({"path":"."})]
-  [结果: list_directory] [FILE] .env  [DIR] node_modules ...
-  → 继续下一步...
-
---- Step 2 ---
-查询到多个城市的天气：
-- 晴，15-25°C，东南风 2 级
-- 多云，18-22°C，西南风 3 级
-</code></pre>
 
                     </main>
 
@@ -1085,22 +633,6 @@ export function truncateResult(text: string, maxChars: number = DEFAULT_MAX_RESU
 
         </div>
 
-        <!-- Livereload script (if served using the cli tool) -->
-        <script>
-            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
-            const socket = new WebSocket(wsAddress);
-            socket.onmessage = function (event) {
-                if (event.data === "reload") {
-                    socket.close();
-                    location.reload();
-                }
-            };
-
-            window.onbeforeunload = function() {
-                socket.close();
-            }
-        </script>
 
 
 

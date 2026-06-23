@@ -176,21 +176,14 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="session-持久化--prompt-pipe对话存档与模块化-prompt-组装"><a class="header" href="#session-持久化--prompt-pipe对话存档与模块化-prompt-组装">Session 持久化 + Prompt Pipe——对话存档与模块化 Prompt 组装</a></h1>
-<p>课程
-Super Agent 实战课
-Session 持久化 + Prompt Pipe——对话存档与模块化 Prompt 组装
-Session 持久化 + Prompt Pipe——对话存档与模块化 Prompt 组装</p>
-<p>约 22 分钟</p>
 <p>本节示例推荐使用真实的大模型 API Key，填入到 .env 文件。API Key 从阿里云百炼平台获取，免费额度足够完成本课程的所有练习。</p>
 <p>你跟 Agent 聊了 10 轮，帮你查了 GitHub Issue、读了几个文件、编辑了代码，聊得很顺利。然后你关掉终端去吃饭，回来重新 pnpm start——对话没了，Agent 不认识你了，之前聊的全部归零。</p>
 <p>这个问题在之前的几篇里一直存在，因为我们的对话历史只活在内存里。进程一退出，messages 数组就没了。</p>
 <p>同时还有另一个问题：现在的 system prompt 是一个写死的字符串常量。功能越加越多——工具描述、延迟工具列表、会话信息——全部硬编码在一个模板字符串里，改一个地方要小心翼翼避免影响其他部分。</p>
 <p>这篇我们解决这两个问题。Session 持久化让对话关掉再打开还在，Prompt Pipe 让 system prompt 变成可维护的模块化系统。</p>
 <p>先装依赖：</p>
-<p>bash
-运行
-复制
-pnpm install</p>
+<pre><code class="language-bash">pnpm install
+</code></pre>
 <p>项目结构调整</p>
 <p>从这篇开始，我们把之前平铺在 src/ 下的十几个文件按职责拆进了子目录。随着功能越加越多，一个扁平的 src/ 目录会变得很难维护。调整后的结构如下：</p>
 <p>src/
@@ -216,8 +209,6 @@ prompt-builder.ts</p>
 <p>Claude Code 的对话记录也是 JSONL 格式（它叫 transcript），支持 --continue 和 --resume 恢复历史会话。</p>
 <p>创建 src/session-store.ts：</p>
 <p>src/session/store.ts
-应用
-复制
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ModelMessage } from 'ai';</p>
@@ -281,8 +272,6 @@ exists() 检查会话文件是否存在</p>
 <p>注意 load() 里对解析失败的行直接 skip——这就是 JSONL 的容错性，一行坏了不影响其他行。</p>
 <p>入口文件里，用户输入的每条消息在发给模型之前先写入 JSONL，Agent 回复的消息在收到后也追加进去。启动时如果带了 --continue 参数并且有历史文件，就从文件恢复对话：</p>
 <p>src/index.ts
-应用
-复制
 // Session 持久化
 const isContinue = process.argv.includes('--continue');
 const store = new SessionStore('default');</p>
@@ -297,15 +286,11 @@ console.log(<code>[Session] 新会话</code>);
 // 用户消息 → append → 发给模型
 // 模型回复 → appendAll → 持久化</p>
 <p>跑起来试试：</p>
-<p>bash
-运行
-复制
-pnpm start</p>
+<pre><code class="language-bash">pnpm start
+</code></pre>
 <p>聊几句后输入 exit 退出，然后用 pnpm run continue 恢复：</p>
-<p>bash
-运行
-复制
-pnpm run continue</p>
+<pre><code class="language-bash">pnpm run continue
+</code></pre>
 <p>[Session] 恢复会话，4 条历史消息</p>
 <h1>=== Prompt Pipe Debug ===
 coreRules: [ON] 107 chars
@@ -314,24 +299,23 @@ deferredTools: [ON] 680 chars
 sessionContext: [ON] 31 chars</h1>
 <p>历史消息恢复了，sessionContext Pipe 也自动激活了（因为检测到有历史消息）。Agent 知道你之前聊过什么，可以接着上次的话题继续。</p>
 <p>打开 .sessions/default.jsonl 看一眼内容：</p>
-<p>json
-复制
-{"type":"message","timestamp":"2026-05-01T...","message":{"role":"user","content":"你好"}}
-{"type":"message","timestamp":"2026-05-01T...","message":{"role":"assistant","content":[{"type":"text","text":"你好！..."}]}}</p>
+<pre><code class="language-json">{"type":"message","timestamp":"2026-05-01T...","message":{"role":"user","content":"你好"}}
+{"type":"message","timestamp":"2026-05-01T...","message":{"role":"assistant","content":[{"type":"text","text":"你好！..."}]}}
+</code></pre>
 <p>每行一条消息，时间戳、角色、内容一目了然。调试的时候直接看这个文件就能还原整个对话过程。</p>
 <p>Prompt Pipe：模块化 Prompt 组装</p>
 <p>Session 解决了"对话不丢"的问题，现在来解决"prompt 不乱"的问题。</p>
 <p>到上一节为止，我们的 system prompt 是这样的：</p>
-<p>typescript
-复制
-const SYSTEM = <code>你是 Super Agent，一个有工具调用能力的 AI 助手。 你有内置工具和 MCP 工具可用。 如果你需要的工具不在当前列表中，使用 tool_search 工具搜索。 ${deferredSummary}</code>;</p>
+<pre><code class="language-typescript">const SYSTEM = `你是 Super Agent，一个有工具调用能力的 AI 助手。
+你有内置工具和 MCP 工具可用。
+如果你需要的工具不在当前列表中，使用 tool_search 工具搜索。
+${deferredSummary}`;
+</code></pre>
 <p>但生产环境要加的 prompt 可不止这些，随着功能越来越复杂，我们会加入更多的 prompt 进来，包括一些指令信息、记忆内容、session 上下文等等。</p>
 <p>每加一个功能就往这个字符串里塞一段，而且有些 prompt 片段是需要按需添加的，这就导致字符串里面嵌入各种三元表达式，很快就变成 AI 都改不动的巨型屎山代码。</p>
 <p>知识体系课讲过 Prompt Pipe 模式——把 system prompt 拆成独立的模块，每个模块是一个纯函数，接收运行时上下文，自己决定要不要出现在最终 prompt 中。</p>
 <p>创建 src/prompt-builder.ts：</p>
 <p>src/context/prompt-builder.ts
-应用
-复制
 export interface PromptContext {
 toolCount: number;
 deferredToolSummary: string;
@@ -371,8 +355,6 @@ console.log('========================\n');
 build(ctx) 按注册顺序调用所有 Pipe，过滤掉 null，拼接成最终 prompt</p>
 <p>每个 Pipe 是一个工厂函数，返回实际的 Pipe 函数：</p>
 <p>src/context/prompt-builder.ts
-应用
-复制
 export function coreRules(): PipeFn {
 return () =&gt; <code>你是 Super Agent...（核心行为规则）</code>;
 }</p>
@@ -391,8 +373,6 @@ return <code>[会话信息] 已有 ${ctx.sessionMessageCount} 条历史消息</c
 <p>sessionContext 这个 Pipe 只有在恢复历史会话时才会出现（sessionMessageCount &gt; 0），新会话时它返回 null，不占任何 prompt 空间。这就是 Pipe 模式的好处——条件逻辑和内容在同一个模块里，加新 section 零摩擦。</p>
 <p>在入口文件里用 Builder 链式组装：</p>
 <p>src/index.ts
-应用
-复制
 const builder = new PromptBuilder()
 .pipe('coreRules', coreRules())
 .pipe('toolGuide', toolGuide())
@@ -420,209 +400,6 @@ deferredTools — 所有的工具列表也基本固定，放中间。
 sessionContext — 每次启动都不同，放最后面。</p>
 <p>这个顺序保证了 prompt 前部是稳定的，后面加的动态内容不会杀掉前面的 cache。后面讲 Prompt Cache 那篇会进一步优化这个分界线的位置，但现在先把意识建立起来——先静后动，是 Prompt 组装的基本原则。</p>
 <p>到这里，两个核心能力都落地了。Session 持久化让对话跨终端保留，Prompt Pipe 让 system prompt 模块化可维护。但还有一个更大的问题没解决：对话越来越长，消息列表无限增长，迟早会撑爆上下文窗口。下一篇我们来讲怎么压缩。</p>
-<p>参考链接
-Anthropic - Effective Context Engineering
-Anthropic - Prompt Caching
-上一篇
-工具太多模型选不准——实现 ToolSearch
-下一篇 · 第三章：Context Engineering
-对话太长了怎么办——Microcompact + LLM 摘要压缩
-编辑器</p>
-<hr />
-<h2 id="代码块"><a class="header" href="#代码块">代码块</a></h2>
-<pre><code class="language-bash">pnpm install
-</code></pre>
-<pre><code>src/
-  index.ts              # 入口
-  mock-model.ts         # Mock Model
-  agent/                # Agent Loop 相关
-    loop.ts, loop-detection.ts, retry.ts
-  tools/                # 工具系统
-    registry.ts, mcp-client.ts
-    file-tools.ts, search-tools.ts, shell-tools.ts, utility-tools.ts
-    index.ts            # 汇总导出
-  session/              # 会话持久化（本篇新增）
-    store.ts
-  context/              # Prompt 与上下文管理（本篇新增）
-    prompt-builder.ts
-</code></pre>
-<pre><code class="language-typescript">import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
-import type { ModelMessage } from 'ai';
-
-const SESSION_DIR = '.sessions';
-
-export interface SessionEntry {
-  type: 'message';
-  timestamp: string;
-  message: ModelMessage;
-}
-
-export class SessionStore {
-  private dir: string;
-  private sessionId: string;
-
-  constructor(sessionId: string = 'default') {
-    this.sessionId = sessionId;
-    this.dir = SESSION_DIR;
-    if (!existsSync(this.dir)) {
-      mkdirSync(this.dir, { recursive: true });
-    }
-  }
-
-  private get filePath(): string {
-    return join(this.dir, `${this.sessionId}.jsonl`);
-  }
-
-  append(message: ModelMessage): void {
-    const entry: SessionEntry = {
-      type: 'message',
-      timestamp: new Date().toISOString(),
-      message,
-    };
-    appendFileSync(this.filePath, JSON.stringify(entry) + '\n', 'utf-8');
-  }
-
-  appendAll(messages: ModelMessage[]): void {
-    for (const msg of messages) {
-      this.append(msg);
-    }
-  }
-
-  load(): ModelMessage[] {
-    if (!existsSync(this.filePath)) return [];
-    const content = readFileSync(this.filePath, 'utf-8').trim();
-    if (!content) return [];
-
-    const messages: ModelMessage[] = [];
-    for (const line of content.split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        const entry: SessionEntry = JSON.parse(line);
-        if (entry.type === 'message') {
-          messages.push(entry.message);
-        }
-      } catch { /* skip malformed lines */ }
-    }
-    return messages;
-  }
-
-  exists(): boolean {
-    return existsSync(this.filePath);
-  }
-}
-</code></pre>
-<pre><code class="language-typescript">// Session 持久化
-const isContinue = process.argv.includes('--continue');
-const store = new SessionStore('default');
-
-let messages: ModelMessage[] = [];
-if (isContinue &amp;&amp; store.exists()) {
-  messages = store.load();
-  console.log(`[Session] 恢复会话，${messages.length} 条历史消息`);
-} else {
-  console.log(`[Session] 新会话`);
-}
-
-// 在 ask() 里：
-// 用户消息 → append → 发给模型
-// 模型回复 → appendAll → 持久化
-</code></pre>
-<pre><code class="language-bash">pnpm start
-</code></pre>
-<pre><code class="language-bash">pnpm run continue
-</code></pre>
-<pre><code>[Session] 恢复会话，4 条历史消息
-
-=== Prompt Pipe Debug ===
-  coreRules: [ON] 107 chars
-  toolGuide: [ON] 47 chars
-  deferredTools: [ON] 680 chars
-  sessionContext: [ON] 31 chars
-========================
-</code></pre>
-<pre><code class="language-json">{"type":"message","timestamp":"2026-05-01T...","message":{"role":"user","content":"你好"}}
-{"type":"message","timestamp":"2026-05-01T...","message":{"role":"assistant","content":[{"type":"text","text":"你好！..."}]}}
-</code></pre>
-<pre><code class="language-typescript">const SYSTEM = `你是 Super Agent，一个有工具调用能力的 AI 助手。
-你有内置工具和 MCP 工具可用。
-如果你需要的工具不在当前列表中，使用 tool_search 工具搜索。
-${deferredSummary}`;
-</code></pre>
-<pre><code class="language-typescript">export interface PromptContext {
-  toolCount: number;
-  deferredToolSummary: string;
-  sessionMessageCount: number;
-  sessionId: string;
-}
-
-type PipeFn = (ctx: PromptContext) =&gt; string | null;
-
-export class PromptBuilder {
-  private pipes: Array&lt;{ name: string; fn: PipeFn }&gt; = [];
-
-  pipe(name: string, fn: PipeFn): this {
-    this.pipes.push({ name, fn });
-    return this;
-  }
-
-  build(ctx: PromptContext): string {
-    const sections: string[] = [];
-    for (const { fn } of this.pipes) {
-      const result = fn(ctx);
-      if (result !== null) {
-        sections.push(result);
-      }
-    }
-    return sections.join('\n\n');
-  }
-
-  debug(ctx: PromptContext): void {
-    console.log('\n=== Prompt Pipe Debug ===');
-    for (const { name, fn } of this.pipes) {
-      const result = fn(ctx);
-      const status = result !== null
-        ? `[ON] ${result.length} chars` : '[OFF]';
-      console.log(`  ${name}: ${status}`);
-    }
-    console.log('========================\n');
-  }
-}
-</code></pre>
-<pre><code class="language-typescript">export function coreRules(): PipeFn {
-  return () =&gt; `你是 Super Agent...（核心行为规则）`;
-}
-
-export function toolGuide(): PipeFn {
-  return (ctx) =&gt; {
-    if (ctx.toolCount === 0) return null;
-    return `你有 ${ctx.toolCount} 个工具可用...`;
-  };
-}
-
-export function sessionContext(): PipeFn {
-  return (ctx) =&gt; {
-    if (ctx.sessionMessageCount === 0) return null;
-    return `[会话信息] 已有 ${ctx.sessionMessageCount} 条历史消息`;
-  };
-}
-</code></pre>
-<pre><code class="language-typescript">const builder = new PromptBuilder()
-  .pipe('coreRules', coreRules())
-  .pipe('toolGuide', toolGuide())
-  .pipe('deferredTools', deferredTools())
-  .pipe('sessionContext', sessionContext());
-
-const SYSTEM = builder.build(promptCtx);
-builder.debug(promptCtx);  // 显示各模块状态
-</code></pre>
-<pre><code>=== Prompt Pipe Debug ===
-  coreRules: [ON] 107 chars
-  toolGuide: [ON] 47 chars
-  deferredTools: [ON] 680 chars
-  sessionContext: [OFF]        ← 新会话，没有历史
-========================
-</code></pre>
 
                     </main>
 
@@ -653,22 +430,6 @@ builder.debug(promptCtx);  // 显示各模块状态
 
         </div>
 
-        <!-- Livereload script (if served using the cli tool) -->
-        <script>
-            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
-            const socket = new WebSocket(wsAddress);
-            socket.onmessage = function (event) {
-                if (event.data === "reload") {
-                    socket.close();
-                    location.reload();
-                }
-            };
-
-            window.onbeforeunload = function() {
-                socket.close();
-            }
-        </script>
 
 
 

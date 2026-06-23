@@ -176,18 +176,13 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="我为什么要做这门课以及我是谁"><a class="header" href="#我为什么要做这门课以及我是谁">我为什么要做这门课，以及我是谁</a></h1>
-<p>课程
-吃透 AI Agent 开发
-我为什么要做这门课，以及我是谁
-我为什么要做这门课，以及我是谁</p>
-<p>约 12 分钟</p>
 <p>先简单介绍下自己吧。</p>
 <p>我是三元，前字节跳动工程师。在字节的时候，我一个人做了一个内部的 Vibe Coding 平台——就是你现在看到满大街的那种，用自然语言描述需求，AI 帮你生成完整应用，一键部署。类似 Lovable、v0、Bolt 这些产品。</p>
 <p>不过我做得非常早，2024 年上半年就有雏形了。</p>
 <p>那时候市面上还没有这些东西，我跟别人说"以后写代码可以用自然语言"，大部分人觉得我在说梦话。但我自己清楚这个方向是对的，因为我每天都在用，每天都在感受到那种效率的飞跃。</p>
 <p>后来的事情你们都知道了——2025 年 Vibe Coding 彻底爆发，Claude Code 成了现象级产品，Cursor 融了几十亿美金。我当初做的那个"超前"的东西，突然变成了行业共识。</p>
 <p>说这些不是为了吹牛，是想说：我在 AI + 编程这个交叉领域，确实踩过很多坑，也比大多数人更早地经历了从"这玩意儿能用吗"到"这玩意儿离不开了"的完整过程。</p>
-<p>简单列几个标签吧：</p>
+<h2 id="简单列几个标签吧"><a class="header" href="#简单列几个标签吧">简单列几个标签吧：</a></h2>
 <p>前字节某内部 Vibe Coding 平台负责人，在字节内部积累了不错的口碑
 12 项 AI 相关发明专利第一发明人
 掘金平台前端技术领域的付费小册售出 1w+ 册（掘金神三元）
@@ -233,11 +228,11 @@
 <p>公司业务有 Agent 需求的工程师。 老板说"我们要做一个 AI Agent"，你接到这个活，但不知道从哪下手。这门课帮你从零搭建完整的知识体系，知道每一步该做什么决策、为什么这么决策。</p>
 <p>想系统学习、准备面试的同学。 面试的时候，如果你能说出"Claude Code 的 Context Engineering 是怎么做的""为什么 Manus 选择 Mask Don't Remove 而不是动态增删工具"，面试官会知道你是真的懂，不是背的八股文。</p>
 <p>对 Agent 好奇、想深入理解的技术人。 就是纯粹好奇心驱动，想搞清楚 Claude Code 到底怎么工作的、为什么它能这么强。这也完全够了，好奇心是最好的老师。</p>
-<p>课程怎么学</p>
+<h2 id="课程怎么学"><a class="header" href="#课程怎么学">课程怎么学</a></h2>
 <p>两门课，可以单独学，也可以一起学：</p>
-<p>课程一：吃透 AI Agent 开发（知识体系课）</p>
+<h2 id="课程一吃透-ai-agent-开发知识体系课"><a class="header" href="#课程一吃透-ai-agent-开发知识体系课">课程一：吃透 AI Agent 开发（知识体系课）</a></h2>
 <p>30+ 篇，从 Agent Loop 到 Harness Engineering，六大支柱逐个击破。每篇从真实问题出发，用源码验证，提炼设计原则。学完之后你能看懂任何 Agent 产品的架构。平均每篇不少于 5000 字，不水篇幅，满满的干货输出。</p>
-<p>课程二：生产级 Agent 实战课</p>
+<h2 id="课程二生产级-agent-实战课"><a class="header" href="#课程二生产级-agent-实战课">课程二：生产级 Agent 实战课</a></h2>
 <p>20+ 篇，从零开始写一个完整的 AI Agent。每一篇在上一篇的基础上加功能，最终产物是一个能接 Telegram/Discord、有记忆、有工具系统、能装插件的 AI Agent，达到生产级可用级别，对标 OpenClaw。</p>
 <p>课程一是"为什么这么做"，课程二是"跟我一起做"。</p>
 <p>而且，我把所有课程内容都接入了我自己做的 AI 私教产品 Sitor。你在学的过程中遇到不懂的地方，可以直接跟 AI 私教对话——它不会直接给你答案，而是用苏格拉底式追问引导你自己想明白。</p>
@@ -251,8 +246,6 @@
 <p>如果你想了解更多，或者想跟我聊聊，欢迎加我微信 sanyuan0704。</p>
 <p>也欢迎关注我的公众号，我每周都在持续分享 AI 开发、创业、产品方面的思考和干货。</p>
 <p>我是三元，我们课程里见。</p>
-<p>下一篇 · 第一章：认知校准
-搞定 Agent 六大支柱：今天出个 Manus 明天出个 OpenClaw，你到底应该学什么？</p>
 
                     </main>
 
@@ -283,22 +276,6 @@
 
         </div>
 
-        <!-- Livereload script (if served using the cli tool) -->
-        <script>
-            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
-            const socket = new WebSocket(wsAddress);
-            socket.onmessage = function (event) {
-                if (event.data === "reload") {
-                    socket.close();
-                    location.reload();
-                }
-            };
-
-            window.onbeforeunload = function() {
-                socket.close();
-            }
-        </script>
 
 
 
